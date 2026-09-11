@@ -6,8 +6,7 @@ Run this checklist for every release candidate.
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
-# project.yml is canonical; CI and release packaging regenerate SVLT.xcodeproj.
-xcodegen generate
+# Use the checked-in Xcode project until project.yml parity is separately verified.
 xcodebuild test -project SVLT.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
 cd mcp-server && npm audit --audit-level=high && npm test && npm run typecheck && npm run build
 cd ../obsidian-plugin/svlt && npm audit --audit-level=high && npm test && npm run typecheck && npm run build
@@ -36,8 +35,9 @@ SVLT_REQUIRE_NOTARIZATION=1 \
 ./scripts/package-release.sh
 ```
 
-The packaging script verifies the Team ID and Hardened Runtime on both the App
-and embedded `SVLTAgent`. When notarization is enabled it waits for Apple
+The packaging script builds the checked-in Xcode project, forces Hardened Runtime
+at release build time, and verifies the Team ID and Hardened Runtime on both the
+App and embedded `SVLTAgent`. When notarization is enabled it waits for Apple
 notarization, staples the ticket, validates it, runs Gatekeeper assessment, and
 rebuilds the final ZIP from the stapled App. The project keeps the Team ID pin
 for AppControl verification but never stores an individual certificate identity
