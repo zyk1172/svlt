@@ -18,14 +18,20 @@ jobs:
   swift-tests:
     name: Swift tests
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Generate Xcode project from canonical project.yml
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate
       - name: Run macOS test suite
         run: |
           # Catalog POSIX probes are deliberately bounded because a
-          # File Provider syscall can outlive the caller's timeout.  Hosted
+          # File Provider syscall can outlive the caller's timeout. Hosted
           # runners can therefore leave a timed-out probe in the test process
           # and make the next test fail immediately on the shared permit pool.
           # Keep bundle execution serial and relaunch failed tests so a
@@ -48,9 +54,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -58,6 +64,9 @@ jobs:
       - name: Install dependencies
         working-directory: mcp-server
         run: npm ci
+      - name: Audit dependencies
+        working-directory: mcp-server
+        run: npm audit --audit-level=high
       - name: Typecheck, test, and build
         working-directory: mcp-server
         run: npm run typecheck && npm test && npm run build
@@ -68,9 +77,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: npm
@@ -78,6 +87,9 @@ jobs:
       - name: Install dependencies
         working-directory: obsidian-plugin/svlt
         run: npm ci
+      - name: Audit dependencies
+        working-directory: obsidian-plugin/svlt
+        run: npm audit --audit-level=high
       - name: Typecheck, test, and build
         working-directory: obsidian-plugin/svlt
         run: npm run typecheck && npm test && npm run build && npm run check:build-artifact
@@ -88,7 +100,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The PR may contain several commits; the security check compares
           # the complete PR range against origin/main.
@@ -100,7 +112,7 @@ jobs:
       - name: Check whitespace
         run: |
           # Select the complete event range instead of checking only the
-          # latest commit.  origin/main is not a reliable PR base when the
+          # latest commit. origin/main is not a reliable PR base when the
           # checkout is a merge ref or the workflow runs from a fork.
           case "$GITHUB_EVENT_NAME" in
             pull_request)
@@ -116,7 +128,7 @@ jobs:
               ;;
             *)
               head="$GITHUB_SHA"
-              # Manual runs have no event-provided base.  Prefer the
+              # Manual runs have no event-provided base. Prefer the
               # repository's main merge base so historical whitespace is not
               # re-reported; fall back to the immediate parent only when the
               # remote ref is unavailable.
