@@ -289,6 +289,21 @@ import VaultCore
     #expect(source.contains("revealPresentationStates.removeAll()"))
 }
 
+@Test func catalogSecureInputIgnoresParentWindowKeyTransitions() throws {
+    let source = try workbenchSource()
+    guard let sheetStart = source.range(of: "private struct CatalogAgentSecureInputSheet"),
+          let nextView = source.range(of: "private struct OverviewStatusStrip", range: sheetStart.upperBound..<source.endIndex)
+    else {
+        Issue.record("secure input sheet source not found")
+        return
+    }
+
+    let sheet = source[sheetStart.lowerBound..<nextView.lowerBound]
+    #expect(sheet.contains("NSApplication.didResignActiveNotification"))
+    #expect(!sheet.contains("NSWindow.didResignKeyNotification"))
+    #expect(!sheet.contains("onChange(of: scenePhase)"))
+}
+
 @Test func catalogFieldDraftProjectsExistingEndpointAsAnEditableField() {
     let fields = [
         SecretCatalogFieldValue(key: "username", label: "用户名", type: .text)
