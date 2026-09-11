@@ -12,9 +12,11 @@ import VaultCore
 /// of at most five high-impact rule categories per execution layer may
 /// require one-shot fresh approval.
 ///
-/// Agent risk hints, unknown operations, destination warnings, and
-/// transport/session failures must not manufacture additional approval
-/// prompts.
+/// Agent risk hints, unknown operations in the general operation layers,
+/// destination warnings, and transport/session failures must not manufacture
+/// additional approval prompts. Database SQL is the deliberate exception:
+/// unknown or unparseable statements take one fresh owner approval rather
+/// than inheriting a reusable database lease.
 ///
 /// Semantic risk must not hard-deny an otherwise technically executable
 /// request. Hard failures are reserved for malformed, contradictory, stale,
@@ -41,10 +43,22 @@ public struct SecretOperationPolicyEngine: Sendable {
 
     private let configuration: Configuration
     private let sshCommandClassifier: SSHCommandRiskClassifier
+    private let databaseStatementClassifier: DatabaseStatementClassifier
 
     public init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
         self.sshCommandClassifier = SSHCommandRiskClassifier(maxCommandLength: configuration.maxCommandLength)
+        self.databaseStatementClassifier = DatabaseStatementClassifier(maximumLength: configuration.maxCommandLength)
+    }
+
+    /// Returns the non-secret operation family used by a reusable database
+    /// authorization scope. Read-only statements deliberately share one
+    /// family so a normal multi-query workflow does not prompt for every
+    /// SELECT; ordinary writes and maintenance statements remain separated by
+    /// their narrower family. Fresh/unknown statements never receive a lease.
+    public func databaseAuthorizationScopeFamily(for statement: String?) -> String {
+        guard let statement else { return "database.fresh.unknown" }
+        return databaseStatementClassifier.classify(statement).scopeFamily
     }
 
     public func evaluate(
@@ -688,18 +702,18 @@ public struct SecretOperationPolicyEngine: Sendable {
 
     /// The complete, explicit registry of database fresh rules (§38).
     public enum DatabaseFreshRules {
-        public static let drop = "database.fresh.drop"
-        public static let truncate = "database.fresh.truncate"
-        public static let delete = "database.fresh.delete"
-        public static let destructiveAlter = "database.fresh.destructive-alter"
+        public static let destructiveWrite = "database.fresh.destructive-write"
+        public static let destructiveStructure = "database.fresh.destructive-structure"
         public static let privilegeAccountAdmin = "database.fresh.privilege-account-admin"
+        public static let dynamicExecution = "database.fresh.dynamic-execution"
+        public static let unknown = "database.fresh.unknown"
 
         public static let all: [String] = [
-            drop,
-            truncate,
-            delete,
-            destructiveAlter,
-            privilegeAccountAdmin
+            destructiveWrite,
+            destructiveStructure,
+            privilegeAccountAdmin,
+            dynamicExecution,
+            unknown
         ]
     }
 
@@ -709,44 +723,13 @@ public struct SecretOperationPolicyEngine: Sendable {
         guard let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return (.denied, .denied, ["数据库查询为空"], "database.query.missing")
         }
-        if let rule = matchFixedFreshDatabaseRule(query) {
-            return (
-                .approvalRequired,
-                .freshApprovalRequired,
-                ["数据库查询匹配固定高危类别（\(rule)），每次都需要设备所有者重新认证"],
-                rule
-            )
-        }
+        let classification = databaseStatementClassifier.classify(query)
         return (
             .approvalRequired,
-            .reusableApproval,
-            ["数据库查询属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
-            "database.ordinary.reusable-approval"
+            classification.requirement,
+            [classification.reason],
+            classification.ruleID
         )
-    }
-
-    /// Fixed fresh rules for SQL, matched with a shallow lexical scan
-    /// (§38). Unknown or unparseable SQL stays on the ordinary path — the
-    /// device owner decides, not the parser.
-    private func matchFixedFreshDatabaseRule(_ query: String) -> String? {
-        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.range(of: #"(?i)\bdrop\b"#, options: .regularExpression) != nil {
-            return DatabaseFreshRules.drop
-        }
-        if normalized.range(of: #"(?i)\btruncate\b"#, options: .regularExpression) != nil {
-            return DatabaseFreshRules.truncate
-        }
-        if normalized.range(of: #"(?i)^\s*(delete)\b"#, options: .regularExpression) != nil {
-            return DatabaseFreshRules.delete
-        }
-        if normalized.range(of: #"(?i)\balter\b"#, options: .regularExpression) != nil,
-           normalized.range(of: #"(?i)\b(drop)\b"#, options: .regularExpression) != nil {
-            return DatabaseFreshRules.destructiveAlter
-        }
-        if normalized.range(of: #"(?i)\b(grant|revoke|create\s+user|drop\s+user|alter\s+user)\b"#, options: .regularExpression) != nil {
-            return DatabaseFreshRules.privilegeAccountAdmin
-        }
-        return nil
     }
 
     /// The complete, explicit registry of SFTP fresh rules (§39). There is no

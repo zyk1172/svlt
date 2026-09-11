@@ -7,7 +7,9 @@ import Foundation
 ///
 /// A lease is deliberately bound to the complete set of opaque references,
 /// normalized destination, protocol, operation family, caller principal and
-/// security generation.  It must never contain resolved secret material.
+/// security generation. Database operations use a classifier-selected narrow
+/// family (for example, `database.read`), rather than the generic action name.
+/// It must never contain resolved secret material.
 public struct ExecutionAuthorizationScope: Hashable, Sendable {
     public let principal: String
     public let secretReferenceIDs: [String]

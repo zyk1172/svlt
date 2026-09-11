@@ -1141,7 +1141,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
         principal: String = AuditSource.agent.rawValue,
         generation: UInt64 = 0
     ) -> ExecutionAuthorizationScope {
-        ExecutionAuthorizationScope(
+        return ExecutionAuthorizationScope(
             principal: principal,
             secretReferenceIDs: [reference.description],
             normalizedDestination: "qnap.local",
@@ -1161,14 +1161,17 @@ private final class OperationServiceFixture: @unchecked Sendable {
         principal: String = AuditSource.agent.rawValue,
         generation: UInt64 = 0
     ) -> ExecutionAuthorizationScope {
-        ExecutionAuthorizationScope(
+        let actionFamily = descriptor.actionType == .databaseQuery
+            ? SecretOperationPolicyEngine().databaseAuthorizationScopeFamily(for: descriptor.effectiveDatabaseStatement)
+            : descriptor.actionType.rawValue
+        return ExecutionAuthorizationScope(
             principal: principal,
             secretReferenceIDs: descriptor.secretReferences.map(\.description),
             normalizedDestination: descriptor.normalizedDestination,
             port: descriptor.port,
             username: descriptor.actionType == .sshCommand ? descriptor.parameters["username"] : nil,
             protocolType: descriptor.protocolType?.rawValue,
-            actionFamily: descriptor.actionType.rawValue,
+            actionFamily: actionFamily,
             operationFingerprint: nil,
             generation: generation
         )

@@ -564,19 +564,25 @@ import VaultExecution
         ), metadata: metadata)
     }
 
-    // §38: everything ordinary — reads, writes, schema additions, unknown
-    // SQL — shares the ordinary 300-second window.
+    // §38: clearly read-only statements keep the reusable path so an Agent
+    // can complete a normal multi-query workflow without authenticating for
+    // every harmless SELECT.
     #expect(decision("SELECT 1").authorizationRequirement == .reusableApproval)
     #expect(decision("SELECT * FROM users WHERE id = 1").authorizationRequirement == .reusableApproval)
+
+    // INSERT and harmless schema/session maintenance remain ordinary, but
+    // their reusable leases are separated by operation family.
     #expect(decision("INSERT INTO logs VALUES (1)").authorizationRequirement == .reusableApproval)
-    #expect(decision("UPDATE users SET name = 'x' WHERE id = 1").authorizationRequirement == .reusableApproval)
+    #expect(decision("UPDATE users SET name = 'x' WHERE id = 1").authorizationRequirement == .freshApprovalRequired)
     #expect(decision("CREATE INDEX idx ON logs (ts)").authorizationRequirement == .reusableApproval)
     #expect(decision("ALTER TABLE logs ADD COLUMN note TEXT").authorizationRequirement == .reusableApproval)
     #expect(decision("VACUUM").authorizationRequirement == .reusableApproval)
     #expect(decision("SELECT 1; SELECT 2").authorizationRequirement == .reusableApproval)
-    #expect(decision("my-custom-procedure-call").authorizationRequirement == .reusableApproval)
+    #expect(decision("my-custom-procedure-call").authorizationRequirement == .freshApprovalRequired)
 
-    // The five fixed fresh rules.
+    // The five fixed fresh rules cover destructive writes, destructive
+    // structure changes, privilege/account administration, dynamic
+    // execution, and unknown/unparseable SQL.
     #expect(decision("DROP TABLE logs").authorizationRequirement == .freshApprovalRequired)
     #expect(decision("TRUNCATE TABLE logs").authorizationRequirement == .freshApprovalRequired)
     #expect(decision("DELETE FROM logs").authorizationRequirement == .freshApprovalRequired)
@@ -584,6 +590,148 @@ import VaultExecution
     #expect(decision("ALTER TABLE logs DROP COLUMN note").authorizationRequirement == .freshApprovalRequired)
     #expect(decision("GRANT ALL ON app TO someone").authorizationRequirement == .freshApprovalRequired)
     #expect(decision("REVOKE SELECT ON app FROM someone").authorizationRequirement == .freshApprovalRequired)
+}
+
+@Test func databaseClassifierCatchesWrappedAndVendorSpecificMutations() {
+    let classifier = DatabaseStatementClassifier()
+    let freshStatements: [(String, String)] = [
+        (
+            "WITH doomed AS (SELECT id FROM logs) DELETE FROM logs USING doomed WHERE logs.id = doomed.id",
+            SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite
+        ),
+        (
+            "WITH candidates AS (SELECT id FROM users) UPDATE users SET disabled = true FROM candidates WHERE users.id = candidates.id",
+            SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite
+        ),
+        (
+            "WITH removed AS (DELETE FROM logs RETURNING id) SELECT id FROM removed",
+            SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite
+        ),
+        (
+            "MERGE INTO inventory AS target USING incoming AS source ON target.id = source.id WHEN MATCHED THEN UPDATE SET count = source.count",
+            SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite
+        ),
+        (
+            "CREATE USER app_user IDENTIFIED BY 'not-a-secret-fixture'",
+            SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin
+        ),
+        (
+            "ALTER ROLE app_user SET statement_timeout = 0",
+            SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin
+        ),
+        (
+            "SET GLOBAL max_connections = 200",
+            SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin
+        ),
+        (
+            "ALTER SYSTEM SET log_statement = 'all'",
+            SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin
+        ),
+        (
+            "GRANT SELECT ON *.* TO app_user",
+            SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin
+        ),
+        (
+            "DO $$ BEGIN DELETE FROM logs; END $$",
+            SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution
+        ),
+        (
+            "CALL rotate_credentials()",
+            SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution
+        ),
+        (
+            "PREPARE purge AS DELETE FROM logs",
+            SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution
+        ),
+        (
+            "CREATE PROCEDURE purge_logs() BEGIN DELETE FROM logs; END",
+            SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution
+        ),
+        (
+            "SELECT * INTO OUTFILE '/tmp/export.txt' FROM logs",
+            SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution
+        )
+    ]
+
+    for (statement, ruleID) in freshStatements {
+        let classification = classifier.classify(statement)
+        #expect(classification.requirement == .freshApprovalRequired)
+        #expect(classification.ruleID == ruleID)
+    }
+}
+
+@Test func databaseClassifierPreservesReadWorkflowsAndDoesNotReadDangerousWordsFromLiterals() {
+    let classifier = DatabaseStatementClassifier()
+    let readStatements = [
+        "-- DELETE FROM logs\nSELECT 'UPDATE users SET password = redacted'",
+        "/* GRANT ALL */ SELECT \"delete\" FROM \"update\"",
+        "SELECT $$DROP TABLE logs;$$ AS example",
+        "SELECT $tag$DROP TABLE logs;$tag$ AS example",
+        "WITH recent AS (SELECT id FROM logs WHERE message = 'MERGE') SELECT id FROM recent",
+        "SHOW TABLES; DESCRIBE logs; EXPLAIN SELECT 1",
+        "# TRUNCATE logs\nSELECT 1; SELECT 2"
+    ]
+
+    for statement in readStatements {
+        let classification = classifier.classify(statement)
+        #expect(classification.requirement == .reusableApproval)
+        #expect(classification.scopeFamily == "database.read")
+    }
+}
+
+@Test func databaseClassifierUsesNarrowOperationFamiliesForReusableWorkflows() {
+    let classifier = DatabaseStatementClassifier()
+    let read = classifier.classify("SELECT 1")
+    let insert = classifier.classify("INSERT INTO logs VALUES (1)")
+    let schema = classifier.classify("CREATE INDEX idx ON logs (ts)")
+
+    #expect(read.requirement == .reusableApproval)
+    #expect(insert.requirement == .reusableApproval)
+    #expect(schema.requirement == .reusableApproval)
+    #expect(read.scopeFamily == "database.read")
+    #expect(insert.scopeFamily == "database.ordinary.insert")
+    #expect(schema.scopeFamily == "database.ordinary.schema-maintenance")
+    #expect(Set([read.scopeFamily, insert.scopeFamily, schema.scopeFamily]).count == 3)
+}
+
+@Test func databaseClassifierTakesConservativeFreshApprovalForUnknownOrMalformedSQL() {
+    let classifier = DatabaseStatementClassifier()
+    let unknownStatements = [
+        "SELEC 1",
+        "MYSTERY_OPERATION 1",
+        "WITH rows AS (SELECT 1) mystery_operation()",
+        "SELECT (1",
+        "SELECT $tag$ SELECT 1"
+    ]
+
+    for statement in unknownStatements {
+        let classification = classifier.classify(statement)
+        #expect(classification.requirement == .freshApprovalRequired)
+        #expect(classification.ruleID == SecretOperationPolicyEngine.DatabaseFreshRules.unknown)
+        #expect(classification.scopeFamily == "database.fresh.unknown")
+    }
+}
+
+@Test func databasePolicyExposesConservativeOwnerVisibleReasons() throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .databaseQuery,
+        secretReferences: [reference],
+        destination: "db.local:5432",
+        port: 5432,
+        protocolType: .postgres,
+        databaseStatement: "SELEC 1"
+    )
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["db.local:5432"], protocols: ["postgres"])]
+    )
+
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.policyRuleID == SecretOperationPolicyEngine.DatabaseFreshRules.unknown)
+    #expect(decision.reasons.contains { $0.contains("无法被本地分类器可靠识别") })
+    #expect(decision.authorizationRequirement != .denied)
+    #expect(!decision.technicalFailure)
 }
 
 @Test func sftpTiersFollowTheNewAuthorizationModel() throws {
