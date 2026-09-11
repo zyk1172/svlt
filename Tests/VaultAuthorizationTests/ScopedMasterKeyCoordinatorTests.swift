@@ -47,8 +47,11 @@ private let coordinatorTestScope = ExecutionAuthorizationScope(
     #expect(await coordinator.hasAuthorization(for: coordinatorTestScope) == false)
 }
 
-@Test func scopedMasterKeyCoordinatorSharesOneInFlightLoad() async throws {
-    let coordinator = ScopedMasterKeyCoordinator { _ in }
+@Test func scopedMasterKeyCoordinatorSharesOneInFlightInvalidationAndLoad() async throws {
+    let invalidations = InvalidationRecorder()
+    let coordinator = ScopedMasterKeyCoordinator { scope in
+        await invalidations.record(scope)
+    }
     let gate = KeyLoadGate()
     let key = SymmetricKey(data: Data(repeating: 0x33, count: 32))
 
@@ -63,6 +66,9 @@ private let coordinatorTestScope = ExecutionAuthorizationScope(
     }
     await gate.waitForStart()
 
+    // The first request has already invalidated the stale lease and is blocked
+    // in the provider load. The second request must join that exact flight; it
+    // must not issue another lease invalidation before noticing the load.
     let second = Task {
         try await coordinator.resolveKey(
             for: coordinatorTestScope,
@@ -79,6 +85,7 @@ private let coordinatorTestScope = ExecutionAuthorizationScope(
     #expect(keyData(firstKey) == keyData(key))
     #expect(keyData(secondKey) == keyData(key))
     #expect(await gate.loadCount == 1)
+    #expect(await invalidations.count == 1)
 }
 
 @Test func scopedMasterKeyCoordinatorExpiresAndInvalidatesTheMatchingLease() async throws {
