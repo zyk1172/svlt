@@ -75,7 +75,9 @@ assert_team_identifier() {
 
 assert_hardened_runtime() {
   local signed_path="$1"
-  if ! codesign --display --verbose=4 "$signed_path" 2>&1 | grep -Eq '^CodeDirectory .*flags=.*runtime'; then
+  local signature_details
+  signature_details="$(codesign --display --verbose=4 "$signed_path" 2>&1)"
+  if ! grep -Eq '^CodeDirectory .*flags=.*runtime' <<<"$signature_details"; then
     echo "Hardened Runtime is missing from $signed_path" >&2
     exit 1
   fi
