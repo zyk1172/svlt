@@ -305,6 +305,14 @@ public actor VaultIPCClient {
         return output
     }
 
+    public func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview {
+        let response = try await send(.reviewSSHHostKey(host: host, port: port))
+        guard case let .sshHostKeyReview(review) = response else {
+            throw unexpected(response)
+        }
+        return review
+    }
+
     public func sshSessionStatuses(sessionID: String? = nil) async throws -> [SSHSessionStatus] {
         let response = try await send(.sshSessionStatus(sessionID: sessionID))
         guard case let .sshSessionStatus(sessions) = response else {

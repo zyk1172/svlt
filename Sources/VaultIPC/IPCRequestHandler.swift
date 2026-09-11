@@ -68,6 +68,7 @@ public protocol WorkbenchServicing: Sendable {
     func pendingRevealSessionIDs() async throws -> [String]
     func performSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationOutput
     func secretOperationCapabilities() async -> [SecretOperationCapability]
+    func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview
     func sshSessionStatuses(sessionID: String?) async throws -> [SSHSessionStatus]
     func closeSSHSession(sessionID: String) async throws
     func deleteRecord(_ reference: String) async throws
@@ -221,6 +222,10 @@ public extension WorkbenchServicing {
     }
 
     func secretOperationCapabilities() async -> [SecretOperationCapability] { [] }
+
+    func reviewSSHHostKey(host _: String, port _: Int) async throws -> SSHHostKeyReview {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
 
     func deleteRecord(_ reference: String) async throws {
         throw IPCRequestHandlerError.unsupportedRequest
@@ -410,6 +415,8 @@ public struct IPCRequestHandler: Sendable {
             } catch {
                 return .failure(code: "ACTION_EXECUTION_FAILED")
             }
+        case let .reviewSSHHostKey(host, port):
+            return .sshHostKeyReview(try await service.reviewSSHHostKey(host: host, port: port))
         case .secretOperationCapabilities:
             return .secretOperationCapabilities(await service.secretOperationCapabilities())
         case let .sshSessionStatus(sessionID):

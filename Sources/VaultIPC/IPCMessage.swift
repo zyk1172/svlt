@@ -131,6 +131,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case scanOrphans(markdownReferences: [String])
     case execute(ExecutionRequest)
     case executeSecretOperation(SecretOperationDescriptor)
+    case reviewSSHHostKey(host: String, port: Int)
     case sshSessionStatus(sessionID: String?)
     case sshSessionClose(sessionID: String)
 
@@ -163,6 +164,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case destinationPath
         case markdownReferences
         case descriptor
+        case host
+        case port
         case mutation
         case targets
         case requestID
@@ -209,6 +212,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case scanOrphans
         case execute
         case executeSecretOperation
+        case reviewSSHHostKey
         case sshSessionStatus
         case sshSessionClose
     }
@@ -366,6 +370,11 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .execute(try container.decode(ExecutionRequest.self, forKey: .request))
         case .executeSecretOperation:
             self = .executeSecretOperation(try container.decode(SecretOperationDescriptor.self, forKey: .descriptor))
+        case .reviewSSHHostKey:
+            self = .reviewSSHHostKey(
+                host: try container.decode(String.self, forKey: .host),
+                port: try container.decode(Int.self, forKey: .port)
+            )
         case .sshSessionStatus:
             self = .sshSessionStatus(
                 sessionID: try container.decodeIfPresent(String.self, forKey: .sessionID)
@@ -513,6 +522,10 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .executeSecretOperation(descriptor):
             try container.encode(RequestType.executeSecretOperation, forKey: .type)
             try container.encode(descriptor, forKey: .descriptor)
+        case let .reviewSSHHostKey(host, port):
+            try container.encode(RequestType.reviewSSHHostKey, forKey: .type)
+            try container.encode(host, forKey: .host)
+            try container.encode(port, forKey: .port)
         case let .sshSessionStatus(sessionID):
             try container.encode(RequestType.sshSessionStatus, forKey: .type)
             try container.encodeIfPresent(sessionID, forKey: .sessionID)
@@ -712,6 +725,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case orphanScan(OrphanScanResult)
     case execution(SanitizedExecutionResult)
     case secretOperation(SecretOperationOutput)
+    case sshHostKeyReview(SSHHostKeyReview)
     case sshSessionStatus([SSHSessionStatus])
     case failure(code: String)
 
@@ -737,6 +751,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case output
         case code
         case sessions
+        case review
     }
 
     private enum ResponseType: String, Codable {
@@ -766,6 +781,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case orphanScan
         case execution
         case secretOperation
+        case sshHostKeyReview
         case sshSessionStatus
         case failure
     }
@@ -837,6 +853,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .execution(try container.decode(SanitizedExecutionResult.self, forKey: .result))
         case .secretOperation:
             self = .secretOperation(try container.decode(SecretOperationOutput.self, forKey: .output))
+        case .sshHostKeyReview:
+            self = .sshHostKeyReview(try container.decode(SSHHostKeyReview.self, forKey: .review))
         case .sshSessionStatus:
             self = .sshSessionStatus(try container.decode([SSHSessionStatus].self, forKey: .sessions))
         case .failure:
@@ -926,6 +944,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .secretOperation(output):
             try container.encode(ResponseType.secretOperation, forKey: .type)
             try container.encode(output, forKey: .output)
+        case let .sshHostKeyReview(review):
+            try container.encode(ResponseType.sshHostKeyReview, forKey: .type)
+            try container.encode(review, forKey: .review)
         case let .sshSessionStatus(sessions):
             try container.encode(ResponseType.sshSessionStatus, forKey: .type)
             try container.encode(sessions, forKey: .sessions)

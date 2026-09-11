@@ -10,6 +10,13 @@ private let testIndexID = "0123456789ABCDEFGHJKMNPQRS"
 private let testEntryID = "0123456789ABCDEFGHJKMNPQRT"
 private let testSecretReference = "secret://0123456789ABCDEFGHJKMNPQRS"
 
+private func ipcTestSSHHostKeyPin(byte: UInt8 = 0x41) throws -> SSHHostKeyPin {
+    try SSHHostKeyPin(
+        algorithm: "ssh-ed25519",
+        sha256: "SHA256:" + Data(repeating: byte, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
+    )
+}
+
 private func sampleCatalogMatch() -> SecretCatalogMatch {
     SecretCatalogMatch(
         index: SecretCatalogIndexMatch(
@@ -46,6 +53,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
 }
 
 @Test func requestJSONRoundTripsEveryCase() throws {
+    let pin = try ipcTestSSHHostKeyPin()
     let requests: [IPCRequest] = [
         .status,
         .workbenchStatus,
@@ -155,7 +163,8 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
                 reason: "read-only diagnostic",
                 intendedEffect: "read status"
             )
-        ))
+        )),
+        .reviewSSHHostKey(host: "qnap.local", port: 2222)
     ]
 
     for request in requests {
@@ -203,6 +212,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
 }
 
 @Test func responseJSONRoundTripsEveryCase() throws {
+    let pin = try ipcTestSSHHostKeyPin()
     let responses: [IPCResponse] = [
         .status(locked: false),
         .workbenchStatus(WorkbenchStatus(locked: true, ipcAvailable: true, activeKnowledgeBaseRoot: nil, pluginConnected: false)),
@@ -254,6 +264,14 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .execution(.completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "")),
         .execution(.quarantined(reason: .binaryOutput)),
         .secretOperation(SecretOperationOutput(status: "COMPLETED", httpStatus: 200, contentType: "application/json", bodyPreview: "{\"ok\":true}")),
+        .secretOperation(SecretOperationOutput(
+            status: "BOUND",
+            destination: "qnap.local",
+            protocolType: .ssh,
+            port: 2222,
+            hostKeyPin: pin
+        )),
+        .sshHostKeyReview(SSHHostKeyReview(host: "qnap.local", port: 2222, pins: [pin])),
         .sshSessionStatus([SSHSessionStatus(
             sessionID: "ssh_session_test",
             host: "qnap.local",

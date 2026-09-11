@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import VaultCore
+import VaultExecution
 import VaultIPC
 
 private let handlerIndexID = "0123456789ABCDEFGHJKMNPQRS"
@@ -82,6 +83,14 @@ private actor SpyWorkbenchService: WorkbenchServicing {
             status: .found,
             matches: [handlerCatalogMatch()]
         )
+    }
+
+    func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview {
+        let pin = try SSHHostKeyPin(
+            algorithm: "ssh-ed25519",
+            sha256: "SHA256:" + Data(repeating: 0x42, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        )
+        return SSHHostKeyReview(host: host, port: port, pins: [pin])
     }
 }
 
@@ -200,5 +209,23 @@ private actor SpyWorkbenchService: WorkbenchServicing {
     #expect(response == .secretOperationCapabilities([]))
     let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
     #expect(!encoded.contains("ControlPath"))
+    #expect(!encoded.contains("plaintext"))
+}
+
+@Test func handlerRoutesSSHHostKeyReviewWithoutResolvingASecret() async throws {
+    let service = SpyWorkbenchService()
+    let handler = IPCRequestHandler(service: service)
+
+    let response = try await handler.handle(.reviewSSHHostKey(host: "qnap.local", port: 2222))
+
+    guard case let .sshHostKeyReview(review) = response else {
+        Issue.record("The SSH host-key review response was not returned.")
+        return
+    }
+    #expect(review.host == "qnap.local")
+    #expect(review.port == 2222)
+    #expect(review.pins.count == 1)
+    let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
+    #expect(!encoded.contains("secret://"))
     #expect(!encoded.contains("plaintext"))
 }

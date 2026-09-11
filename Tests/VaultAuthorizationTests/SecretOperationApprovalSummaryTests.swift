@@ -1,7 +1,9 @@
+import CryptoKit
 import Foundation
 import Testing
 import VaultAuthorization
 import VaultCore
+import VaultExecution
 @testable import VaultService
 
 private struct SummaryTextEncryptor: TextEncrypting {
@@ -131,4 +133,46 @@ private func batchMetadata(_ reference: SecretReference) -> [SecretPolicyMetadat
     #expect(summary.contains("df"))
     #expect(!summary.contains("secret://"))
     #expect(summary.contains("凭据：NAS 凭据"))
+}
+
+@Test func sshHostKeyPinSummaryShowsOwnerReviewMaterialWithoutSecretReference() async throws {
+    let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
+    let pin = try summaryTestSSHHostKeyPin()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .changeDestinationBinding,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 2222,
+        protocolType: .ssh,
+        requestedEffects: ["pin-ssh-host-key"],
+        parameters: [
+            "hostKeyAlgorithm": pin.algorithm,
+            "hostKeySHA256": pin.sha256
+        ]
+    )
+    let metadata = batchMetadata(reference)
+    let decision = SecretOperationPolicyEngine().evaluate(descriptor, metadata: metadata)
+    let review = SSHHostKeyReview(host: "nas.local", port: 2222, pins: [pin])
+
+    let summary = await makeService().approvalSummary(
+        descriptor: descriptor,
+        metadata: metadata,
+        decision: decision,
+        hostKeyReview: review
+    )
+
+    #expect(summary.contains("固定 SSH 主机指纹"))
+    #expect(summary.contains("待审核 SSH 主机身份"))
+    #expect(summary.contains("nas.local"))
+    #expect(summary.contains("2222"))
+    #expect(summary.contains("ssh-ed25519"))
+    #expect(summary.contains(pin.sha256))
+    #expect(summary.contains("（待固定）"))
+    #expect(!summary.contains("secret://"))
+}
+
+private func summaryTestSSHHostKeyPin() throws -> SSHHostKeyPin {
+    let digest = Data(SHA256.hash(data: Data(repeating: 0x5A, count: 32)))
+    let fingerprint = "SHA256:" + digest.base64EncodedString().replacingOccurrences(of: "=", with: "")
+    return try SSHHostKeyPin(algorithm: "ssh-ed25519", sha256: fingerprint)
 }

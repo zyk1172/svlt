@@ -98,6 +98,8 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
     /// are non-sensitive canonical metadata values, not resolved Secret data.
     public let destination: String?
     public let protocolType: SecretOperationProtocol?
+    public let port: Int?
+    public let hostKeyPin: SSHHostKeyPin?
     /// Set when an HTTP redirect stopped for an owner decision (§37). The
     /// agent re-submits a new exact request to this URL; that request is
     /// authorized through the ordinary flow.
@@ -123,6 +125,8 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         results: [SSHCommandResult]? = nil,
         destination: String? = nil,
         protocolType: SecretOperationProtocol? = nil,
+        port: Int? = nil,
+        hostKeyPin: SSHHostKeyPin? = nil,
         redirectLocation: String? = nil,
         redacted: Bool = true
     ) {
@@ -144,6 +148,8 @@ public struct SecretOperationOutput: Codable, Equatable, Sendable {
         self.results = results
         self.destination = destination
         self.protocolType = protocolType
+        self.port = port
+        self.hostKeyPin = hostKeyPin
         self.redirectLocation = redirectLocation
         self.redacted = redacted
     }
@@ -248,6 +254,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     private let batchOutputLimitBytes: Int
     private let batchTotalTimeout: Duration
     private let adapterRegistry: SecretOperationAdapterRegistry
+    private let sshHostKeyDiscovery: SSHHostKeyDiscovery
+    private let sshKnownHostsStore: SSHKnownHostsStore
 
     public init(
         processRunner: any ProcessRunning = FoundationProcessRunner(),
@@ -257,7 +265,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         batchOutputLimitBytes: Int = 4_194_304,
         batchTotalTimeout: Duration = .seconds(60),
         sshSessionManager: SSHSessionManager? = nil,
-        adapterRegistry: SecretOperationAdapterRegistry? = nil
+        adapterRegistry: SecretOperationAdapterRegistry? = nil,
+        sshKnownHostsDirectory: URL? = nil
     ) {
         self.processRunner = processRunner
         self.outputSanitizer = outputSanitizer
@@ -266,7 +275,12 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         self.batchOutputLimitBytes = max(outputLimitBytes, batchOutputLimitBytes)
         self.batchTotalTimeout = batchTotalTimeout
         self.sshSessionManager = sshSessionManager ?? SSHSessionManager(processRunner: processRunner)
-        self.adapterRegistry = adapterRegistry ?? SecretOperationAdapterRegistry(processRunner: processRunner)
+        self.sshKnownHostsStore = SSHKnownHostsStore(directoryURL: sshKnownHostsDirectory)
+        self.sshHostKeyDiscovery = SSHHostKeyDiscovery(processRunner: processRunner)
+        self.adapterRegistry = adapterRegistry ?? SecretOperationAdapterRegistry(
+            processRunner: processRunner,
+            sshKnownHostsDirectory: sshKnownHostsDirectory
+        )
     }
 
     public func execute(
@@ -293,7 +307,12 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     ) async throws -> SecretOperationOutput {
         switch descriptor.actionType {
         case .sshCommand:
-            return try await executeSSH(descriptor, context: context, resolve: resolve)
+            return try await executeSSH(
+                descriptor,
+                metadata: metadata,
+                context: context,
+                resolve: resolve
+            )
         case .httpRequest, .apiRequest, .sftpTransfer, .ftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
              .localExecution, .trustedProcess:
             return try await adapterRegistry.execute(
@@ -310,6 +329,19 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     public func invalidateSecurityState() async {
         await sshSessionManager.invalidateAll()
         await adapterRegistry.invalidateSecurityState()
+    }
+
+    public func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview {
+        try await sshHostKeyDiscovery.review(host: host, port: port)
+    }
+
+    public func installSSHHostKey(host: String, port: Int, pin: SSHHostKeyPin) async throws {
+        try await sshHostKeyDiscovery.install(
+            host: host,
+            port: port,
+            pin: pin,
+            into: sshKnownHostsStore
+        )
     }
 
     public func capabilities() -> [SecretOperationCapability] {
@@ -410,6 +442,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
 
     private func executeSSH(
         _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
         context: SecretOperationExecutionContext,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput {
@@ -431,6 +464,13 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         guard (1...65_535).contains(port) else {
             throw SecretOperationExecutionError.invalidParameter
         }
+
+        let hostKeyPin = try matchingHostKeyPin(
+            host: host,
+            port: port,
+            protocolType: .ssh,
+            metadata: metadata
+        )
 
         let remoteCommands: [String]
         let stopOnFailure: Bool
@@ -461,7 +501,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             port: port,
             username: username,
             passwordReferenceID: passwordReference.description,
-            securityGeneration: context.securityGeneration
+            securityGeneration: context.securityGeneration,
+            hostKeyPin: hostKeyPin
         )
 
         var commandResults: [SSHCommandResult] = []
@@ -494,6 +535,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         passwordReference: passwordReference,
                         remoteCommand: remoteCommand,
                         timeout: commandTimeout,
+                        hostKeyPin: hostKeyPin,
                         resolve: resolve
                     )
                 }
@@ -596,11 +638,20 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         passwordReference: SecretReference,
         remoteCommand: String,
         timeout operationTimeout: Duration,
+        hostKeyPin: SSHHostKeyPin?,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SSHSessionCommandExecution {
         let knownHostsPath: String
         do {
-            knownHostsPath = try SSHKnownHostsStore().prepare()
+            if let hostKeyPin {
+                knownHostsPath = try sshKnownHostsStore.validatedPinnedPath(
+                    host: host,
+                    port: port,
+                    pin: hostKeyPin
+                )
+            } else {
+                knownHostsPath = try sshKnownHostsStore.prepare()
+            }
         } catch {
             throw SecretOperationExecutionError.unavailable
         }
@@ -628,7 +679,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         knownHostsPath: knownHostsPath,
                         username: username,
                         password: password,
-                        timeoutSeconds: timeoutSeconds
+                        timeoutSeconds: timeoutSeconds,
+                        strictHostKeyChecking: hostKeyPin != nil
                     ),
                     timeout: operationTimeout,
                     outputLimitBytes: outputLimitBytes
@@ -686,11 +738,11 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 ProcessInvocation(
                     executable: "/usr/bin/ssh",
                     arguments: [
-                        "-o", "BatchMode=yes",
-                        "-o", "StrictHostKeyChecking=accept-new",
+                    "-o", "BatchMode=yes",
+                        "-o", "StrictHostKeyChecking=\(hostKeyPin == nil ? "accept-new" : "yes")",
                         "-o", "UserKnownHostsFile=\(knownHostsPath)",
                         "-o", "GlobalKnownHostsFile=/dev/null",
-                        "-o", "HashKnownHosts=yes",
+                        "-o", "HashKnownHosts=\(hostKeyPin == nil ? "yes" : "no")",
                         "-o", "UpdateHostKeys=no",
                         "-o", "VerifyHostKeyDNS=yes",
                         "-o", "ControlMaster=auto",
@@ -821,6 +873,32 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         return descriptor.secretReferences.first { $0.description == rawReference }
     }
 
+    private func matchingHostKeyPin(
+        host: String,
+        port: Int,
+        protocolType: SecretOperationProtocol,
+        metadata: [SecretPolicyMetadata]
+    ) throws -> SSHHostKeyPin? {
+        let pins = metadata
+            .flatMap(\.destinationBindings)
+            .filter {
+                $0.matches(
+                    requestedProtocol: protocolType,
+                    destination: host,
+                    url: nil,
+                    port: port
+                )
+            }
+            .compactMap(\.hostKeyPin)
+        let uniquePins = Set(pins)
+        guard uniquePins.count <= 1 else {
+            // Multiple credentials cannot silently select different server
+            // identities for one transport operation.
+            throw SecretOperationExecutionError.invalidParameter
+        }
+        return uniquePins.first
+    }
+
     private func timeout(for descriptor: SecretOperationDescriptor) throws -> Duration {
         guard let rawTimeout = descriptor.parameters["timeoutMs"] else {
             return timeout
@@ -861,7 +939,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         knownHostsPath: String = "/private/tmp/svlt-test-known-hosts",
         username: String,
         password: String,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        strictHostKeyChecking: Bool = false
     ) -> Data {
         let fields = [
             host,
@@ -871,7 +950,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             knownHostsPath,
             username,
             password,
-            String(timeoutSeconds)
+            String(timeoutSeconds),
+            strictHostKeyChecking ? "1" : "0"
         ]
         return Data(fields.map {
             hexEncoded(Data($0.utf8))
@@ -975,22 +1055,30 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         set username [readHexField]
         set password [readHexField]
         set timeoutSeconds [readHexField]
+        set strictHostKeyChecking [readHexField]
         if {$host eq "" || $command eq "" || $controlPath eq "" || $knownHostsPath eq "" || $username eq "" || $password eq ""} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
+        if {$strictHostKeyChecking ne "0" && $strictHostKeyChecking ne "1"} { exit \(SSHWrapperExitCode.argumentValidation) }
         set timeout $timeoutSeconds
         set passwordSent 0
         log_user 1
+        set hostKeyCheckingMode accept-new
+        set hashKnownHostsMode yes
+        if {$strictHostKeyChecking eq "1"} {
+            set hostKeyCheckingMode yes
+            set hashKnownHostsMode no
+        }
         # Build an actual Tcl list and expand it as argv. The final command,
         # trust-store path, and socket path each remain one ssh argv element,
         # including spaces and newlines; the local shell never interprets them.
         set sshArguments [list \
             /usr/bin/ssh \
             -o BatchMode=no \
-            -o StrictHostKeyChecking=accept-new \
+            -o StrictHostKeyChecking=$hostKeyCheckingMode \
             -o "UserKnownHostsFile=$knownHostsPath" \
             -o GlobalKnownHostsFile=/dev/null \
-            -o HashKnownHosts=yes \
+            -o HashKnownHosts=$hashKnownHostsMode \
             -o UpdateHostKeys=no \
             -o VerifyHostKeyDNS=yes \
             -o ControlMaster=yes \

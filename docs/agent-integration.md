@@ -48,7 +48,7 @@ Codex、Claude、Hermes 的 MCP 配置位置可能不同；稳定部分是都启
 4. 文本/段落/工具输出中含引用时，默认先调用 `secret_auto_handle_text`；若任务已经明确是本地动作，则直接用 `secret_action_router` 或更具体的安全工具。用户选了其他来源时不要调用来替换来源。
 5. 用户需要亲自查看明文时，用 `secret_reveal_request` 或 `paragraph_reveal_request` 让本地 app 展示；聊天里只报告 `DISPLAYED_TO_USER`。
 6. 只用 `secret_inspect_reference` 查看非敏感元数据。
-7. 需要为已有 `secret://` 增加精确服务目标和协议时，使用 `secret_bind_destination`；协议和目标会作为一个经过认证的原子 pair 保存，不会由两个独立数组产生交叉授权。它会在 App 中显示本次绑定并要求每次重新进行 device-owner authentication，成功时返回 daemon 的 canonical destination，不返回明文，也不建立执行窗口。
+7. 需要为已有 `secret://` 增加精确服务目标和协议时，使用 `secret_bind_destination`；协议、目标、可选 port 和 SSH host-key pin 会作为经过认证的原子 profile 保存，不会由两个独立数组产生交叉授权。它会在 App 中显示本次绑定并要求每次重新进行 device-owner authentication，成功时返回 daemon 的 canonical 非敏感元数据，不返回明文，也不建立执行窗口。需要更高保证的 SSH/SFTP/SCP 流程先调用 `secret_review_ssh_host_key`，再提交设备所有者选定的 algorithm、SHA256 fingerprint 和显式 port；省略 pin 字段则保留兼容/TOFU 路径。
 8. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` 发现 Entry-centric opaque 引用；用户已明确选择 plaintext 或外部 provider 时不要搜索并替换来源。
 9. 没有 SVLT 安全工具时，只对明确的 SVLT managed 操作停止并请求新增 allowlisted 工具；不得把 SVLT 派生明文降级到通用命令，也不得因 SVLT 缺失阻断用户已明确选择的外部工具/当前明文。
 
@@ -147,7 +147,8 @@ list/get/create 响应。
 | 本地文件导出 | `secret_action_router` 的 `export_resolved_text`，或 `export_resolved_text_to_local_file` | 用户明确要求导出时使用；只返回状态和路径。 |
 | 用户本地查看明文 | `secret_reveal_request` / `paragraph_reveal_request` | 明文显示在本地 app，不进入聊天。 |
 | 元数据检查 | `secret_inspect_reference` | 只返回 reference、policy、label、时间等非敏感字段。 |
-| 为已有 Secret 绑定服务目标 | `secret_bind_destination` | 传入已有 `secret://`、精确目标和协议；以原子 pair 保存并由 daemon 返回 canonical destination；每次需要 device-owner authentication，重新封装绑定元数据，不返回明文。 |
+| SSH/SFTP/SCP 主机指纹发现 | `secret_review_ssh_host_key` | 传入 host+port；只返回当前展示的算法和 SHA256 fingerprint，不读取 Secret，也不把发现结果当作带外身份保证。 |
+| 为已有 Secret 绑定服务目标 | `secret_bind_destination` | 传入已有 `secret://`、精确目标和协议；普通调用保留 TOFU 兼容性，显式 SSH pin 还必须传 port、algorithm 和 SHA256 fingerprint；每次需要 device-owner authentication，重新封装绑定元数据，不返回明文。 |
 | 服务/设备/主机发现 | `secret_search` / `secret_catalog_search` | 按 Index、Entry、alias、tag、NAS、endpoint 或允许搜索的字段查询；只返回 Entry-centric opaque 引用和非敏感 catalog metadata，不承担空 Index 浏览。 |
 | Catalog 分组浏览 | `secret_catalog_list_indices` | 列出全部 Index，包含空分组；以运行时 MCP 工具目录为准。 |
 | 指定分组条目浏览 | `secret_catalog_list_entries` | 传入 MCP 返回的 `indexID` 列出 Entry；不读取本地 Markdown 或 sidecar。 |
@@ -175,7 +176,8 @@ list/get/create 响应。
 | `secret_auto_handle_text` | First-choice automatic handler for paragraphs or note excerpts containing `secret://`; detects references, redacts text, or opens a local app reveal. |
 | `vault_status` | Checks whether the local channel and operation policy engine are ready; `locked` is compatibility-only. |
 | `secret_inspect_reference` | Returns metadata only: reference, policy, label, timestamps. |
-| `secret_bind_destination` | Adds one exact service destination/protocol pair to an existing `secret://` record after fresh device-owner approval; the pair is authenticated atomically, the daemon returns its canonical destination, and the record is re-sealed without returning plaintext. |
+| `secret_review_ssh_host_key` | Discovers the current SSH/SFTP/SCP host-key algorithms and SHA256 fingerprints for one host/port without reading a Secret; discovery is not an identity guarantee. |
+| `secret_bind_destination` | Adds one exact service destination/protocol profile to an existing `secret://` record after fresh device-owner approval; optional explicit SSH pinning requires the selected fingerprint and port, and the record is re-sealed without returning plaintext. |
 | `secret_search` / `secret_catalog_search` | Finds Entry-centric opaque references by Index, Entry, alias, tag, endpoint, or searchable metadata without exposing catalog paths or plaintext. |
 | `secret_create_request` | Asks the app to encrypt selected local text and return a `secret://` reference. |
 | `secret_reveal_request` | Asks the app to display one secret locally to the user. |

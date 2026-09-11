@@ -41,6 +41,8 @@ public struct VaultRecordResolver: Sendable {
         destination: String,
         protocolType: SecretOperationProtocol,
         masterKey: SymmetricKey,
+        port: Int? = nil,
+        hostKeyPin: SSHHostKeyPin? = nil,
         now: Date = Date(),
         preCommitCheck: (@Sendable () async throws -> Void)? = nil
     ) async throws -> SecretReferenceMetadata {
@@ -55,6 +57,10 @@ public struct VaultRecordResolver: Sendable {
             destination,
             protocolType: protocolType
         ) else {
+            throw VaultRecordBindingError.invalidDestination
+        }
+        guard port.map({ (1...65_535).contains($0) }) ?? true,
+              hostKeyPin == nil || protocolType.supportsSSHHostKeyPin else {
             throw VaultRecordBindingError.invalidDestination
         }
 
@@ -86,9 +92,18 @@ public struct VaultRecordResolver: Sendable {
         }
         let binding = SecretDestinationBinding(
             protocolType: protocolType,
-            destination: normalizedDestination
+            destination: normalizedDestination,
+            port: port,
+            hostKeyPin: hostKeyPin
         )
-        if !containsBinding(binding, in: bindings) {
+        if let index = bindings.firstIndex(where: { sameProfile($0, binding) }) {
+            // A normal destination bind must not accidentally remove an
+            // existing owner-reviewed SSH pin. Supplying a pin is the
+            // explicit replace operation.
+            if hostKeyPin != nil || bindings[index].hostKeyPin == nil {
+                bindings[index] = binding
+            }
+        } else {
             bindings.append(binding)
         }
         guard bindings.count <= 32 else {
@@ -191,10 +206,16 @@ public struct VaultRecordResolver: Sendable {
         _ binding: SecretDestinationBinding,
         in existing: [SecretDestinationBinding]
     ) -> Bool {
-        existing.contains { candidate in
-            candidate.protocolType == binding.protocolType
-                && canonicalDestination(candidate.destination, protocolType: candidate.protocolType)
-                    == binding.destination
-        }
+        existing.contains { sameProfile($0, binding) }
+    }
+
+    private func sameProfile(
+        _ lhs: SecretDestinationBinding,
+        _ rhs: SecretDestinationBinding
+    ) -> Bool {
+        lhs.protocolType == rhs.protocolType
+            && lhs.port == rhs.port
+            && canonicalDestination(lhs.destination, protocolType: lhs.protocolType)
+                == canonicalDestination(rhs.destination, protocolType: rhs.protocolType)
     }
 }

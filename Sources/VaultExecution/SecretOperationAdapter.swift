@@ -186,7 +186,8 @@ public struct SecretOperationAdapterRegistry: @unchecked Sendable {
     public init(
         processRunner: any ProcessRunning = FoundationProcessRunner(),
         httpSessionManager: HTTPSessionManager = HTTPSessionManager(),
-        responseProjectionProfiles: [HTTPResponseProjectionProfile] = []
+        responseProjectionProfiles: [HTTPResponseProjectionProfile] = [],
+        sshKnownHostsDirectory: URL? = nil
     ) {
         adapters = [
             HTTPSecretOperationAdapter(
@@ -198,7 +199,10 @@ public struct SecretOperationAdapterRegistry: @unchecked Sendable {
                 operations: [.databaseQuery],
                 reason: "没有安装并启用受 SVLT 约束的 PostgreSQL/MySQL 只读 driver"
             ),
-            SFTPSecretOperationAdapter(processRunner: processRunner),
+            SFTPSecretOperationAdapter(
+                processRunner: processRunner,
+                sshKnownHostsDirectory: sshKnownHostsDirectory
+            ),
             FTPSecretOperationAdapter(),
             UnavailableSecretOperationAdapter(
                 kind: .browser,
