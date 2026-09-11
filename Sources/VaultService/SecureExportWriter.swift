@@ -95,13 +95,13 @@ public struct SecureExportWriter: Sendable {
             }
             shouldUnlinkTemporary = false
 
-            // Persist the directory entry where the platform permits it. A
-            // failure here is reported rather than claiming durable delivery
-            // that was not established. The renamed file is complete and
-            // never exposes a partially-written final pathname.
-            guard Darwin.fsync(rootFD) == 0 else {
-                throw SecureExportWriterError.writeFailed
-            }
+            // The atomic rename above is the commit point exposed to callers.
+            // The file itself was fsynced before commit, so reporting a failure
+            // after the rename would create an ambiguous state where the Agent
+            // retries an export that already exists. Directory fsync is kept as
+            // a best-effort durability hint; failure affects crash durability,
+            // not whether this invocation successfully committed the file.
+            _ = Darwin.fsync(rootFD)
         } catch let error as SecureExportWriterError {
             throw error
         } catch {

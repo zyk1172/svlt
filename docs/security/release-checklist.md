@@ -6,10 +6,10 @@ Run this checklist for every release candidate.
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
-xcodegen generate
+# Use the checked-in Xcode project until project.yml parity is separately verified.
 xcodebuild test -project SVLT.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
-cd mcp-server && npm test && npm run typecheck && npm run build
-cd ../obsidian-plugin/svlt && npm test && npm run typecheck && npm run build
+cd mcp-server && npm audit --audit-level=high && npm test && npm run typecheck && npm run build
+cd ../obsidian-plugin/svlt && npm audit --audit-level=high && npm test && npm run typecheck && npm run build
 cd ../..
 ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/svlt/main.js obsidian-plugin/svlt/dist
 git diff --check
@@ -19,10 +19,29 @@ git status --short
 SVLT_RELEASE_APP=/Applications/SVLT.app ./scripts/release-e2e.sh
 ```
 
-For a signed release package, provide the identity explicitly, for example:
-`SVLT_SIGNING_IDENTITY='Developer ID Application: ...' ./scripts/package-release.sh`.
-The project keeps the Team ID pin for AppControl verification but never stores
-an individual certificate identity in source control.
+For a signed local/internal release package, provide the identity explicitly:
+
+```bash
+SVLT_SIGNING_IDENTITY='Developer ID Application: ...' ./scripts/package-release.sh
+```
+
+For any public release, notarization is a required gate. Store the notarytool
+credentials in a Keychain profile and package with fail-closed notarization:
+
+```bash
+SVLT_SIGNING_IDENTITY='Developer ID Application: ...' \
+SVLT_NOTARY_PROFILE='svlt-notary' \
+SVLT_REQUIRE_NOTARIZATION=1 \
+./scripts/package-release.sh
+```
+
+The packaging script builds the checked-in Xcode project, forces Hardened Runtime
+at release build time, and verifies the Team ID and Hardened Runtime on both the
+App and embedded `SVLTAgent`. When notarization is enabled it waits for Apple
+notarization, staples the ticket, validates it, runs Gatekeeper assessment, and
+rebuilds the final ZIP from the stapled App. The project keeps the Team ID pin
+for AppControl verification but never stores an individual certificate identity
+or notarization credential in source control.
 
 ## Acceptance criteria
 
@@ -46,7 +65,9 @@ an individual certificate identity in source control.
 18. Plaintext canary scans include the shipped Obsidian plugin bundle at `obsidian-plugin/svlt/main.js`.
 19. Secure Input starts as `PENDING/requestID`, uses one device-owner authentication, and reaches a terminal status only after final semantic diff/policy and atomic Catalog commit.
 20. Audit append health is sticky across a later successful append and daemon restart (`lastFailureAt`, `gapDetected`, and `lastSuccessfulSequence` remain observable through the safe health code).
-21. The release-installed App and embedded `SVLTAgent` verify against the pinned Team ID before the manual E2E begins.
+21. The release-installed App and embedded `SVLTAgent` verify against the pinned Team ID and Hardened Runtime before the manual E2E begins.
+22. Public distribution artifacts pass notarization, stapler validation, and Gatekeeper assessment before publishing.
+23. SSH host-key trust is stored only in SVLT's owner-only trust store; changed host keys fail instead of being silently replaced.
 
 ## Manual checks
 

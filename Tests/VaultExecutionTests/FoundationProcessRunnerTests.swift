@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import VaultExecution
@@ -49,6 +50,39 @@ import Testing
     }
 }
 
+@Test func cancellationForcesDownProcessThatIgnoresTerm() async throws {
+    let runner = FoundationProcessRunner()
+    let clock = ContinuousClock()
+    let startedAt = clock.now
+
+    let task = Task {
+        try await runner.run(
+            ProcessInvocation(
+                executable: "/bin/sh",
+                arguments: ["-c", "trap '' TERM; while :; do :; done"]
+            ),
+            stdin: Data(),
+            timeout: .seconds(30),
+            outputLimitBytes: 1_024
+        )
+    }
+
+    try await Task.sleep(for: .milliseconds(100))
+    task.cancel()
+
+    do {
+        _ = try await task.value
+        Issue.record("Cancelled process unexpectedly completed successfully.")
+    } catch is CancellationError {
+        // Expected. The stubborn child should be force-killed after the grace
+        // window so the runner can finish the cancelled task.
+    } catch {
+        Issue.record("Expected CancellationError, but caught \(error).")
+    }
+
+    #expect(startedAt.duration(to: clock.now) < .seconds(4))
+}
+
 @Test func outputLargerThanLimitIsRejected() async throws {
     let runner = FoundationProcessRunner()
 
@@ -95,6 +129,51 @@ import Testing
         #expect(!message.isEmpty)
     } catch {
         Issue.record("Unexpected process error: \(error)")
+    }
+}
+
+@Test func sshKnownHostsStoreCreatesOwnerOnlyTrustState() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-known-hosts-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let store = SSHKnownHostsStore(directoryURL: root)
+    let firstPath = try store.prepare()
+    let secondPath = try store.prepare()
+
+    #expect(firstPath == secondPath)
+    #expect(firstPath == root.appendingPathComponent("known_hosts").path)
+
+    var directoryStat = stat()
+    #expect(root.path.withCString { lstat($0, &directoryStat) } == 0)
+    #expect((directoryStat.st_mode & mode_t(0o777)) == mode_t(0o700))
+
+    var fileStat = stat()
+    #expect(firstPath.withCString { lstat($0, &fileStat) } == 0)
+    #expect((fileStat.st_mode & S_IFMT) == S_IFREG)
+    #expect((fileStat.st_mode & mode_t(0o777)) == mode_t(0o600))
+    #expect(fileStat.st_uid == geteuid())
+}
+
+@Test func sshKnownHostsStoreRejectsSymlinkedKnownHostsFile() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-known-hosts-\(UUID().uuidString)", isDirectory: true)
+    let target = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-known-hosts-target-\(UUID().uuidString)")
+    defer {
+        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: target)
+    }
+
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    _ = FileManager.default.createFile(atPath: target.path, contents: Data())
+    try FileManager.default.createSymbolicLink(
+        at: root.appendingPathComponent("known_hosts"),
+        withDestinationURL: target
+    )
+
+    #expect(throws: SSHKnownHostsStoreError.unavailable) {
+        _ = try SSHKnownHostsStore(directoryURL: root).prepare()
     }
 }
 

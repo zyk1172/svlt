@@ -39,6 +39,12 @@ opaque descriptor
 
 Secret metadata 保留旧版兼容字段 `allowedDestinations` 和 `allowedProtocols`；新绑定同时写入经过认证的 `allowedBindings`，每个元素把 protocol 和 destination 作为一个不可拆分的 pair。存在 `allowedBindings` 时，HTTP/其他 pair-sensitive 检查只使用它；无法从混合旧数组安全还原 pair 时 fail closed，不生成笛卡尔积。普通目标/协议绑定不匹配是提示并进入新的 scope，元数据缺失或引用集合无法验证才是策略层技术性失败。对携 Secret 的明文 HTTP，执行器在设备所有者审批之后还会要求每个引用都匹配保存的精确 `scheme://host:port` profile；这只防止 profile 横向扩大到另一台主机或端口，不把 hostname 当作 DNS/实际 egress 证明。HTTP 不自动跟随任何重定向，发现新目标时必须重新提交一个独立操作；响应 body、`Location`、`Content-Type` 命中 Secret fingerprint 时整次输出 quarantine。认证响应默认只返回元数据；只有明确请求 `includeBodyPreview` 时，才允许最多 16 KiB 且必须是无敏感字段名、无 `secret://` 的合法 JSON 预览，否则 quarantine。更严格的字段投影仍由 App-owned profile 控制。
 
+### SSH host-key trust
+
+SSH 不再复用用户全局 `~/.ssh/known_hosts`。SVLT 在自己的 Application Support 目录维护 owner-only trust store，目录权限收敛为 `0700`、`known_hosts` 收敛为 `0600`，并拒绝把 `known_hosts` 作为 symlink 打开。OpenSSH 同时禁用 global known-hosts 文件、启用 hashed host entries、关闭自动 `UpdateHostKeys`，因此其他 SSH 客户端不会静默扩大或替换 SVLT 的主机信任状态；已记录主机发生 host-key 变化时仍会返回 `HOST_KEY_FAILED`。
+
+为了不破坏现有首次连接流程，未知主机仍采用 OpenSSH `accept-new` 的 TOFU（trust on first use）语义，并开启 `VerifyHostKeyDNS=yes` 以便在存在安全 SSHFP/DNSSEC 记录时利用该验证。TOFU 不能凭空证明一台从未见过的主机身份，因此这项硬化解决的是“全局信任状态被其他客户端污染/替换”和“后续 host key 变化静默接受”的问题，不把首次未知主机宣称为已经完成带外 fingerprint 验证。需要更高保证时应使用后续的显式 fingerprint pinning/owner-review 流程，而不是为了安全性直接禁用首次 SSH 连接能力。
+
 ## ApprovalTicket
 
 审批票据是一次性、默认 90 秒有效的本地 actor 状态。票据绑定：
@@ -56,6 +62,8 @@ Secret metadata 保留旧版兼容字段 `allowedDestinations` 和 `allowedProto
 先做 executor capability preflight，再重新读取 metadata 和执行策略；执行器失败或
 transport/session 失败只报告该次执行失败，不清除已经建立的 owner lease，直到其
 固定期限到达。Lease 有效期使用 monotonic clock，墙上时间只用于审计展示。
+
+这里的 reusable lease 是明确的 scope grant，而不是“只批准屏幕上这一条命令”的 exact-operation grant。这样做是为了保留 Agent 在一个短执行窗口内连续完成同一主机/同一凭据任务的能力；每个后续请求仍重新经过固定高危规则。数据库 executor 当前尚未开放，因此在真正启用数据库执行前，必须先把 SQL 风险分类升级为能够覆盖 CTE、MERGE、vendor-specific admin 与动态/存储过程边界，或改为更保守的授权模型，不能仅依赖当前 shallow regex 后直接开放执行。
 
 本地明文导出使用独立但同样固定 300 秒的 scope：调用主体、完整引用集合、
 `exportPlaintext` 动作、经验证的 export root 和 security generation。叶文件名不属于

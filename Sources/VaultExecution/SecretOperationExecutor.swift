@@ -320,7 +320,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 status: expectAvailable ? .supported : .unavailable,
                 operations: [.sshCommand],
                 reason: expectAvailable
-                    ? "raw single/multi-line commands and structured batches through an in-memory scoped ControlMaster; the device owner decides execution"
+                    ? "raw single/multi-line commands and structured batches through an in-memory scoped ControlMaster with isolated SVLT host-key trust; the device owner decides execution"
                     : "macOS expect executable is unavailable",
                 features: SecretOperationCapabilityFeatures(
                     auth: ["password"],
@@ -598,6 +598,13 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         timeout operationTimeout: Duration,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SSHSessionCommandExecution {
+        let knownHostsPath: String
+        do {
+            knownHostsPath = try SSHKnownHostsStore().prepare()
+        } catch {
+            throw SecretOperationExecutionError.unavailable
+        }
+
         let timeoutSeconds = Self.expectTimeoutSeconds(for: operationTimeout)
         if access.requiresAuthentication {
             var passwordData = try await resolve(passwordReference)
@@ -618,6 +625,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         port: port,
                         command: remoteCommand,
                         controlPath: access.controlPath,
+                        knownHostsPath: knownHostsPath,
                         username: username,
                         password: password,
                         timeoutSeconds: timeoutSeconds
@@ -680,6 +688,11 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                     arguments: [
                         "-o", "BatchMode=yes",
                         "-o", "StrictHostKeyChecking=accept-new",
+                        "-o", "UserKnownHostsFile=\(knownHostsPath)",
+                        "-o", "GlobalKnownHostsFile=/dev/null",
+                        "-o", "HashKnownHosts=yes",
+                        "-o", "UpdateHostKeys=no",
+                        "-o", "VerifyHostKeyDNS=yes",
                         "-o", "ControlMaster=auto",
                         "-o", "ControlPersist=300",
                         // `-S` passes the socket path through OpenSSH's
@@ -833,6 +846,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             port: port,
             command: command,
             controlPath: "/svlt-test-control-path",
+            knownHostsPath: "/private/tmp/svlt-test-known-hosts",
             username: username,
             password: password,
             timeoutSeconds: timeoutSeconds
@@ -844,6 +858,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         port: Int,
         command: String,
         controlPath: String,
+        knownHostsPath: String = "/private/tmp/svlt-test-known-hosts",
         username: String,
         password: String,
         timeoutSeconds: Int
@@ -853,6 +868,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             String(port),
             command,
             controlPath,
+            knownHostsPath,
             username,
             password,
             String(timeoutSeconds)
@@ -955,22 +971,28 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         set port [readHexField]
         set command [readHexField]
         set controlPath [readHexField]
+        set knownHostsPath [readHexField]
         set username [readHexField]
         set password [readHexField]
         set timeoutSeconds [readHexField]
-        if {$host eq "" || $command eq "" || $controlPath eq "" || $username eq "" || $password eq ""} { exit \(SSHWrapperExitCode.argumentValidation) }
+        if {$host eq "" || $command eq "" || $controlPath eq "" || $knownHostsPath eq "" || $username eq "" || $password eq ""} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
         set timeout $timeoutSeconds
         set passwordSent 0
         log_user 1
-        # Build an actual Tcl list and expand it as argv. The final command and
-        # socket path each remain one ssh argv element, including spaces and
-        # newlines; the local shell never interprets either value.
+        # Build an actual Tcl list and expand it as argv. The final command,
+        # trust-store path, and socket path each remain one ssh argv element,
+        # including spaces and newlines; the local shell never interprets them.
         set sshArguments [list \
             /usr/bin/ssh \
             -o BatchMode=no \
             -o StrictHostKeyChecking=accept-new \
+            -o "UserKnownHostsFile=$knownHostsPath" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o HashKnownHosts=yes \
+            -o UpdateHostKeys=no \
+            -o VerifyHostKeyDNS=yes \
             -o ControlMaster=yes \
             -o ControlPersist=300 \
             -o PubkeyAuthentication=no \
