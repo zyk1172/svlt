@@ -17,12 +17,6 @@ if [[ -z "$SIGNING_IDENTITY" ]]; then
   exit 2
 fi
 
-if ! command -v xcodegen >/dev/null 2>&1; then
-  echo "xcodegen is required for release packaging so project.yml remains the canonical build definition." >&2
-  echo "Install it first (for example: brew install xcodegen)." >&2
-  exit 2
-fi
-
 cd "$ROOT_DIR"
 
 rm -rf "$BUILD_DIR" "$STAGING_DIR"
@@ -34,14 +28,14 @@ echo "==> Building MCP server"
 echo "==> Building Obsidian plugin"
 (cd "$ROOT_DIR/obsidian-plugin/svlt" && npm ci && npm run build)
 
-echo "==> Generating Xcode project from project.yml"
-xcodegen generate
-
 if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode-beta.app/Contents/Developer" ]]; then
   export DEVELOPER_DIR="/Applications/Xcode-beta.app/Contents/Developer"
 fi
 
 echo "==> Building macOS app"
+# Build the checked-in Xcode project, which is the currently proven release
+# definition. Hardened Runtime is forced at the command line so release
+# hardening does not depend on regenerating the project with XcodeGen.
 xcodebuild \
   -project "$ROOT_DIR/SVLT.xcodeproj" \
   -scheme AgentSecretVault \
@@ -50,6 +44,7 @@ xcodebuild \
   DEVELOPMENT_TEAM="$SIGNING_TEAM" \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$SIGNING_IDENTITY" \
+  ENABLE_HARDENED_RUNTIME=YES \
   build
 
 APP_SOURCE="$BUILD_DIR/DerivedData/Build/Products/Release/SVLT.app"
