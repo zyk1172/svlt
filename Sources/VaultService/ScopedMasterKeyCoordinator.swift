@@ -46,8 +46,9 @@ public actor ScopedMasterKeyCoordinator {
     /// Resolve a key for an already-scoped operation.
     ///
     /// A missing or expired lease invalidates any stale key before loading a
-    /// new one. Concurrent callers share one in-flight provider task, so a
-    /// suspended keychain/provider read cannot create duplicate key work.
+    /// new one. Invalidation and provider loading are one per-scope flight so
+    /// concurrent callers cannot race multiple stale-lease invalidations
+    /// against a newly committed authorization or duplicate provider work.
     public func resolveKey(
         for scope: ExecutionAuthorizationScope,
         isLeaseActive: @escaping @Sendable () async -> Bool,
@@ -57,15 +58,23 @@ public actor ScopedMasterKeyCoordinator {
             return authorization.key
         }
 
-        clearAuthorization(for: scope)
-        await invalidateExecutionAuthorization(scope)
-
+        // `isLeaseActive()` crosses an actor boundary. Another caller may have
+        // established a refresh flight while this actor was re-entrant, so
+        // always join that flight before invalidating the same scope again.
         if let flight = flights[scope] {
             return try await flight.task.value
         }
 
+        clearAuthorization(for: scope)
+        let invalidateExecutionAuthorization = self.invalidateExecutionAuthorization
         let task = Task<SymmetricKey, Error> {
-            try await load()
+            // The stale-lease invalidation belongs to the same single-flight as
+            // the provider read. This prevents a second concurrent caller from
+            // issuing a late invalidation after the first caller has committed
+            // a new lease for the same scope.
+            await invalidateExecutionAuthorization(scope)
+            try Task.checkCancellation()
+            return try await load()
         }
         flights[scope] = Flight(task: task)
         do {
