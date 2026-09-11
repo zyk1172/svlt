@@ -22,12 +22,6 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Generate Xcode project from canonical project.yml
-        run: |
-          if ! command -v xcodegen >/dev/null 2>&1; then
-            brew install xcodegen
-          fi
-          xcodegen generate
       - name: Run macOS test suite
         run: |
           # Catalog POSIX probes are deliberately bounded because a
