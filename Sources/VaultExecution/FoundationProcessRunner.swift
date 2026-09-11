@@ -62,6 +62,8 @@ public struct FoundationProcessRunner: ProcessRunning {
                     }
 
                     switch runState.finishReason {
+                    case .cancelled:
+                        completion.resume(throwing: CancellationError())
                     case .outputLimitExceeded:
                         completion.resume(throwing: ProcessRunError.outputLimitExceeded)
                     case .timedOut:
@@ -91,6 +93,14 @@ public struct FoundationProcessRunner: ProcessRunning {
                     return
                 }
 
+                // Cancellation can race with process launch. Re-check after
+                // Process.run() so a request cancelled just before launch
+                // cannot leave a credential-bearing child running detached
+                // from its caller.
+                if Task.isCancelled {
+                    runState.markCancelledAndTerminate()
+                }
+
                 do {
                     try stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
                     try stdinPipe.fileHandleForWriting.close()
@@ -105,7 +115,11 @@ public struct FoundationProcessRunner: ProcessRunning {
                 }
             }
         } onCancel: {
-            runState.terminate()
+            // Cancellation is a security boundary for secret-bearing helper
+            // processes. Give the child a short graceful shutdown window, then
+            // force it down so cancellation cannot leave a stubborn process
+            // running indefinitely with credentials in memory or stdin.
+            runState.markCancelledAndTerminate()
         }
     }
 }
@@ -168,6 +182,7 @@ private final class BoundedProcessOutput: @unchecked Sendable {
 }
 
 private enum FoundationProcessFinishReason {
+    case cancelled
     case timedOut
     case outputLimitExceeded
     case stdinWriteFailed(String)
@@ -186,6 +201,10 @@ private final class FoundationProcessRunState: @unchecked Sendable {
         lock.withLock {
             self.process = process
         }
+    }
+
+    func markCancelledAndTerminate() {
+        markAndTerminate(.cancelled, killFallback: true)
     }
 
     func markTimedOutAndTerminate() {
@@ -234,12 +253,15 @@ private final class FoundationProcessRunState: @unchecked Sendable {
     ) {
         var processToKill: Process?
         lock.withLock {
-            guard let process, process.isRunning else {
-                return
-            }
-
+            // Record the first terminal reason even if the child has not quite
+            // started yet. The post-launch Task.isCancelled check closes that
+            // race without allowing a later timeout to overwrite cancellation.
             if reason == nil {
                 reason = finishReason
+            }
+
+            guard let process, process.isRunning else {
+                return
             }
 
             process.terminate()
