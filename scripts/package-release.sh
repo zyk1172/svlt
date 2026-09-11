@@ -9,9 +9,17 @@ MCP_STAGING="$STAGING_DIR/MCP"
 OBSIDIAN_PLUGIN_STAGING="$STAGING_DIR/ObsidianPlugin/svlt"
 SIGNING_TEAM="JUQXD87P93"
 SIGNING_IDENTITY="${SVLT_SIGNING_IDENTITY:-}"
+NOTARY_PROFILE="${SVLT_NOTARY_PROFILE:-}"
+REQUIRE_NOTARIZATION="${SVLT_REQUIRE_NOTARIZATION:-0}"
 
 if [[ -z "$SIGNING_IDENTITY" ]]; then
   echo "SVLT_SIGNING_IDENTITY is required for release signing (for example, a Developer ID Application identity)." >&2
+  exit 2
+fi
+
+if ! command -v xcodegen >/dev/null 2>&1; then
+  echo "xcodegen is required for release packaging so project.yml remains the canonical build definition." >&2
+  echo "Install it first (for example: brew install xcodegen)." >&2
   exit 2
 fi
 
@@ -26,15 +34,14 @@ echo "==> Building MCP server"
 echo "==> Building Obsidian plugin"
 (cd "$ROOT_DIR/obsidian-plugin/svlt" && npm ci && npm run build)
 
-echo "==> Building macOS app"
-if command -v xcodegen >/dev/null 2>&1; then
-  xcodegen generate
-fi
+echo "==> Generating Xcode project from project.yml"
+xcodegen generate
 
 if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode-beta.app/Contents/Developer" ]]; then
   export DEVELOPER_DIR="/Applications/Xcode-beta.app/Contents/Developer"
 fi
 
+echo "==> Building macOS app"
 xcodebuild \
   -project "$ROOT_DIR/SVLT.xcodeproj" \
   -scheme AgentSecretVault \
@@ -57,8 +64,10 @@ if [[ ! -x "$AGENT_EXECUTABLE" || ! -f "$AGENT_PLIST" ]]; then
   echo "Release app is missing the launchd Agent or embedded LaunchAgent plist." >&2
   exit 1
 fi
+
 codesign --verify --strict "$AGENT_EXECUTABLE"
 codesign --verify --deep --strict "$APP_SOURCE"
+
 assert_team_identifier() {
   local signed_path="$1"
   local team_identifier
@@ -68,10 +77,22 @@ assert_team_identifier() {
     exit 1
   fi
 }
+
+assert_hardened_runtime() {
+  local signed_path="$1"
+  if ! codesign --display --verbose=4 "$signed_path" 2>&1 | grep -Eq '^CodeDirectory .*flags=.*runtime'; then
+    echo "Hardened Runtime is missing from $signed_path" >&2
+    exit 1
+  fi
+}
+
 assert_team_identifier "$APP_SOURCE"
 assert_team_identifier "$AGENT_EXECUTABLE"
-echo "Embedded, signed SVLTAgent and LaunchAgent verified."
-echo "==> Staging app and MCP bundle"
+assert_hardened_runtime "$APP_SOURCE"
+assert_hardened_runtime "$AGENT_EXECUTABLE"
+echo "Embedded SVLTAgent, Team ID, signatures, and Hardened Runtime verified."
+
+echo "==> Staging app and integration bundles"
 cp -R "$APP_SOURCE" "$STAGING_DIR/SVLT.app"
 cp "$ROOT_DIR/mcp-server/package.json" "$MCP_STAGING/package.json"
 cp "$ROOT_DIR/mcp-server/package-lock.json" "$MCP_STAGING/package-lock.json"
@@ -118,8 +139,31 @@ SVLT 安装方式
 TEXT
 
 ZIP_PATH="$DIST_DIR/SVLT-release.zip"
-rm -f "$ZIP_PATH"
-(cd "$DIST_DIR" && ditto -c -k --sequesterRsrc --keepParent "SVLT-release" "$ZIP_PATH")
+create_zip() {
+  rm -f "$ZIP_PATH"
+  (cd "$DIST_DIR" && ditto -c -k --sequesterRsrc --keepParent "SVLT-release" "$ZIP_PATH")
+}
+
+create_zip
+
+if [[ -n "$NOTARY_PROFILE" ]]; then
+  echo "==> Submitting release package for Apple notarization"
+  xcrun notarytool submit "$ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+
+  echo "==> Stapling and validating notarization ticket"
+  xcrun stapler staple "$STAGING_DIR/SVLT.app"
+  xcrun stapler validate "$STAGING_DIR/SVLT.app"
+  spctl --assess --type execute --verbose=4 "$STAGING_DIR/SVLT.app"
+
+  # Stapling changes the app bundle, so rebuild the final archive from the
+  # stapled artifact rather than shipping the pre-notarization zip.
+  create_zip
+elif [[ "$REQUIRE_NOTARIZATION" == "1" ]]; then
+  echo "SVLT_REQUIRE_NOTARIZATION=1 but SVLT_NOTARY_PROFILE is not configured." >&2
+  exit 2
+else
+  echo "Notarization skipped. Set SVLT_NOTARY_PROFILE to notarize, or SVLT_REQUIRE_NOTARIZATION=1 for public-release fail-closed behavior." >&2
+fi
 
 echo "Release package:"
 echo "$ZIP_PATH"
