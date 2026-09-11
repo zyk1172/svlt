@@ -6,7 +6,9 @@ Run this checklist for every release candidate.
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
-# Use the checked-in Xcode project until project.yml parity is separately verified.
+# The checked-in Xcode project remains the active release definition. Verify
+# project.yml parity before changing that policy.
+./scripts/check-xcodegen-parity.sh
 xcodebuild test -project SVLT.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
 cd mcp-server && npm audit --audit-level=high && npm test && npm run typecheck && npm run build
 cd ../obsidian-plugin/svlt && npm audit --audit-level=high && npm test && npm run typecheck && npm run build

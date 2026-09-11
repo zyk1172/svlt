@@ -59,18 +59,29 @@ Required local tooling for development only:
 
 - macOS 14 or newer.
 - Xcode or Xcode beta.
-- XcodeGen.
 - Node.js 24 or newer.
+
+XcodeGen is only needed when changing `project.yml` or running the parity
+check. Normal builds and tests use the checked-in `SVLT.xcodeproj`, so most
+contributors do not need to install XcodeGen.
 
 Build, package, and test:
 
 ```bash
-xcodegen generate
 xcodebuild test -project SVLT.xcodeproj -scheme AgentSecretVault -destination 'platform=macOS'
 cd mcp-server && npm test && npm run typecheck && npm run build
 cd ../obsidian-plugin/svlt && npm test && npm run typecheck && npm run build
 cd ../..
 ASV_CANARY='ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST' ./scripts/scan-plaintext.sh build test-artifacts mcp-server/dist obsidian-plugin/svlt/main.js obsidian-plugin/svlt/dist
+git diff --check
+```
+
+When intentionally changing `project.yml`, regenerate the checked-in project
+and verify that no generated files are left out of the commit:
+
+```bash
+xcodegen generate
+./scripts/check-xcodegen-parity.sh
 git diff --check
 ```
 

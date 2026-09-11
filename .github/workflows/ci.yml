@@ -42,6 +42,22 @@ jobs:
             -test-repetition-relaunch-enabled YES \
             CODE_SIGNING_ALLOWED=NO
 
+  xcodegen-parity:
+    name: XcodeGen project parity
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install XcodeGen when unavailable
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+      - name: Verify checked-in Xcode project parity
+        run: ./scripts/check-xcodegen-parity.sh
+
   mcp:
     name: MCP typecheck and tests
     runs-on: ubuntu-latest
