@@ -4495,9 +4495,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             protocolType = descriptor.protocolType?.rawValue
         }
         // §80: the ordinary lease is a scope grant, not an exact-operation
-        // grant. The fingerprint stays out so two requests in the same scope
-        // (different paths, statements, or remote files) share one approval;
+        // grant. Database statements use the policy engine's narrower
+        // operation family: read-only statements can share a read workflow,
+        // while ordinary writes and maintenance operations cannot borrow the
+        // generic database scope. Fresh/unknown SQL never reaches this path;
         // fixed dangerous rules are re-checked by policy on every request.
+        let actionFamily = descriptor.actionType == .databaseQuery
+            ? operationPolicyEngine.databaseAuthorizationScopeFamily(for: descriptor.effectiveDatabaseStatement)
+            : descriptor.actionType.rawValue
         return ExecutionAuthorizationScope(
             principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
             secretReferenceIDs: descriptor.secretReferences.map(\.description),
@@ -4505,7 +4510,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             port: port,
             username: username,
             protocolType: protocolType,
-            actionFamily: descriptor.actionType.rawValue,
+            actionFamily: actionFamily,
             operationFingerprint: nil,
             generation: generation
         )
