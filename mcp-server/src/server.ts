@@ -43,6 +43,8 @@ import {
   NonEmptyUniqueSecretReferences,
   SSHCommandBatch,
   SSHCommandSpec,
+  SSHHost,
+  SSHHostKeyPin,
   SSHSessionStatus
 } from "./protocol.js";
 
@@ -180,6 +182,8 @@ const DestinationBindingOutput = z
       status: z.literal("BOUND"),
       destination: z.string().min(1),
       protocol: SecretOperationProtocol,
+      port: z.number().int().min(1).max(65_535).optional(),
+      hostKeyPin: SSHHostKeyPin.optional(),
       redacted: z.literal(true)
     }).strict(),
     z.object({
@@ -189,6 +193,18 @@ const DestinationBindingOutput = z
     z.object({ status: z.string().min(1) }).strict()
   ])
   .describe("Owner-approved exact destination binding result. Secret plaintext is never returned.");
+
+const SSHHostKeyReviewOutput = z
+  .union([
+    z.object({
+      status: z.literal("FOUND"),
+      host: SSHHost,
+      port: z.number().int().min(1).max(65_535),
+      pins: z.array(SSHHostKeyPin).min(1).max(32)
+    }).strict(),
+    z.object({ status: z.string().min(1) }).strict()
+  ])
+  .describe("Presented SSH host-key algorithms and SHA256 fingerprints only; no Secret is read or returned, and discovery is not an identity guarantee.");
 
 const SecretSearchInput = z
   .object({
@@ -669,6 +685,9 @@ const BindDestinationInput = z
     reference: SecretReference,
     destination: z.string().trim().min(1).max(512),
     protocol: SecretOperationProtocol,
+    port: z.number().int().min(1).max(65_535).optional(),
+    hostKeyAlgorithm: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._-]+$/).optional(),
+    hostKeySHA256: z.string().trim().regex(/^SHA256:[A-Za-z0-9+/]{43}$/).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -690,7 +709,69 @@ const BindDestinationInput = z
         message: "destination must not contain whitespace or control characters."
       });
     }
+
+    const hasHostKeyAlgorithm = value.hostKeyAlgorithm !== undefined;
+    const hasHostKeySHA256 = value.hostKeySHA256 !== undefined;
+    const hasHostKeyPin = hasHostKeyAlgorithm || hasHostKeySHA256;
+    if (hasHostKeyAlgorithm !== hasHostKeySHA256) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [hasHostKeyAlgorithm ? "hostKeySHA256" : "hostKeyAlgorithm"],
+        message: "hostKeyAlgorithm and hostKeySHA256 must be provided together."
+      });
+    }
+    if (!hasHostKeyPin && value.port !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["port"],
+        message: "port is only valid when an SSH host-key pin is supplied."
+      });
+    }
+    if (hasHostKeyPin) {
+      if (!(["ssh", "sftp", "scp"] as const).includes(value.protocol as "ssh" | "sftp" | "scp")) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["protocol"],
+          message: "Host-key pins are only valid for ssh, sftp, or scp."
+        });
+      }
+      if (value.port === undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["port"],
+          message: "An explicit port is required when pinning an SSH host key."
+        });
+      }
+      const colonCount = [...value.destination].filter((character) => character === ":").length;
+      const bracketedIPv6 = value.destination.startsWith("[")
+        && value.destination.endsWith("]")
+        && !value.destination.slice(1, -1).includes("]");
+      const hostOnly = value.destination.startsWith("[")
+        ? bracketedIPv6
+        : colonCount !== 1;
+      if (
+        value.destination.includes("://")
+        || value.destination.includes("/")
+        || value.destination.includes("?")
+        || value.destination.includes("#")
+        || value.destination.includes("@")
+        || !hostOnly
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["destination"],
+          message: "Pinned SSH destinations must be host-only and must not contain an embedded port."
+        });
+      }
+    }
   });
+
+const ReviewSSHHostKeyInput = z
+  .object({
+    host: SSHHost,
+    port: z.number().int().min(1).max(65_535)
+  })
+  .strict();
 
 const LocalHttpInput = z
   .object({
@@ -1252,11 +1333,31 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "secret_bind_destination",
       title: "Bind Secret Destination",
       description:
-        "Adds one exact host/origin and protocol to an existing secret:// record. SVLT shows the exact binding in the macOS app and requires fresh device-owner authentication for every change; the record is re-sealed without returning plaintext. Use this before a policy-reviewed insecure HTTP/API request.",
+        "Adds one exact host/origin and protocol to an existing secret:// record. SVLT shows the exact binding in the macOS app and requires fresh device-owner authentication for every change; the record is re-sealed without returning plaintext. For higher-assurance SSH/SFTP/SCP trust, first use secret_review_ssh_host_key, then pass the selected algorithm, SHA256 fingerprint, and explicit port here; ordinary bindings retain TOFU compatibility.",
       inputSchema: BindDestinationInput,
       outputSchema: DestinationBindingOutput,
       async handler(input) {
         return handleBindDestination(client, BindDestinationInput.parse(input));
+      }
+    },
+    {
+      name: "secret_review_ssh_host_key",
+      title: "Review SSH Host Key",
+      description:
+        "Discovers the SSH/SFTP/SCP host keys currently presented by one host and port without reading or sending any Secret. Returns only host, port, algorithm, and SHA256 fingerprints; discovery is not a proof of identity. Use the selected fingerprint with secret_bind_destination for the App-owned owner approval and strict pin.",
+      inputSchema: ReviewSSHHostKeyInput,
+      outputSchema: SSHHostKeyReviewOutput,
+      async handler(input) {
+        const parsed = ReviewSSHHostKeyInput.parse(input);
+        const response = await client.request({
+          type: "reviewSSHHostKey",
+          host: parsed.host,
+          port: parsed.port
+        });
+        if (response.type === "sshHostKeyReview") {
+          return structuredResult({ status: "FOUND", ...response.review });
+        }
+        return structuredResult(statusOnly(response));
       }
     },
     {
@@ -2011,11 +2112,12 @@ async function handleBindDestination(
   client: VaultIpcClient,
   parsed: z.infer<typeof BindDestinationInput>
 ): Promise<CallToolResult> {
+  const hasHostKeyPin = parsed.hostKeyAlgorithm !== undefined && parsed.hostKeySHA256 !== undefined;
   const output = await executeOpaqueOperation(client, {
     actionType: "changeDestinationBinding",
     secretReferences: [parsed.reference],
     destination: parsed.destination,
-    port: null,
+    port: parsed.port ?? null,
     protocolType: parsed.protocol,
     command: null,
     httpMethod: null,
@@ -2027,8 +2129,13 @@ async function handleBindDestination(
     sessionID: null,
     sshCommandBatch: null,
     payload: null,
-    requestedEffects: ["bind-secret-destination"],
-    parameters: {},
+    requestedEffects: [hasHostKeyPin ? "pin-ssh-host-key" : "bind-secret-destination"],
+    parameters: hasHostKeyPin
+      ? {
+          hostKeyAlgorithm: parsed.hostKeyAlgorithm!,
+          hostKeySHA256: parsed.hostKeySHA256!
+        }
+      : {},
     agentAssessment: agentAssessment(parsed)
   });
   if (!isSecretOperationOutput(output)) {
@@ -2044,6 +2151,8 @@ async function handleBindDestination(
     status: "BOUND",
     destination: output.destination,
     protocol: output.protocolType,
+    ...(output.port === undefined ? {} : { port: output.port }),
+    ...(output.hostKeyPin === undefined ? {} : { hostKeyPin: output.hostKeyPin }),
     redacted: true
   });
 }
@@ -2766,7 +2875,8 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Treat a controlled write as health-confirmed only when validation.status is FOUND and validation.diagnostics is empty. CREATED with CATALOG_UNAVAILABLE or another validation status may mean the commit succeeded but confirmation did not complete; do not blindly repeat the write, and use secret_catalog_validate after service recovery.",
       "A search is silent and metadata-only; it never grants permission to reveal or export plaintext.",
       "Use secret_inspect_reference for non-sensitive metadata only.",
-      "Use secret_bind_destination to add one exact destination/protocol to an existing secret:// record; every binding change requires fresh device-owner authentication and never returns plaintext.",
+      "Use secret_review_ssh_host_key to discover non-secret SSH/SFTP/SCP host-key fingerprints before pinning; discovery is not an identity guarantee and never resolves a Secret.",
+      "Use secret_bind_destination to add one exact destination/protocol to an existing secret:// record; every binding change requires fresh device-owner authentication and never returns plaintext. For strict SSH/SFTP/SCP pinning, supply the selected fingerprint and explicit port; omitting them keeps the compatibility/TOFU path.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
       "Use ssh_command_with_secret for one restricted local/private-network SSH command; reuse its opaque sessionID for subsequent commands.",
@@ -2805,6 +2915,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "vault_capabilities",
       "secret_search",
       "secret_inspect_reference",
+      "secret_review_ssh_host_key",
       "secret_bind_destination",
       "secret_reveal_request",
       "paragraph_reveal_request",

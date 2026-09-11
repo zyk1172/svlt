@@ -90,6 +90,7 @@ describe("MCP tool contracts", () => {
       "secret_catalog_validate",
       "secret_catalog_file_preflight",
       "secret_inspect_reference",
+      "secret_review_ssh_host_key",
       "secret_bind_destination",
       "ssh_command_with_secret",
       "ssh_batch_with_secret",
@@ -308,6 +309,77 @@ describe("MCP tool contracts", () => {
     expect(JSON.stringify(client.requests)).not.toContain("plaintext");
   });
 
+  it("reviews SSH host keys through a secret-free metadata request", async () => {
+    const pin = { algorithm: "ssh-ed25519", sha256: `SHA256:${"A".repeat(43)}` };
+    const client = new FakeClient([{
+      type: "sshHostKeyReview",
+      review: { host: "qnap.local", port: 2222, pins: [pin] }
+    }]);
+
+    const result = await tool(client, "secret_review_ssh_host_key").handler({
+      host: "qnap.local",
+      port: 2222
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "FOUND",
+      host: "qnap.local",
+      port: 2222,
+      pins: [pin]
+    });
+    expect(client.requests).toEqual([{
+      type: "reviewSSHHostKey",
+      host: "qnap.local",
+      port: 2222
+    }]);
+    expect(JSON.stringify(result.structuredContent)).not.toContain("secret://");
+  });
+
+  it("submits an explicit SSH host-key pin as an owner-approved binding", async () => {
+    const pin = { algorithm: "ssh-ed25519", sha256: `SHA256:${"B".repeat(43)}` };
+    const client = new FakeClient([operationResponse({
+      status: "BOUND",
+      destination: "qnap.local",
+      protocolType: "ssh",
+      port: 2222,
+      hostKeyPin: pin
+    })]);
+
+    const result = await tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "qnap.local",
+      protocol: "ssh",
+      port: 2222,
+      hostKeyAlgorithm: pin.algorithm,
+      hostKeySHA256: pin.sha256
+    });
+
+    expect(result.structuredContent).toEqual({
+      status: "BOUND",
+      destination: "qnap.local",
+      protocol: "ssh",
+      port: 2222,
+      hostKeyPin: pin,
+      redacted: true
+    });
+    expect(client.requests[0]).toMatchObject({
+      type: "executeSecretOperation",
+      descriptor: {
+        actionType: "changeDestinationBinding",
+        secretReferences: [reference],
+        destination: "qnap.local",
+        port: 2222,
+        protocolType: "ssh",
+        requestedEffects: ["pin-ssh-host-key"],
+        parameters: {
+          hostKeyAlgorithm: pin.algorithm,
+          hostKeySHA256: pin.sha256
+        }
+      }
+    });
+    expect(JSON.stringify(client.requests)).not.toContain("plaintext");
+  });
+
   it("returns the daemon's canonical bound destination", async () => {
     const client = new FakeClient([operationResponse({
       status: "BOUND",
@@ -337,6 +409,26 @@ describe("MCP tool contracts", () => {
       destination: "http://example.com/secret://token",
       protocol: "http"
     })).rejects.toThrow(/secret:\/\//i);
+    expect(client.requests).toHaveLength(0);
+  });
+
+  it("rejects incomplete or unscoped SSH pin parameters before IPC", async () => {
+    const client = new FakeClient([]);
+
+    await expect(tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "qnap.local",
+      protocol: "ssh",
+      port: 2222,
+      hostKeyAlgorithm: "ssh-ed25519"
+    })).rejects.toThrow(/hostKeySHA256|provided together/i);
+
+    await expect(tool(client, "secret_bind_destination").handler({
+      reference,
+      destination: "qnap.local",
+      protocol: "ssh",
+      port: 2222
+    })).rejects.toThrow(/only valid|host-key pin/i);
     expect(client.requests).toHaveLength(0);
   });
 

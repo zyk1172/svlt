@@ -53,7 +53,7 @@ public protocol ProcessRunning: Sendable {
 /// silently widening (or clearing) the trust state used by secret-bearing
 /// Agent execution.
 struct SSHKnownHostsStore: Sendable {
-    private let directoryURL: URL
+    let directoryURL: URL
 
     init(directoryURL: URL? = nil) {
         self.directoryURL = (directoryURL

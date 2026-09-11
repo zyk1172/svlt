@@ -196,6 +196,101 @@ public enum SecretOperationProtocol: String, Codable, CaseIterable, Sendable {
     case browser
     case localApp
     case file
+
+    public var supportsSSHHostKeyPin: Bool {
+        switch self {
+        case .ssh, .sftp, .scp:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+public enum SSHHostKeyPinValidationError: Error, Equatable, Sendable {
+    case invalidAlgorithm
+    case invalidSHA256Fingerprint
+}
+
+/// An owner-reviewed SSH host-key identity. The public key itself stays in an
+/// App-owned OpenSSH trust file; only this non-secret fingerprint is persisted
+/// with the encrypted destination binding and exposed through metadata.
+public struct SSHHostKeyPin: Codable, Equatable, Hashable, Sendable {
+    public let algorithm: String
+    public let sha256: String
+
+    public init(
+        algorithm: String,
+        sha256: String
+    ) throws {
+        let normalizedAlgorithm = algorithm.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...128).contains(normalizedAlgorithm.utf8.count),
+              normalizedAlgorithm.unicodeScalars.allSatisfy(Self.isSafeAlgorithmScalar)
+        else {
+            throw SSHHostKeyPinValidationError.invalidAlgorithm
+        }
+
+        let normalizedFingerprint = sha256.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.isValidSHA256Fingerprint(normalizedFingerprint) else {
+            throw SSHHostKeyPinValidationError.invalidSHA256Fingerprint
+        }
+
+        self.algorithm = normalizedAlgorithm
+        self.sha256 = normalizedFingerprint
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case algorithm
+        case sha256
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        do {
+            try self.init(
+                algorithm: container.decode(String.self, forKey: .algorithm),
+                sha256: container.decode(String.self, forKey: .sha256)
+            )
+        } catch let error as SSHHostKeyPinValidationError {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sha256,
+                in: container,
+                debugDescription: "Invalid SSH host-key pin: \(error)"
+            )
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(algorithm, forKey: .algorithm)
+        try container.encode(sha256, forKey: .sha256)
+    }
+
+    private static func isSafeAlgorithmScalar(_ scalar: UnicodeScalar) -> Bool {
+        (scalar.value >= 0x41 && scalar.value <= 0x5A)
+            || (scalar.value >= 0x61 && scalar.value <= 0x7A)
+            || (scalar.value >= 0x30 && scalar.value <= 0x39)
+            || scalar == "-"
+            || scalar == "."
+            || scalar == "_"
+    }
+
+    private static func isValidSHA256Fingerprint(_ value: String) -> Bool {
+        guard value.hasPrefix("SHA256:") else { return false }
+        let payload = value.dropFirst("SHA256:".count)
+        guard payload.count == 43,
+              payload.unicodeScalars.allSatisfy({ scalar in
+                  (scalar.value >= 0x41 && scalar.value <= 0x5A)
+                      || (scalar.value >= 0x61 && scalar.value <= 0x7A)
+                      || (scalar.value >= 0x30 && scalar.value <= 0x39)
+                      || scalar == "+"
+                      || scalar == "/"
+              })
+        else {
+            return false
+        }
+        return Data(base64Encoded: String(payload) + "=")?.count == 32
+    }
 }
 
 /// An owner-approved service binding. The protocol and destination are one
@@ -204,21 +299,73 @@ public enum SecretOperationProtocol: String, Codable, CaseIterable, Sendable {
 public struct SecretDestinationBinding: Codable, Equatable, Sendable {
     public let protocolType: SecretOperationProtocol
     public let destination: String
+    /// Optional exact service port. A nil port preserves legacy bindings that
+    /// were intentionally scoped only to the normalized destination.
+    public let port: Int?
+    /// Present only for an owner-reviewed SSH host-key pin. Other protocols
+    /// must treat this field as invalid rather than silently ignoring it.
+    public let hostKeyPin: SSHHostKeyPin?
 
     public init(
         protocolType: SecretOperationProtocol,
-        destination: String
+        destination: String,
+        port: Int? = nil,
+        hostKeyPin: SSHHostKeyPin? = nil
     ) {
         self.protocolType = protocolType
         self.destination = destination
+        self.port = port
+        self.hostKeyPin = hostKeyPin
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case protocolType
+        case destination
+        case port
+        case hostKeyPin
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let protocolType = try container.decode(SecretOperationProtocol.self, forKey: .protocolType)
+        let destination = try container.decode(String.self, forKey: .destination)
+        let port = try container.decodeIfPresent(Int.self, forKey: .port)
+        let hostKeyPin = try container.decodeIfPresent(SSHHostKeyPin.self, forKey: .hostKeyPin)
+        guard port.map({ (1...65_535).contains($0) }) ?? true,
+              hostKeyPin == nil || protocolType.supportsSSHHostKeyPin else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .hostKeyPin,
+                in: container,
+                debugDescription: "Invalid destination binding profile"
+            )
+        }
+        self.init(
+            protocolType: protocolType,
+            destination: destination,
+            port: port,
+            hostKeyPin: hostKeyPin
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(protocolType, forKey: .protocolType)
+        try container.encode(destination, forKey: .destination)
+        try container.encodeIfPresent(port, forKey: .port)
+        try container.encodeIfPresent(hostKeyPin, forKey: .hostKeyPin)
     }
 
     public func matches(
         requestedProtocol: SecretOperationProtocol,
         destination: String?,
-        url: String?
+        url: String?,
+        port requestedPort: Int? = nil
     ) -> Bool {
         guard protocolType == requestedProtocol else { return false }
+        if let bindingPort = port {
+            let effectiveRequestedPort = requestedPort ?? Self.defaultPort(for: requestedProtocol)
+            guard effectiveRequestedPort == bindingPort else { return false }
+        }
         if requestedProtocol == .http || requestedProtocol == .https {
             let requestedOrigin = SecretOperationDescriptor.normalizeHTTPOrigin(
                 url ?? destination,
@@ -236,6 +383,17 @@ public struct SecretDestinationBinding: Codable, Equatable, Sendable {
         }
         return SecretOperationDescriptor.normalizeDestination(destination ?? url)
             == SecretOperationDescriptor.normalizeDestination(self.destination)
+    }
+
+    private static func defaultPort(for protocolType: SecretOperationProtocol) -> Int? {
+        switch protocolType {
+        case .ssh, .sftp, .scp:
+            return 22
+        case .ftp:
+            return 21
+        default:
+            return nil
+        }
     }
 }
 

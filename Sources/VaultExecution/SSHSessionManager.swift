@@ -35,6 +35,7 @@ public struct SSHSessionScope: Hashable, Sendable {
     public let port: Int
     public let username: String
     public let passwordReferenceID: String
+    public let hostKeyPin: SSHHostKeyPin?
     public let securityGeneration: UInt64
 
     public init(
@@ -43,13 +44,15 @@ public struct SSHSessionScope: Hashable, Sendable {
         port: Int,
         username: String,
         passwordReferenceID: String,
-        securityGeneration: UInt64
+        securityGeneration: UInt64,
+        hostKeyPin: SSHHostKeyPin? = nil
     ) {
         self.principal = principal
         self.host = host
         self.port = port
         self.username = username
         self.passwordReferenceID = passwordReferenceID
+        self.hostKeyPin = hostKeyPin
         self.securityGeneration = securityGeneration
     }
 }

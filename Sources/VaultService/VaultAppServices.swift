@@ -74,6 +74,17 @@ private struct AgentDecryptAuthorization: Sendable {
     let expiresAt: Date
 }
 
+private struct DestinationBindingRequest: Sendable {
+    let destination: String
+    let protocolType: SecretOperationProtocol
+    let port: Int?
+    let hostKeyPin: SSHHostKeyPin?
+
+    var isHostKeyPinning: Bool {
+        hostKeyPin != nil
+    }
+}
+
 private enum CatalogMutationPhase: String {
     case inputValidation = "input-validation"
     case policy = "policy"
@@ -1085,11 +1096,62 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         generation: UInt64
     ) async throws -> SecretOperationOutput {
         let binding = try destinationBinding(from: descriptor)
+        let bindingAction = binding.isHostKeyPinning ? "固定 SSH 主机指纹" : "绑定凭据地址"
+        let bindingTarget = auditTarget(for: binding)
         guard descriptor.secretReferences.count == 1,
               metadata.count == 1,
               metadata[0].reference == descriptor.secretReferences[0]
         else {
             throw SecretOperationError.invalidOperationParameters
+        }
+
+        let hostKeyReview: SSHHostKeyReview?
+        if binding.isHostKeyPinning {
+            guard let port = binding.port,
+                  let reviewer = operationExecutor as? any SSHHostKeyReviewing else {
+                await emitAudit(
+                    action: bindingAction,
+                    target: bindingTarget,
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "执行器不可用",
+                    operation: .secureExecute,
+                    status: .failure
+                )
+                throw SecretOperationError.actionExecutorUnavailable
+            }
+            do {
+                let review = try await reviewer.reviewSSHHostKey(
+                    host: binding.destination,
+                    port: port
+                )
+                guard let pin = binding.hostKeyPin,
+                      review.pins.contains(pin) else {
+                    throw SSHHostKeyReviewError.pinNotPresented
+                }
+                hostKeyReview = review
+            } catch SSHHostKeyReviewError.pinNotPresented {
+                await emitAudit(
+                    action: bindingAction,
+                    target: bindingTarget,
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "主机指纹未出现",
+                    operation: .secureExecute,
+                    status: .failure
+                )
+                throw SecretOperationError.invalidOperationParameters
+            } catch {
+                await emitAudit(
+                    action: bindingAction,
+                    target: bindingTarget,
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "主机身份不可用",
+                    operation: .secureExecute,
+                    status: .failure
+                )
+                throw SecretOperationError.actionExecutionFailed
+            }
+        } else {
+            hostKeyReview = nil
         }
 
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
@@ -1103,7 +1165,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             descriptor,
             metadata: metadata,
             decision: decision,
-            expectedGeneration: generation
+            expectedGeneration: generation,
+            hostKeyReview: hostKeyReview
         )
         guard generation == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
@@ -1145,8 +1208,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         } catch {
             await emitAudit(
-                action: "绑定凭据地址",
-                target: binding.destination,
+                action: bindingAction,
+                target: bindingTarget,
                 referenceCount: descriptor.secretReferences.count,
                 result: "失败",
                 operation: .secureExecute,
@@ -1165,6 +1228,48 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
+        if let pin = binding.hostKeyPin {
+            guard let port = binding.port,
+                  let pinner = operationExecutor as? any SSHHostKeyPinning else {
+                await emitAudit(
+                    action: bindingAction,
+                    target: bindingTarget,
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "执行器不可用",
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .failure
+                )
+                throw SecretOperationError.actionExecutorUnavailable
+            }
+            do {
+                // Re-discovery after approval closes the TOCTOU gap between
+                // the identity shown to the owner and the identity persisted
+                // in the strict trust profile.
+                try await pinner.installSSHHostKey(
+                    host: binding.destination,
+                    port: port,
+                    pin: pin
+                )
+            } catch {
+                await emitAudit(
+                    action: bindingAction,
+                    target: bindingTarget,
+                    referenceCount: descriptor.secretReferences.count,
+                    result: "主机指纹复核失败",
+                    operation: .secureExecute,
+                    authorizationOutcome: authorizationPath.auditOutcome,
+                    authorizationMode: authorizationPath.auditMode,
+                    status: .failure
+                )
+                throw SecretOperationError.actionExecutionFailed
+            }
+            guard generation == securityGeneration else {
+                throw SecretOperationError.authorizationCancelled
+            }
+        }
+
         let boundMetadata: SecretReferenceMetadata
         do {
             boundMetadata = try await recordResolver.bindDestination(
@@ -1172,6 +1277,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 destination: binding.destination,
                 protocolType: binding.protocolType,
                 masterKey: key,
+                port: binding.port,
+                hostKeyPin: binding.hostKeyPin,
                 now: now(),
                 preCommitCheck: { [self] in
                     guard await securityGenerationIsCurrent(generation) else {
@@ -1183,8 +1290,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             switch error {
             case .authorizationCancelled:
                 await emitAudit(
-                    action: "绑定凭据地址",
-                    target: binding.destination,
+                    action: bindingAction,
+                    target: bindingTarget,
                     referenceCount: descriptor.secretReferences.count,
                     result: "已取消",
                     operation: .secureExecute,
@@ -1195,8 +1302,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw SecretOperationError.authorizationCancelled
             case .invalidReference, .invalidDestination, .tooManyDestinations, .tooManyProtocols, .tooManyBindings:
                 await emitAudit(
-                    action: "绑定凭据地址",
-                    target: binding.destination,
+                    action: bindingAction,
+                    target: bindingTarget,
                     referenceCount: descriptor.secretReferences.count,
                     result: "参数无效",
                     operation: .secureExecute,
@@ -1208,8 +1315,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
         } catch {
             await emitAudit(
-                action: "绑定凭据地址",
-                target: binding.destination,
+                action: bindingAction,
+                target: bindingTarget,
                 referenceCount: descriptor.secretReferences.count,
                 result: "失败",
                 operation: .secureExecute,
@@ -1222,8 +1329,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         await notifySavedReferencesChanged()
         await emitAudit(
-            action: "绑定凭据地址",
-            target: binding.destination,
+            action: bindingAction,
+            target: bindingTarget,
             referenceCount: descriptor.secretReferences.count,
             result: "成功",
             operation: .secureExecute,
@@ -1234,9 +1341,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return SecretOperationOutput(
             status: "BOUND",
             destination: boundMetadata.allowedBindings.first(where: {
-                $0.protocolType == binding.protocolType && $0.destination == binding.destination
+                $0.protocolType == binding.protocolType
+                    && $0.destination == binding.destination
+                    && $0.port == binding.port
+                    && $0.hostKeyPin == binding.hostKeyPin
             })?.destination ?? binding.destination,
             protocolType: binding.protocolType,
+            port: binding.port,
+            hostKeyPin: binding.hostKeyPin,
             redacted: true
         )
     }
@@ -1254,12 +1366,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private func destinationBinding(
         from descriptor: SecretOperationDescriptor
-    ) throws -> (destination: String, protocolType: SecretOperationProtocol) {
+    ) throws -> DestinationBindingRequest {
+        let isDestinationBind = descriptor.requestedEffects == ["bind-secret-destination"]
+        let isHostKeyPin = descriptor.requestedEffects == ["pin-ssh-host-key"]
         guard descriptor.secretReferences.count == 1,
-              descriptor.requestedEffects == ["bind-secret-destination"],
-              descriptor.parameters.isEmpty,
+              isDestinationBind || isHostKeyPin,
               descriptor.destination != nil,
-              descriptor.port == nil,
               descriptor.protocolType != nil,
               descriptor.command == nil,
               descriptor.httpMethod == nil,
@@ -1288,6 +1400,28 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.invalidOperationParameters
         }
 
+        let hostKeyPin: SSHHostKeyPin?
+        if isHostKeyPin {
+            guard protocolType.supportsSSHHostKeyPin,
+                  let port = descriptor.port,
+                  (1...65_535).contains(port),
+                  descriptor.parameters.count == 2,
+                  Set(descriptor.parameters.keys) == Set(["hostKeyAlgorithm", "hostKeySHA256"]),
+                  let algorithm = descriptor.parameters["hostKeyAlgorithm"],
+                  let sha256 = descriptor.parameters["hostKeySHA256"],
+                  !trimmed.contains("://"),
+                  isHostWithoutEmbeddedPort(trimmed),
+                  let parsedPin = try? SSHHostKeyPin(algorithm: algorithm, sha256: sha256) else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+            hostKeyPin = parsedPin
+        } else {
+            guard descriptor.parameters.isEmpty, descriptor.port == nil else {
+                throw SecretOperationError.invalidOperationParameters
+            }
+            hostKeyPin = nil
+        }
+
         if protocolType == .http || protocolType == .https {
             guard let normalized = SecretOperationDescriptor.normalizeHTTPOrigin(
                 trimmed,
@@ -1296,7 +1430,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             ) else {
                 throw SecretOperationError.invalidOperationParameters
             }
-            return (normalized, protocolType)
+            return DestinationBindingRequest(
+                destination: normalized,
+                protocolType: protocolType,
+                port: nil,
+                hostKeyPin: nil
+            )
         }
 
         if trimmed.contains("://") {
@@ -1324,7 +1463,98 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
               !normalized.isEmpty else {
             throw SecretOperationError.invalidOperationParameters
         }
-        return (normalized, protocolType)
+        return DestinationBindingRequest(
+            destination: normalized,
+            protocolType: protocolType,
+            port: descriptor.port,
+            hostKeyPin: hostKeyPin
+        )
+    }
+
+    private func isHostWithoutEmbeddedPort(_ value: String) -> Bool {
+        if value.hasPrefix("[") {
+            return value.hasSuffix("]")
+                && !value.dropFirst().dropLast().contains("]")
+        }
+        return value.filter { $0 == ":" }.count != 1
+    }
+
+    private func auditTarget(for binding: DestinationBindingRequest) -> String {
+        let destination = safeDisplayLabel(binding.destination)
+        guard let port = binding.port else { return destination }
+        let hostPort = binding.destination.contains(":")
+            ? "[\(destination)]:\(port)"
+            : "\(destination):\(port)"
+        guard let pin = binding.hostKeyPin else { return hostPort }
+        return "\(hostPort) \(safeDisplayLabel(pin.algorithm)) \(safeDisplayLabel(pin.sha256))"
+    }
+
+    private func sshHostKeyReviewAuditTarget(host: String, port: Int) -> String {
+        let destination = safeDisplayLabel(host)
+        return destination.contains(":")
+            ? "[\(destination)]:\(port)"
+            : "\(destination):\(port)"
+    }
+
+    /// Discovers non-secret SSH host-key metadata before any Secret is
+    /// resolved. The caller can use the returned fingerprint in a subsequent
+    /// owner-approved `pin-ssh-host-key` binding operation.
+    public func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview {
+        let target = sshHostKeyReviewAuditTarget(host: host, port: port)
+        guard let reviewer = operationExecutor as? any SSHHostKeyReviewing else {
+            await emitAudit(
+                action: "查看 SSH 主机指纹",
+                target: target,
+                referenceCount: 0,
+                result: "执行器不可用",
+                operation: .secureExecute,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutorUnavailable
+        }
+
+        do {
+            let review = try await reviewer.reviewSSHHostKey(host: host, port: port)
+            await emitAudit(
+                action: "查看 SSH 主机指纹",
+                target: target,
+                referenceCount: 0,
+                result: "成功",
+                operation: .secureExecute,
+                status: .completed
+            )
+            return review
+        } catch let error as SSHHostKeyReviewError {
+            let mappedError: SecretOperationError
+            let auditResult: String
+            switch error {
+            case .invalidHost, .invalidPort:
+                mappedError = .invalidOperationParameters
+                auditResult = "参数无效"
+            case .unavailable, .noHostKey, .malformedHostKey, .pinNotPresented, .trustStoreUnavailable:
+                mappedError = .actionExecutionFailed
+                auditResult = "主机身份不可用"
+            }
+            await emitAudit(
+                action: "查看 SSH 主机指纹",
+                target: target,
+                referenceCount: 0,
+                result: auditResult,
+                operation: .secureExecute,
+                status: .failure
+            )
+            throw mappedError
+        } catch {
+            await emitAudit(
+                action: "查看 SSH 主机指纹",
+                target: target,
+                referenceCount: 0,
+                result: "失败",
+                operation: .secureExecute,
+                status: .failure
+            )
+            throw SecretOperationError.actionExecutionFailed
+        }
     }
 
     /// Agent-facing transport management is intentionally narrower than the
@@ -4103,7 +4333,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
         expectedGeneration: UInt64? = nil,
-        executionScope: ExecutionAuthorizationScope? = nil
+        executionScope: ExecutionAuthorizationScope? = nil,
+        hostKeyReview: SSHHostKeyReview? = nil
     ) async throws -> SecretOperationAuthorizationPath {
         let generation = expectedGeneration ?? securityGeneration
         guard generation == securityGeneration else {
@@ -4126,7 +4357,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 metadata: metadata,
                 decision: decision,
                 generation: generation,
-                scope: executionScope
+                scope: executionScope,
+                hostKeyReview: hostKeyReview
             )
         }
 
@@ -4140,7 +4372,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             status: .requested
         )
         let ticket = await approvalTicketStore.issue(for: descriptor, now: now())
-        let summary = approvalSummary(descriptor: descriptor, metadata: metadata, decision: decision)
+        let summary = approvalSummary(
+            descriptor: descriptor,
+            metadata: metadata,
+            decision: decision,
+            hostKeyReview: hostKeyReview
+        )
         approvalPending = true
         await statusObserver?(status())
 
@@ -4251,7 +4488,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
         generation: UInt64,
-        scope: ExecutionAuthorizationScope
+        scope: ExecutionAuthorizationScope,
+        hostKeyReview: SSHHostKeyReview? = nil
     ) async throws -> SecretOperationAuthorizationPath {
         guard generation == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
@@ -4303,7 +4541,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 descriptor: descriptor,
                 metadata: metadata,
                 decision: decision,
-                generation: generation
+                generation: generation,
+                hostKeyReview: hostKeyReview
             )
         }
         executionApprovalFlights[scope] = ExecutionApprovalFlight(
@@ -4359,7 +4598,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
-        generation: UInt64
+        generation: UInt64,
+        hostKeyReview: SSHHostKeyReview? = nil
     ) async throws -> LocalAuthenticationContext? {
         do {
             guard generation == securityGeneration else {
@@ -4371,7 +4611,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 descriptor: descriptor,
                 metadata: metadata,
                 decision: decision,
-                executionWindowDuration: executionWindowDuration
+                executionWindowDuration: executionWindowDuration,
+                hostKeyReview: hostKeyReview
             )
             await emitAudit(
                 action: "本机授权请求",
@@ -4842,7 +5083,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
-        executionWindowDuration: TimeInterval? = nil
+        executionWindowDuration: TimeInterval? = nil,
+        hostKeyReview: SSHHostKeyReview? = nil
     ) -> String {
         let labels = metadata.compactMap(\.label)
             .map(safeDisplayLabel)
@@ -4870,7 +5112,24 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let batchRequirement = descriptor.sshCommandBatch != nil
             ? "；批处理最高授权级别：\(authorizationRequirementDisplay(decision.authorizationRequirement))"
             : ""
-        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(riskSection)\(batchRequirement)"
+        let hostKeySection: String
+        if let hostKeyReview {
+            let requestedPin: SSHHostKeyPin? = {
+                guard let algorithm = descriptor.parameters["hostKeyAlgorithm"],
+                      let sha256 = descriptor.parameters["hostKeySHA256"] else {
+                    return nil
+                }
+                return try? SSHHostKeyPin(algorithm: algorithm, sha256: sha256)
+            }()
+            let fingerprints = hostKeyReview.pins.map {
+                let selection = requestedPin == $0 ? "（待固定）" : ""
+                return "\(safeDisplayLabel($0.algorithm)) \(safeDisplayLabel($0.sha256))\(selection)"
+            }.joined(separator: "、")
+            hostKeySection = "；待审核 SSH 主机身份：\(safeDisplayLabel(hostKeyReview.host)):\(hostKeyReview.port)；算法/指纹：\(fingerprints)"
+        } else {
+            hostKeySection = ""
+        }
+        let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(riskSection)\(batchRequirement)\(hostKeySection)"
         guard let executionWindowDuration else {
             return base
         }
@@ -4881,6 +5140,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {
         if descriptor.requestedEffects.contains("catalog-replace-secret") {
             return "替换目录密码"
+        }
+        if descriptor.requestedEffects.contains("pin-ssh-host-key") {
+            return "固定 SSH 主机指纹"
         }
         return displayName(for: descriptor.actionType)
     }
@@ -4897,7 +5159,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return "\(method) \(descriptor.normalizedPath ?? "/")"
         case .changeDestinationBinding:
             let protocolName = descriptor.protocolType?.rawValue.uppercased() ?? "未知协议"
-            return "\(protocolName) \(descriptor.destination ?? "未指定目标")"
+            let pinDetail = descriptor.requestedEffects.contains("pin-ssh-host-key")
+                ? "（请求固定主机指纹）"
+                : ""
+            return "\(protocolName) \(descriptor.destination ?? "未指定目标")\(pinDetail)"
         case .databaseQuery:
             guard let statement = descriptor.effectiveDatabaseStatement else {
                 return "数据库查询"
@@ -5029,7 +5294,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         case .ftpTransfer:
             return "智能体 FTP 操作"
         case .changeDestinationBinding:
-            return "智能体绑定凭据地址"
+            return descriptor.requestedEffects.contains("pin-ssh-host-key")
+                ? "智能体固定 SSH 主机指纹"
+                : "智能体绑定凭据地址"
         default:
             return "智能体受保护操作"
         }

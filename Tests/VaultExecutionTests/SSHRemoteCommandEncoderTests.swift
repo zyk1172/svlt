@@ -168,7 +168,7 @@ import VaultCore
     // frame boundary and the wrapper can hand ssh one exact argument.
     // The host-key trust path contributes a dedicated known-hosts field.
     let lines = input.split(separator: "\n").map(String.init)
-    #expect(lines.count == 8)
+    #expect(lines.count == 9)
     let decodedCommand = String(decoding: Array(hexString: lines[2]), as: UTF8.self)
     #expect(decodedCommand == command)
 }

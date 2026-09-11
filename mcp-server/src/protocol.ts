@@ -110,9 +110,35 @@ export const OrphanScanResult = z.object({
 }).strict();
 export type OrphanScanResult = z.infer<typeof OrphanScanResult>;
 
+export const SSHHost = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine(
+    (value) => !value.startsWith("-") && !/[\s\u0000-\u001f\u007f]/u.test(value) && !value.includes("/") && !value.includes("@"),
+    "SSH host must be a single safe host token"
+  );
+export type SSHHost = z.infer<typeof SSHHost>;
+
+export const SSHHostKeyPin = z.object({
+  algorithm: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._-]+$/),
+  sha256: z.string().trim().regex(/^SHA256:[A-Za-z0-9+/]{43}$/)
+}).strict();
+export type SSHHostKeyPin = z.infer<typeof SSHHostKeyPin>;
+
+export const SSHHostKeyReview = z.object({
+  host: SSHHost,
+  port: z.number().int().min(1).max(65_535),
+  pins: z.array(SSHHostKeyPin).min(1).max(32)
+}).strict();
+export type SSHHostKeyReview = z.infer<typeof SSHHostKeyReview>;
+
 export const SecretDestinationBinding = z.object({
   protocolType: z.string().min(1).max(32),
-  destination: z.string().min(1).max(512)
+  destination: z.string().min(1).max(512),
+  port: z.number().int().min(1).max(65_535).optional(),
+  hostKeyPin: SSHHostKeyPin.optional()
 }).strict();
 export type SecretDestinationBinding = z.infer<typeof SecretDestinationBinding>;
 
@@ -934,6 +960,13 @@ export const IpcRequest = z.discriminatedUnion("type", [
   z.object({ type: z.literal("secretOperationCapabilities") }).strict(),
   z
     .object({
+      type: z.literal("reviewSSHHostKey"),
+      host: SSHHost,
+      port: z.number().int().min(1).max(65_535)
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("sshSessionStatus"),
       sessionID: z.string().min(1).max(128).optional()
     })
@@ -1147,6 +1180,8 @@ export const SecretOperationOutput = z
     remotePath: z.string().optional(),
     destination: z.string().min(1).optional(),
     protocolType: z.string().min(1).max(32).optional(),
+    port: z.number().int().min(1).max(65_535).optional(),
+    hostKeyPin: SSHHostKeyPin.optional(),
     sessionID: z.string().min(1).max(128).optional(),
     failedIndex: z.number().int().min(0).optional(),
     results: z.array(z.object({
@@ -1185,6 +1220,12 @@ export const IpcResponse = z.discriminatedUnion("type", [
     .object({
       type: z.literal("secretOperationCapabilities"),
       capabilities: z.array(SecretOperationCapability).max(32)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("sshHostKeyReview"),
+      review: SSHHostKeyReview
     })
     .strict(),
   z

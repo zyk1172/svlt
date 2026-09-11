@@ -82,6 +82,83 @@ import Testing
     }
 }
 
+@Test func sshHostKeyBindingMetadataIsAuthenticatedAndPortScoped() throws {
+    let master = SymmetricKey(size: .bits256)
+    let cipher = VaultCipher()
+    let pin = try testCipherSSHHostKeyPin(seed: 0x2A)
+    let replacementPin = try testCipherSSHHostKeyPin(seed: 0x2B)
+    let binding = SecretDestinationBinding(
+        protocolType: .ssh,
+        destination: "nas.local",
+        port: 2222,
+        hostKeyPin: pin
+    )
+    let record = try cipher.encrypt(
+        Data("binding metadata regression".utf8),
+        id: "01JABCDEF0123456789ABCDEFG",
+        version: 1,
+        label: "test",
+        policy: .credential,
+        allowedDestinations: ["nas.local"],
+        allowedProtocols: ["ssh"],
+        allowedBindings: [binding],
+        masterKey: master
+    )
+
+    #expect(try cipher.decrypt(record, masterKey: master) == Data("binding metadata regression".utf8))
+    #expect(binding.matches(requestedProtocol: .ssh, destination: "nas.local", url: nil, port: 2222))
+    #expect(!binding.matches(requestedProtocol: .ssh, destination: "nas.local", url: nil, port: 22))
+    #expect(!binding.matches(requestedProtocol: .ssh, destination: "nas.local", url: nil))
+
+    let encodedBinding = try JSONEncoder().encode(binding)
+    #expect(try JSONDecoder().decode(SecretDestinationBinding.self, from: encodedBinding) == binding)
+
+    let tampered = EncryptedRecord(
+        formatVersion: record.formatVersion,
+        id: record.id,
+        recordVersion: record.recordVersion,
+        ciphertext: record.ciphertext,
+        nonce: record.nonce,
+        tag: record.tag,
+        wrappedDataKey: record.wrappedDataKey,
+        wrappedDataKeyNonce: record.wrappedDataKeyNonce,
+        wrappedDataKeyTag: record.wrappedDataKeyTag,
+        keyDerivationSalt: record.keyDerivationSalt,
+        label: record.label,
+        policy: record.policy,
+        allowedDestinations: record.allowedDestinations,
+        allowedProtocols: record.allowedProtocols,
+        allowedBindings: [SecretDestinationBinding(
+            protocolType: .ssh,
+            destination: "nas.local",
+            port: 2222,
+            hostKeyPin: replacementPin
+        )],
+        policyBindingVersion: record.policyBindingVersion,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt
+    )
+    #expect(throws: VaultCryptoError.integrityFailed) {
+        _ = try cipher.decrypt(tampered, masterKey: master)
+    }
+
+    let invalidHTTPBinding = SecretDestinationBinding(
+        protocolType: .http,
+        destination: "http://nas.local:3000",
+        hostKeyPin: pin
+    )
+    let invalidHTTPData = try JSONEncoder().encode(invalidHTTPBinding)
+    #expect(throws: DecodingError.self) {
+        _ = try JSONDecoder().decode(SecretDestinationBinding.self, from: invalidHTTPData)
+    }
+}
+
+private func testCipherSSHHostKeyPin(seed: UInt8) throws -> SSHHostKeyPin {
+    let digest = Data(SHA256.hash(data: Data(repeating: seed, count: 32)))
+    let fingerprint = "SHA256:" + digest.base64EncodedString().replacingOccurrences(of: "=", with: "")
+    return try SSHHostKeyPin(algorithm: "ssh-ed25519", sha256: fingerprint)
+}
+
 @Test func decryptsLegacyV1RecordAfterFormatBump() throws {
     let master = SymmetricKey(size: .bits256)
     let cipher = VaultCipher()

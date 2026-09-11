@@ -127,7 +127,7 @@ Claude、Hermes 或其他客户端通常没有 Codex skill 格式。做法是：
 6. 先判断用户是否选择 SVLT；当前明确提供的明文或明确选择的外部 provider 不需要 SVLT lookup、比较或替换。`locked` 不是全局门禁。
 7. 任务提到服务、设备、主机、账号或用途但没有凭据来源时，可以用 `secret_search` / `secret_catalog_search` 按非敏感上下文发现 opaque 引用；需要浏览分组时使用 `secret_catalog_list_indices`（包含空分组），再用 MCP 返回的 `indexID` 调用 `secret_catalog_list_entries`，不得用 `query: ""` 或本地文件猜测 ID；不同 Entry 不得合并。
 8. 需要一次建立目录结构时，使用 `secret_catalog_create_structure` 提交一个 Index 和多个安全 Entry；SVLT 生成 opaque ID，以 `clientKey` 返回映射，并在一次 operation-bound 授权和 atomic commit 中完成。Agent 不得提交自造 ID、已有 `secretRef` 或 secret plaintext。
-9. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以不触发额外的高风险 secretRef 批准；但每笔 Agent mutation（包括普通批量操作）仍必须使用精确绑定、一次消费的 operation-bound write request。SVLT 直接弹 macOS device-owner authentication；认证本身是授权，没有额外 App 确认按钮。绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。若只是给已有 `secret://` 增加精确服务地址/协议，使用 `secret_bind_destination`；协议和目标会作为一个原子 pair 重新封装并认证，每次都重新认证，成功返回 canonical destination，不返回明文，也不产生可复用的执行窗口。
+9. 新增分组/条目/字段、普通 metadata 和空 password placeholder 可以不触发额外的高风险 secretRef 批准；但每笔 Agent mutation（包括普通批量操作）仍必须使用精确绑定、一次消费的 operation-bound write request。SVLT 直接弹 macOS device-owner authentication；认证本身是授权，没有额外 App 确认按钮。绑定、替换、删除已有 `secretRef`，改变秘密目标或删除含引用的对象必须本机审批。若只是给已有 `secret://` 增加精确服务地址/协议，使用 `secret_bind_destination`；协议和目标会作为一个原子 profile 重新封装并认证，每次都重新认证，成功返回 canonical 非敏感元数据，不返回明文，也不产生可复用的执行窗口。需要更高保证的 SSH/SFTP/SCP 先用 `secret_review_ssh_host_key` 查看 host/port 的算法和 SHA256 fingerprint，再把设备所有者选定的 fingerprint、algorithm 和显式 port 提交给绑定工具；省略 pin 字段则继续兼容/TOFU 模式。
 10. 受控 MCP write 会返回 post-commit validation；只有 `validation.status == FOUND` 且 `validation.diagnostics` 为空才表示健康确认成功。`CREATED` 搭配 `CATALOG_UNAVAILABLE` 等状态表示写入可能已提交但确认未完成，不要盲目重试写入，服务恢复后再用 `secret_catalog_validate` 显式确认。失败时停止，不要猜测修复结构。
 11. 低风险操作不代表获得明文导出权限；SVLT 派生明文只能留在获批的专用本地操作中，不能写回 Catalog、shell、日志、聊天或外发。
 12. 需要真实密码、API 密钥或 token 时调用 `secret_catalog_request_secure_inputs`；只发送 `entryID`、field key、模式和 revision，不发送或覆盖字段 label。SVLT 会从 accepted Catalog 重建 label，并立即返回 `PENDING` 与 `requestID`。用户在本机 SecureField 中选择/输入后，Agent 只能轮询 `secret_catalog_secure_input_status` 获取 `COMPLETED`、`CANCELLED`、`EXPIRED` 或 `FAILED`（以及 revision/errorCode）；永远收不到明文。请求过期、取消或 App 失焦/睡眠/锁定时不会提交。若返回 `UNKNOWN`，先重新读取 Catalog/revision 做结果对账，禁止自动重新提交明文。
@@ -155,7 +155,8 @@ Agent 接入后先做：
 | --- | --- | --- |
 | 文本、笔记片段或工具输出里有 `secret://` | `secret_auto_handle_text` | 原文中保留引用 |
 | 查看单个秘密给用户本人 | `secret_reveal_request` | `reference` |
-| 为已有 Secret 绑定服务目标 | `secret_bind_destination` | `reference` + 精确 `destination` + `protocol`；作为原子 pair 保存，返回 canonical destination；每次 fresh device-owner authentication，不返回 plaintext。 |
+| SSH/SFTP/SCP 主机指纹发现 | `secret_review_ssh_host_key` | `host` + `port`；只返回当前展示的算法和 SHA256 fingerprint，不读取 Secret。 |
+| 为已有 Secret 绑定服务目标 | `secret_bind_destination` | `reference` + 精确 `destination` + `protocol`；显式 pin 还需 `port`、`hostKeyAlgorithm`、`hostKeySHA256`；作为原子 profile 保存，每次 fresh device-owner authentication，不返回 plaintext。 |
 | 本地显示整段解密文本 | `paragraph_reveal_request` | `references` + `template` |
 | 导出填充后的敏感文本到本地文件 | `export_resolved_text_to_local_file` | `references` + `template` + `destinationPath` |
 | SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选非敏感 `username` |

@@ -229,21 +229,34 @@ public struct VaultCipher: Sendable {
             data.appendLengthPrefixed(Data(allowedDestinations.sorted().joined(separator: "\u{1F}" ).utf8))
             data.appendLengthPrefixed(Data(allowedProtocols.sorted().joined(separator: "\u{1F}" ).utf8))
         }
-        // Keep the legacy AAD byte-for-byte stable when no typed binding is
-        // present, but authenticate any non-empty binding list even on a
-        // legacy-format record. Otherwise an out-of-band edit could change
-        // the pair-sensitive metadata without invalidating the ciphertext.
+        // Keep the legacy AAD byte-for-byte stable when bindings contain no
+        // profile metadata, but authenticate ports and SSH pins whenever they
+        // are present. Otherwise an out-of-band edit could change the exact
+        // host identity without invalidating the ciphertext.
         if !allowedBindings.isEmpty {
             let sortedBindings = allowedBindings.sorted {
                 if $0.protocolType.rawValue == $1.protocolType.rawValue {
+                    if $0.destination == $1.destination {
+                        return ($0.port ?? 0) < ($1.port ?? 0)
+                    }
                     return $0.destination < $1.destination
                 }
                 return $0.protocolType.rawValue < $1.protocolType.rawValue
             }
             data.appendLengthPrefixed(Data(String(sortedBindings.count).utf8))
+            let hasProfileMetadata = sortedBindings.contains { $0.port != nil || $0.hostKeyPin != nil }
+            if hasProfileMetadata {
+                data.appendLengthPrefixed(Data("VaultCipher.Binding.v2".utf8))
+            }
             for binding in sortedBindings {
                 data.appendLengthPrefixed(Data(binding.protocolType.rawValue.utf8))
                 data.appendLengthPrefixed(Data(binding.destination.utf8))
+                if hasProfileMetadata {
+                    data.appendLengthPrefixed(binding.port.map { Data(String($0).utf8) })
+                    data.appendLengthPrefixed(binding.hostKeyPin.map {
+                        Data("\($0.algorithm)\u{1F}\($0.sha256)".utf8)
+                    })
+                }
             }
         }
         return data

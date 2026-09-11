@@ -214,6 +214,11 @@ not force conversion or substitution in that case.
   requires fresh device-owner approval and re-seals the encrypted record
   without returning plaintext; success reports the daemon's canonical
   destination.
+- `secret_review_ssh_host_key` to discover the current SSH/SFTP/SCP host-key
+  algorithms and SHA256 fingerprints for one host and port without reading a
+  Secret. Pass the owner-selected fingerprint, algorithm, and explicit port to
+  `secret_bind_destination` for strict pinning; omitting those fields keeps the
+  compatibility/TOFU path.
 - `browser_web_login_with_secret` for specific local/private browser login form
   fills.
 - `local_app_form_fill_with_secret` for specific macOS app form fills.

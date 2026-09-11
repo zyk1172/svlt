@@ -577,7 +577,8 @@ public struct SecretOperationPolicyEngine: Sendable {
                     $0.matches(
                         requestedProtocol: requestedProtocol,
                         destination: descriptor.destination,
-                        url: descriptor.url
+                        url: descriptor.url,
+                        port: descriptor.port
                     )
                 }
             } ?? false

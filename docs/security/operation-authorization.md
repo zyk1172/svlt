@@ -41,9 +41,13 @@ Secret metadata 保留旧版兼容字段 `allowedDestinations` 和 `allowedProto
 
 ### SSH host-key trust
 
-SSH 不再复用用户全局 `~/.ssh/known_hosts`。SVLT 在自己的 Application Support 目录维护 owner-only trust store，目录权限收敛为 `0700`、`known_hosts` 收敛为 `0600`，并拒绝把 `known_hosts` 作为 symlink 打开。OpenSSH 同时禁用 global known-hosts 文件、启用 hashed host entries、关闭自动 `UpdateHostKeys`，因此其他 SSH 客户端不会静默扩大或替换 SVLT 的主机信任状态；已记录主机发生 host-key 变化时仍会返回 `HOST_KEY_FAILED`。
+SSH 不再复用用户全局 `~/.ssh/known_hosts`。SVLT 在自己的 Application Support 目录维护 owner-only trust store，目录权限收敛为 `0700`、`known_hosts` 收敛为 `0600`，并拒绝把 `known_hosts` 作为 symlink 打开。OpenSSH 同时禁用 global known-hosts 文件、启用 hashed host entries、关闭自动 `UpdateHostKeys`，因此其他 SSH 客户端不会静默扩大或替换 SVLT 的主机信任状态；已记录主机发生 host-key 变化时仍会返回 `HOST_KEY_FAILED`。显式 pin 另存为按 host/port 隔离的 App-owned profile，并由执行器在使用前校验文件内容。
 
-为了不破坏现有首次连接流程，未知主机仍采用 OpenSSH `accept-new` 的 TOFU（trust on first use）语义，并开启 `VerifyHostKeyDNS=yes` 以便在存在安全 SSHFP/DNSSEC 记录时利用该验证。TOFU 不能凭空证明一台从未见过的主机身份，因此这项硬化解决的是“全局信任状态被其他客户端污染/替换”和“后续 host key 变化静默接受”的问题，不把首次未知主机宣称为已经完成带外 fingerprint 验证。需要更高保证时应使用后续的显式 fingerprint pinning/owner-review 流程，而不是为了安全性直接禁用首次 SSH 连接能力。
+为了不破坏现有首次连接流程，未知主机仍采用 OpenSSH `accept-new` 的 TOFU（trust on first use）语义，并开启 `VerifyHostKeyDNS=yes` 以便在存在安全 SSHFP/DNSSEC 记录时利用该验证。TOFU 不能凭空证明一台从未见过的主机身份，因此这项兼容路径不把首次未知主机宣称为已经完成带外 fingerprint 验证。
+
+需要更高保证时，Agent 先调用 `secret_review_ssh_host_key`，由 App-owned executor 使用 `ssh-keyscan` 发现当前 host/port 展示的算法和 SHA256 fingerprint；这个过程不读取、不解析、也不发送 Secret，发现结果本身也不是带外身份认证。Agent 将设备所有者选定的 algorithm、SHA256 fingerprint 和显式 port 传给 `secret_bind_destination`，App 的审批摘要会显示 host、port、全部当前候选指纹，并将待固定的候选标为“待固定”。设备所有者批准后，SVLT 重新发现并核对同一 fingerprint，再写入严格 profile；后续执行使用 `StrictHostKeyChecking=yes`，不回退到全局或 `/dev/null` 信任。
+
+显式 pin 的替换同样必须提交新的 owner-approved binding；重新发现时未出现选定 fingerprint、profile 被篡改或后续 host key 变化，均 fail closed。这样保留了有意选择 TOFU 的现有 Agent 流程，同时提供可测试的高保证路径。
 
 ## ApprovalTicket
 
@@ -80,4 +84,4 @@ one-shot 认证。
 
 ## 当前边界
 
-SSH、HTTP/API、SFTP/SCP 和私有地址 FTP 的 purpose-built executor 已接入 Agent；数据库、浏览器和本地 App 的策略与不透明 IPC 描述符已接入，但对应 executor 仍返回 `ACTION_EXECUTOR_UNAVAILABLE`，不会降级到明文或通用命令。FTP 不支持公网目标，且每笔请求都需要设备所有者重新认证。已有 Secret 的精确目标/协议绑定通过 `secret_bind_destination` 完成：它以原子 pair 写入经过认证的绑定元数据，只在 Agent 进程内重封装，不建立执行 lease；成功响应返回实际保存的 canonical destination。真实 SSH/SFTP/FTP 验收需要在有明确绑定的测试 Secret 和设备可达时执行；自动化测试覆盖目标形态与风险决策，不伪造真实设备成功结果。
+SSH、HTTP/API、SFTP/SCP 和私有地址 FTP 的 purpose-built executor 已接入 Agent；数据库、浏览器和本地 App 的策略与不透明 IPC 描述符已接入，但对应 executor 仍返回 `ACTION_EXECUTOR_UNAVAILABLE`，不会降级到明文或通用命令。FTP 不支持公网目标，且每笔请求都需要设备所有者重新认证。已有 Secret 的精确目标/协议绑定通过 `secret_bind_destination` 完成：它以原子 pair 写入经过认证的绑定元数据，只在 Agent 进程内重封装，不建立执行 lease；成功响应返回实际保存的 canonical destination，并在显式 pin 时返回非敏感的 port/pin 元数据。`secret_review_ssh_host_key` 只返回当前展示的 host-key 指纹，不解析 Secret。真实 SSH/SFTP/FTP 验收需要在有明确绑定的测试 Secret 和设备可达时执行；自动化测试覆盖目标形态与风险决策，不伪造真实设备成功结果。

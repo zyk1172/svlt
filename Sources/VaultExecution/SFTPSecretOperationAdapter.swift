@@ -5,7 +5,7 @@ import VaultCore
 /// implementation; the adapter never invokes a shell and never places a
 /// resolved credential in argv or environment. The Expect wrapper receives
 /// hex-framed fields and supplies the password only to the password prompt.
-public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
+public struct SFTPSecretOperationAdapter: SecretOperationAdapter, SSHHostKeyPinning {
     public let kind: SecretAdapterKind = .sftp
     public let capability: SecretOperationCapability
 
@@ -23,15 +23,20 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
     private let processRunner: any ProcessRunning
     private let outputSanitizer: OutputSanitizer
     private let localRoot: URL
+    private let sshHostKeyDiscovery: SSHHostKeyDiscovery
+    private let sshKnownHostsStore: SSHKnownHostsStore
 
     public init(
         processRunner: any ProcessRunning = FoundationProcessRunner(),
         outputSanitizer: OutputSanitizer = OutputSanitizer(),
-        localRoot: URL = FileTransferAdapterSupport.defaultTransferRoot
+        localRoot: URL = FileTransferAdapterSupport.defaultTransferRoot,
+        sshKnownHostsDirectory: URL? = nil
     ) {
         self.processRunner = processRunner
         self.outputSanitizer = outputSanitizer
         self.localRoot = localRoot.standardizedFileURL
+        self.sshHostKeyDiscovery = SSHHostKeyDiscovery(processRunner: processRunner)
+        self.sshKnownHostsStore = SSHKnownHostsStore(directoryURL: sshKnownHostsDirectory)
         let available = FileManager.default.isExecutableFile(atPath: Self.expectExecutablePath)
             && FileManager.default.isExecutableFile(atPath: Self.sftpExecutablePath)
         self.capability = SecretOperationCapability(
@@ -70,7 +75,7 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
 
     public func execute(
         _ descriptor: SecretOperationDescriptor,
-        metadata _: [SecretPolicyMetadata],
+        metadata: [SecretPolicyMetadata],
         context _: SecretOperationExecutionContext,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SecretOperationOutput {
@@ -97,6 +102,27 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
             try prepareLocalFile(for: plan)
         } catch {
             throw SecretOperationExecutionError.invalidParameter
+        }
+
+        let hostKeyPin = try matchingHostKeyPin(
+            host: plan.host,
+            port: plan.port,
+            protocolType: plan.protocolType,
+            metadata: metadata
+        )
+        let knownHostsPath: String
+        do {
+            if let hostKeyPin {
+                knownHostsPath = try sshKnownHostsStore.validatedPinnedPath(
+                    host: plan.host,
+                    port: plan.port,
+                    pin: hostKeyPin
+                )
+            } else {
+                knownHostsPath = try sshKnownHostsStore.prepare()
+            }
+        } catch {
+            throw SecretOperationExecutionError.unavailable
         }
 
         var secretBuffers: [Data] = []
@@ -143,7 +169,9 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
                     username: username,
                     password: password,
                     batch: command,
-                    timeoutSeconds: Self.timeoutSeconds(plan.timeout)
+                    timeoutSeconds: Self.timeoutSeconds(plan.timeout),
+                    knownHostsPath: knownHostsPath,
+                    strictHostKeyChecking: hostKeyPin != nil
                 ),
                 timeout: plan.timeout,
                 outputLimitBytes: Self.outputLimitBytes
@@ -209,6 +237,19 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
 
     public func invalidateSecurityState() async {}
 
+    public func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview {
+        try await sshHostKeyDiscovery.review(host: host, port: port)
+    }
+
+    public func installSSHHostKey(host: String, port: Int, pin: SSHHostKeyPin) async throws {
+        try await sshHostKeyDiscovery.install(
+            host: host,
+            port: port,
+            pin: pin,
+            into: sshKnownHostsStore
+        )
+    }
+
     private func prepareLocalFile(for plan: FileTransferPlan) throws {
         guard plan.localURL != nil || plan.operation == .list || plan.operation == .delete else {
             throw FileTransferAdapterError.invalidLocalPath
@@ -270,9 +311,20 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
         username: String,
         password: String,
         batch: String,
-        timeoutSeconds: Int
+        timeoutSeconds: Int,
+        knownHostsPath: String = "/private/tmp/svlt-test-known-hosts",
+        strictHostKeyChecking: Bool = false
     ) -> Data {
-        let fields = [host, String(port), username, password, batch, String(timeoutSeconds)]
+        let fields = [
+            host,
+            String(port),
+            username,
+            password,
+            batch,
+            String(timeoutSeconds),
+            knownHostsPath,
+            strictHostKeyChecking ? "1" : "0"
+        ]
         return Data(fields.map { hexEncoded(Data($0.utf8)) }.joined(separator: "\n").appending("\n").utf8)
     }
 
@@ -301,7 +353,9 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
         case wrapperTimedOut:
             return SecretOperationOutput(status: "TIMED_OUT", exitCode: result.exitCode, stage: .timeout, stderr: boundedText(result.stderr), redacted: true)
         case 255:
-            return SecretOperationOutput(status: "FAILED", exitCode: result.exitCode, stage: .connection, stderr: boundedText(result.stderr), redacted: true)
+            return containsHostKeyFailure(result)
+                ? SecretOperationOutput(status: "HOST_KEY_FAILED", exitCode: result.exitCode, stage: .hostKey, stderr: boundedText(result.stderr), redacted: true)
+                : SecretOperationOutput(status: "FAILED", exitCode: result.exitCode, stage: .connection, stderr: boundedText(result.stderr), redacted: true)
         case wrapperFrameRead:
             return SecretOperationOutput(status: "WRAPPER_FAILED", exitCode: result.exitCode, stage: .frameRead, redacted: true)
         case wrapperFrameDecode:
@@ -328,13 +382,22 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
         set password [readHexField]
         set batch [readHexField]
         set timeoutSeconds [readHexField]
-        if {$host eq "" || $username eq "" || $password eq "" || $batch eq ""} { exit \(wrapperArgumentValidation) }
+        set knownHostsPath [readHexField]
+        set strictHostKeyChecking [readHexField]
+        if {$host eq "" || $username eq "" || $password eq "" || $batch eq "" || $knownHostsPath eq ""} { exit \(wrapperArgumentValidation) }
         if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(wrapperArgumentValidation) }
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 60} { exit \(wrapperArgumentValidation) }
+        if {$strictHostKeyChecking ne "0" && $strictHostKeyChecking ne "1"} { exit \(wrapperArgumentValidation) }
         set timeout $timeoutSeconds
         set passwordSent 0
         set sessionReady 0
         log_user 1
+        set hostKeyCheckingMode accept-new
+        set hashKnownHostsMode yes
+        if {$strictHostKeyChecking eq "1"} {
+            set hostKeyCheckingMode yes
+            set hashKnownHostsMode no
+        }
         set destinationHost $host
         if {[string first ":" $destinationHost] >= 0 && ![string match "[*]" $destinationHost]} {
             set destinationHost "\\[$destinationHost\\]"
@@ -343,7 +406,10 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
             /usr/bin/sftp \
             -q \
             -o BatchMode=no \
-            -o StrictHostKeyChecking=accept-new \
+            -o StrictHostKeyChecking=$hostKeyCheckingMode \
+            -o UserKnownHostsFile=$knownHostsPath \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o HashKnownHosts=$hashKnownHostsMode \
             -o PubkeyAuthentication=no \
             -o PasswordAuthentication=yes \
             -o KbdInteractiveAuthentication=yes \
@@ -405,6 +471,36 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter {
             throw SecretOperationExecutionError.invalidParameter
         }
         return value
+    }
+
+    private static func containsHostKeyFailure(_ result: ProcessResult) -> Bool {
+        let text = String(decoding: result.stderr + result.stdout, as: UTF8.self).lowercased()
+        return text.contains("remote host identification has changed")
+            || text.contains("host key verification failed")
+    }
+
+    private func matchingHostKeyPin(
+        host: String,
+        port: Int,
+        protocolType: SecretOperationProtocol,
+        metadata: [SecretPolicyMetadata]
+    ) throws -> SSHHostKeyPin? {
+        let pins = metadata
+            .flatMap { $0.destinationBindings }
+            .filter {
+                $0.matches(
+                    requestedProtocol: protocolType,
+                    destination: host,
+                    url: nil,
+                    port: port
+                )
+            }
+            .compactMap(\.hostKeyPin)
+        let uniquePins = Set(pins)
+        guard uniquePins.count <= 1 else {
+            throw SecretOperationExecutionError.invalidParameter
+        }
+        return uniquePins.first
     }
 
     private static func timeoutSeconds(_ duration: Duration) -> Int {
