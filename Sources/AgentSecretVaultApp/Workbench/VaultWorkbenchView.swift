@@ -1238,7 +1238,6 @@ private struct CatalogAgentSecureInputSheet: View {
     let request: CatalogAgentSecureInputRequest
     let submit: ((CatalogAgentSecureInputRequest, [CatalogSecureInputTarget], [String: String]) async -> Void)?
     let cancel: ((UUID) async -> Void)?
-    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedTargets: Set<String> = []
     @State private var values: [String: String] = [:]
@@ -1304,15 +1303,12 @@ private struct CatalogAgentSecureInputSheet: View {
                 Task { await cancel?(request.id) }
             }
         }
-        .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { return }
+        // Presenting a sheet makes the parent window resign key. Observe the
+        // application instead so that normal sheet presentation is not treated
+        // as the user leaving the app.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             wipePlaintext()
             guard !didSubmit else { return }
-            Task { await cancel?(request.id) }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { _ in
-            guard !didSubmit else { return }
-            wipePlaintext()
             Task { await cancel?(request.id) }
         }
     }
