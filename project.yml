@@ -113,6 +113,7 @@ targets:
         PRODUCT_NAME: SVLTAgent
         PRODUCT_BUNDLE_IDENTIFIER: com.agent-secret-vault.SVLT.agent
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        ENABLE_HARDENED_RUNTIME: YES
     sources:
       - Sources/SVLTAgent
     dependencies:
@@ -133,6 +134,7 @@ targets:
         PRODUCT_NAME: SVLT
         PRODUCT_BUNDLE_IDENTIFIER: com.agent-secret-vault.SVLT
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        ENABLE_HARDENED_RUNTIME: YES
     sources:
       - Sources/AgentSecretVaultApp/AgentSecretVaultApp.swift
       - AppAssets/Assets.xcassets
