@@ -186,27 +186,11 @@ private struct ExecutionApprovalFlight {
     let task: Task<LocalAuthenticationContext?, Error>
 }
 
-private struct ScopedMasterKeyFlight {
-    let task: Task<SymmetricKey, Error>
-}
-
-private struct ScopedMasterKeyExpiry {
-    let id: UUID
-    let task: Task<Void, Never>
-}
-
 private enum ExecutionAuthorizationCommit: Equatable, Sendable {
     case leaseEstablished
     case leaseReused
     case approvedWithoutLease
     case needsFreshApproval
-}
-
-/// A decrypted master-key capability may exist only while its matching
-/// in-memory scoped authorization lease is active. It is never persisted and
-/// is cleared alongside the lease on any security-state invalidation.
-private struct ScopedMasterKeyAuthorization: Sendable {
-    let key: SymmetricKey
 }
 
 /// Non-sensitive, sticky audit-channel health. This is deliberately kept
@@ -281,6 +265,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let revealSessionStore: RevealSessionStore
     private let revealSessionPresenter: any RevealSessionPresenting
     private let authorizationSession: AuthorizationSession
+    private let scopedMasterKeyCoordinator: ScopedMasterKeyCoordinator
     private let operationPolicyEngine: SecretOperationPolicyEngine
     private let approvalTicketStore: ApprovalTicketStore
     private let operationApprover: any OperationApproving
@@ -305,9 +290,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
     private var approvalPending = false
     private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
-    private var scopedMasterKeyAuthorizations: [ExecutionAuthorizationScope: ScopedMasterKeyAuthorization] = [:]
-    private var scopedMasterKeyFlights: [ExecutionAuthorizationScope: ScopedMasterKeyFlight] = [:]
-    private var scopedMasterKeyExpiryTasks: [ExecutionAuthorizationScope: ScopedMasterKeyExpiry] = [:]
     private var pendingExecutionApprovalIDs: Set<UUID> = []
     private var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
     private var securityGeneration: UInt64 = 0
@@ -391,6 +373,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.revealSessionStore = revealSessionStore
         self.revealSessionPresenter = revealSessionPresenter
         self.authorizationSession = authorizationSession
+        self.scopedMasterKeyCoordinator = ScopedMasterKeyCoordinator(
+            invalidateExecutionAuthorization: { scope in
+                await authorizationSession.invalidateExecutionAuthorization(for: scope)
+            }
+        )
         self.operationPolicyEngine = operationPolicyEngine
         self.approvalTicketStore = approvalTicketStore
         self.operationApprover = operationApprover
@@ -555,14 +542,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             flight.task.cancel()
         }
         executionApprovalFlights.removeAll()
-        for flight in scopedMasterKeyFlights.values {
-            flight.task.cancel()
-        }
-        scopedMasterKeyFlights.removeAll()
-        for expiry in scopedMasterKeyExpiryTasks.values {
-            expiry.task.cancel()
-        }
-        scopedMasterKeyExpiryTasks.removeAll()
+        await scopedMasterKeyCoordinator.invalidateAll()
         pendingExecutionApprovalIDs.removeAll()
         for operation in inFlightSecretOperations.values {
             operation.cancel()
@@ -572,7 +552,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
         await operationExecutor.invalidateSecurityState()
-        clearScopedMasterKeyAuthorizations()
         for authorization in agentDecryptAuthorizations.values {
             var keyData = authorization.key.withUnsafeBytes { Data($0) }
             keyData.resetBytes(in: 0..<keyData.count)
@@ -580,18 +559,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         agentDecryptAuthorizations.removeAll()
         await clearProtectedKeyState?()
         await statusObserver?(status())
-    }
-
-    private func clearScopedMasterKeyAuthorizations() {
-        for expiry in scopedMasterKeyExpiryTasks.values {
-            expiry.task.cancel()
-        }
-        scopedMasterKeyExpiryTasks.removeAll()
-        for authorization in scopedMasterKeyAuthorizations.values {
-            var keyData = authorization.key.withUnsafeBytes { Data($0) }
-            keyData.resetBytes(in: 0..<keyData.count)
-        }
-        scopedMasterKeyAuthorizations.removeAll()
     }
 
     private func cancelAllSecureInputRequests() async {
@@ -4794,7 +4761,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
 
         if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
-            guard scopedMasterKeyAuthorizations[scope] != nil else {
+            guard await scopedMasterKeyCoordinator.hasAuthorization(for: scope) else {
                 await authorizationSession.invalidateExecutionAuthorization(for: scope)
                 return .needsFreshApproval
             }
@@ -4832,7 +4799,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // suspended. Reuse that exact scoped lease instead of authorizing it
         // again.
         if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
-            guard scopedMasterKeyAuthorizations[scope] != nil else {
+            guard await scopedMasterKeyCoordinator.hasAuthorization(for: scope) else {
                 await authorizationSession.invalidateExecutionAuthorization(for: scope)
                 return .needsFreshApproval
             }
@@ -4856,14 +4823,17 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        if expiresAt != nil {
-            scopedMasterKeyAuthorizations[scope] = ScopedMasterKeyAuthorization(key: masterKey)
-            await scheduleScopedMasterKeyExpiry(for: scope)
+        let executionWindowDuration: TimeInterval?
+        if expiresAt == nil {
+            executionWindowDuration = nil
         } else {
-            scopedMasterKeyAuthorizations.removeValue(forKey: scope)
-            scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
+            executionWindowDuration = await authorizationSession.executionAuthorizationWindowDuration()
         }
-        scopedMasterKeyFlights.removeValue(forKey: scope)
+        await scopedMasterKeyCoordinator.storeAuthorizedKey(
+            masterKey,
+            for: scope,
+            duration: executionWindowDuration
+        )
 
         executionApprovalFlights.removeValue(forKey: scope)
         if pendingExecutionApprovalIDs.remove(flight.id) != nil {
@@ -4886,36 +4856,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 await statusObserver?(status())
             }
         }
-        scopedMasterKeyFlights.removeValue(forKey: scope)?.task.cancel()
-        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
-        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
-        await authorizationSession.invalidateExecutionAuthorization(for: scope)
-    }
-
-    private func scheduleScopedMasterKeyExpiry(for scope: ExecutionAuthorizationScope) async {
-        guard let duration = await authorizationSession.executionAuthorizationWindowDuration() else {
-            return
-        }
-        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)?.task.cancel()
-        let id = UUID()
-        let task = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(duration))
-            guard !Task.isCancelled else { return }
-            await self?.expireScopedMasterKeyAuthorization(scope: scope, expiryID: id)
-        }
-        scopedMasterKeyExpiryTasks[scope] = ScopedMasterKeyExpiry(id: id, task: task)
-    }
-
-    private func expireScopedMasterKeyAuthorization(
-        scope: ExecutionAuthorizationScope,
-        expiryID: UUID
-    ) async {
-        guard scopedMasterKeyExpiryTasks[scope]?.id == expiryID else {
-            return
-        }
-        scopedMasterKeyExpiryTasks.removeValue(forKey: scope)
-        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
-        await authorizationSession.invalidateExecutionAuthorization(for: scope)
+        await scopedMasterKeyCoordinator.abandon(scope: scope)
     }
 
     private func emitExecutionWindowReuseAudit(
@@ -5484,55 +5425,44 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         }
 
-        if await authorizationSession.hasActiveExecutionAuthorization(for: scope),
-           let authorization = scopedMasterKeyAuthorizations[scope] {
-            return authorization.key
-        }
-
-        scopedMasterKeyAuthorizations.removeValue(forKey: scope)
-        await authorizationSession.invalidateExecutionAuthorization(for: scope)
-        if let flight = scopedMasterKeyFlights[scope] {
-            return try await flight.task.value
-        }
-
+        let authorizationSession = self.authorizationSession
         let masterKey = self.masterKey
         let masterKeyProvider = self.masterKeyProvider
         let freshMasterKeyProvider = self.freshMasterKeyProvider
         let masterKeyProviderWithAuthenticationContext = self.masterKeyProviderWithAuthenticationContext
         let freshMasterKeyProviderWithAuthenticationContext = self.freshMasterKeyProviderWithAuthenticationContext
-        let task = Task<SymmetricKey, Error> {
-            if let masterKey {
-                return masterKey
+        return try await scopedMasterKeyCoordinator.resolveKey(
+            for: scope,
+            isLeaseActive: {
+                await authorizationSession.hasActiveExecutionAuthorization(for: scope)
+            },
+            load: {
+                if let masterKey {
+                    return masterKey
+                }
+                if let freshMasterKeyProviderWithAuthenticationContext {
+                    return try await freshMasterKeyProviderWithAuthenticationContext(
+                        policy,
+                        reason,
+                        authenticationContext
+                    )
+                }
+                if let freshMasterKeyProvider {
+                    return try await freshMasterKeyProvider(policy, reason)
+                }
+                if let masterKeyProviderWithAuthenticationContext {
+                    return try await masterKeyProviderWithAuthenticationContext(
+                        policy,
+                        reason,
+                        authenticationContext
+                    )
+                }
+                guard let masterKeyProvider else {
+                    throw VaultAppServicesRevealError.revealUnavailable
+                }
+                return try await masterKeyProvider(policy, reason)
             }
-            if let freshMasterKeyProviderWithAuthenticationContext {
-                return try await freshMasterKeyProviderWithAuthenticationContext(
-                    policy,
-                    reason,
-                    authenticationContext
-                )
-            }
-            if let freshMasterKeyProvider {
-                return try await freshMasterKeyProvider(policy, reason)
-            }
-            if let masterKeyProviderWithAuthenticationContext {
-                return try await masterKeyProviderWithAuthenticationContext(
-                    policy,
-                    reason,
-                    authenticationContext
-                )
-            }
-            guard let masterKeyProvider else {
-                throw VaultAppServicesRevealError.revealUnavailable
-            }
-            return try await masterKeyProvider(policy, reason)
-        }
-        scopedMasterKeyFlights[scope] = ScopedMasterKeyFlight(task: task)
-        do {
-            return try await task.value
-        } catch {
-            scopedMasterKeyFlights.removeValue(forKey: scope)
-            throw error
-        }
+        )
     }
 
     private func freshMasterKey(
