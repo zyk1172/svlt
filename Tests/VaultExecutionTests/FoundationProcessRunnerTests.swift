@@ -49,6 +49,39 @@ import Testing
     }
 }
 
+@Test func cancellationForcesDownProcessThatIgnoresTerm() async throws {
+    let runner = FoundationProcessRunner()
+    let clock = ContinuousClock()
+    let startedAt = clock.now
+
+    let task = Task {
+        try await runner.run(
+            ProcessInvocation(
+                executable: "/bin/sh",
+                arguments: ["-c", "trap '' TERM; while :; do :; done"]
+            ),
+            stdin: Data(),
+            timeout: .seconds(30),
+            outputLimitBytes: 1_024
+        )
+    }
+
+    try await Task.sleep(for: .milliseconds(100))
+    task.cancel()
+
+    do {
+        _ = try await task.value
+        Issue.record("Cancelled process unexpectedly completed successfully.")
+    } catch is CancellationError {
+        // Expected. The stubborn child should be force-killed after the grace
+        // window so the runner can finish the cancelled task.
+    } catch {
+        Issue.record("Expected CancellationError, but caught \(error).")
+    }
+
+    #expect(startedAt.duration(to: clock.now) < .seconds(4))
+}
+
 @Test func outputLargerThanLimitIsRejected() async throws {
     let runner = FoundationProcessRunner()
 
