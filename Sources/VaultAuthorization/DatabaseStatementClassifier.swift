@@ -1,15 +1,17 @@
 import Foundation
 import VaultCore
 
-/// A conservative, dialect-aware lexical classification for database
+/// A conservative cross-dialect lexical classification for database
 /// statements.
 ///
 /// This is deliberately not a SQL firewall or an executor. It only decides
 /// whether a statement can use the ordinary authorization window. Quoted
 /// literals, quoted identifiers, comments, PostgreSQL dollar-quoted bodies,
 /// nested parentheses, and CTEs are handled so that dangerous keywords cannot
-/// be hidden in a wrapper or accidentally read from a string. Anything that
-/// cannot be classified with this small grammar takes the one-shot owner
+/// be hidden in a wrapper or accidentally read from a string. Dialect-specific
+/// constructs that can change server semantics are handled conservatively so a
+/// classifier/server parse mismatch cannot grant a reusable lease. Anything
+/// that cannot be classified with this small grammar takes the one-shot owner
 /// approval path instead of being granted a reusable lease.
 struct DatabaseStatementClassification: Equatable, Sendable {
     let requirement: AuthorizationRequirement
@@ -201,11 +203,24 @@ struct DatabaseStatementClassifier: Sendable {
             return true
         }
 
+        // SET has materially different privilege boundaries across MySQL and
+        // PostgreSQL. Only ordinary per-session configuration is reusable.
+        // Anything that changes global/persisted configuration, credentials,
+        // roles, or effective authorization identity must take a fresh owner
+        // approval. Looking at words instead of punctuation also catches
+        // MySQL forms such as SET @@PERSIST_ONLY.max_connections = 200.
         if containsSequence(words, ["SET", "GLOBAL"])
             || containsSequence(words, ["SET", "PERSIST"])
+            || containsSequence(words, ["SET", "PERSIST_ONLY"])
             || containsSequence(words, ["SET", "ROLE"])
+            || containsSequence(words, ["SET", "DEFAULT", "ROLE"])
+            || containsSequence(words, ["SET", "LOCAL", "ROLE"])
+            || containsSequence(words, ["SET", "SESSION", "ROLE"])
+            || containsSequence(words, ["SET", "PASSWORD"])
+            || containsSequence(words, ["SET", "SESSION", "AUTHORIZATION"])
             || containsSequence(words, ["ALTER", "SYSTEM"])
             || containsSequence(words, ["RESET", "MASTER"])
+            || containsSequence(words, ["RESET", "PERSIST"])
         {
             return true
         }
@@ -309,23 +324,44 @@ struct DatabaseStatementClassifier: Sendable {
                 continue
             }
 
-            if byte == 0x2D, peek(bytes, index + 1) == 0x2D {
+            // PostgreSQL accepts `--comment` without whitespace, while MySQL
+            // only recognizes `--` as a comment when it is followed by
+            // whitespace/control. Since the classifier is shared by both
+            // engines, use the stricter MySQL rule. PostgreSQL no-whitespace
+            // comments are then parsed conservatively rather than allowing a
+            // MySQL expression such as `1--1` to hide a following statement.
+            if byte == 0x2D,
+               peek(bytes, index + 1) == 0x2D,
+               isDashDashCommentStart(bytes, from: index) {
                 index += 2
                 while index < bytes.count, bytes[index] != 0x0A {
                     index += 1
                 }
                 continue
             }
-            if byte == 0x23 {
-                // MySQL's # line comments.
+
+            // `#` is a MySQL line-comment marker but is also part of valid
+            // PostgreSQL JSON operators (`#>` / `#>>`). Treat it as a comment
+            // only in unambiguous comment positions; otherwise keep it as an
+            // ordinary token so PostgreSQL expressions remain visible to the
+            // rest of the statement classifier.
+            if byte == 0x23, isHashCommentStart(bytes, from: index) {
                 index += 1
                 while index < bytes.count, bytes[index] != 0x0A {
                     index += 1
                 }
                 continue
             }
+
             if byte == 0x2F, peek(bytes, index + 1) == 0x2A {
-                guard let next = endOfBlockComment(bytes, from: index) else { return nil }
+                // MySQL/MariaDB executable comments (`/*! ... */`, `/*M! ... */`)
+                // are not comments from the server's perspective. Do not try
+                // to emulate version-gated execution here: force the whole
+                // query onto the conservative fresh/unknown path instead.
+                guard !isExecutableBlockCommentStart(bytes, from: index),
+                      let next = endOfBlockComment(bytes, from: index) else {
+                    return nil
+                }
                 index = next
                 continue
             }
@@ -437,6 +473,58 @@ struct DatabaseStatementClassifier: Sendable {
             }
         }
         return nil
+    }
+
+    private func isExecutableBlockCommentStart(_ bytes: [UInt8], from start: Int) -> Bool {
+        guard peek(bytes, start) == 0x2F, peek(bytes, start + 1) == 0x2A else {
+            return false
+        }
+        if peek(bytes, start + 2) == 0x21 {
+            return true
+        }
+        guard let marker = peek(bytes, start + 2), marker == 0x4D || marker == 0x6D else {
+            return false
+        }
+        return peek(bytes, start + 3) == 0x21
+    }
+
+    private func isDashDashCommentStart(_ bytes: [UInt8], from start: Int) -> Bool {
+        guard peek(bytes, start) == 0x2D, peek(bytes, start + 1) == 0x2D else {
+            return false
+        }
+        guard let following = peek(bytes, start + 2) else {
+            return true
+        }
+        return isWhitespace(following)
+    }
+
+    private func isHashCommentStart(_ bytes: [UInt8], from start: Int) -> Bool {
+        guard peek(bytes, start) == 0x23 else { return false }
+
+        // A # at the beginning of a physical line (allowing indentation) is
+        // unambiguously a MySQL-style comment for the SQL shapes SVLT accepts.
+        var cursor = start
+        while cursor > 0 {
+            let previous = bytes[cursor - 1]
+            if previous == 0x0A || previous == 0x0D {
+                return true
+            }
+            if previous == 0x20 || previous == 0x09 {
+                cursor -= 1
+                continue
+            }
+            break
+        }
+        if cursor == 0 {
+            return true
+        }
+
+        // Inline MySQL comments normally use whitespace after #. This excludes
+        // PostgreSQL's #> and #>> JSON operators from comment handling.
+        guard let following = peek(bytes, start + 1) else {
+            return true
+        }
+        return isWhitespace(following)
     }
 
     private func endOfDollarQuoted(_ bytes: [UInt8], from start: Int) -> Int? {
