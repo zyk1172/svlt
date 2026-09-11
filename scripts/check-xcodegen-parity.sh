@@ -54,7 +54,7 @@ canonicalize_pbx_project() {
   # in the comparison so additions and removals still fail the check.
   perl -0pe '
     s{
-      (\n[ \t]*targets = \(\n)
+      (\n[ \t]*targets[ \t]*=[ \t]*\(\n)
       (.*?)
       (\n[ \t]*\);)
     }{
