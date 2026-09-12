@@ -177,8 +177,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let statusObserver: (@Sendable (WorkbenchStatus) async -> Void)?
     private let auditObserver: (@Sendable (AgentAutomationAuditEntry) async -> Void)?
     private let savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)?
-    private let auditLog: EncryptedAuditLog?
-    private var auditHealthStore: CatalogAuditHealthStore
+    private let auditPersistenceCoordinator: CatalogAuditPersistenceCoordinator
     private let secureInputReceiptStore: CatalogSecureInputReceiptStore
     private let exportCoordinator: CatalogExportCoordinator
     private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
@@ -277,8 +276,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.statusObserver = statusObserver
         self.auditObserver = auditObserver
         self.savedReferencesObserver = savedReferencesObserver
-        self.auditLog = auditLog
-        self.auditHealthStore = CatalogAuditHealthStore(url: auditHealthURL)
+        self.auditPersistenceCoordinator = CatalogAuditPersistenceCoordinator(
+            auditLog: auditLog,
+            auditHealthURL: auditHealthURL,
+            fallbackMasterKey: masterKey,
+            now: now
+        )
         let resolvedSecureInputReceiptURL = (secureInputReceiptURL
             ?? auditHealthURL?.deletingLastPathComponent().appendingPathComponent("secure-input-receipts.json"))?
             .standardizedFileURL
@@ -2237,18 +2240,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func catalogRecentAuditEntries(limit: Int) async throws -> CatalogRecentAuditResult {
-        guard let auditLog else { return CatalogRecentAuditResult(entries: []) }
-        let readResult = try await auditLog.recentWithDiagnostics(limit: min(max(limit, 1), 100))
-        return CatalogRecentAuditResult(
-            entries: readResult.events.map(Self.safeAuditEntry),
-            diagnostics: readResult.diagnostics
-        )
+        try await auditPersistenceCoordinator.recentCatalogEntries(limit: limit)
     }
 
     /// A deliberately narrow, non-sensitive health signal. It never contains
     /// paths, payloads, reference IDs, or key material.
     public func catalogAuditHealth() async -> String? {
-        auditHealthStore.healthSignal
+        await auditPersistenceCoordinator.healthSignal()
     }
 
     public func pendingCatalogSecureInputRequestIDs() async -> [UUID] {
@@ -5380,54 +5378,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // A production request always arrives through one of the two IPC
         // handlers, which installs AuditContext.current. Do not infer `.agent`
         // here: an unscoped event cannot be safely attributed to a caller.
-        guard let auditContext else {
-            return
-        }
-        guard let auditLog else {
-            return
-        }
-        let event = AuditEvent(
-            timestamp: entry.occurredAt,
-            source: auditContext.source,
-            integration: auditContext.source == .app ? "agent-secret-vault-app-control" : "agent-secret-vault-mcp",
-            correlationID: auditContext.correlationID,
-            requestID: auditContext.requestID,
-            referenceID: nil,
-            referenceCount: referenceCount,
-            operation: operation ?? auditOperation(for: action),
-            risk: 0,
+        guard let auditContext else { return }
+        await auditPersistenceCoordinator.append(
+            entry: entry,
+            context: auditContext,
+            operation: operation,
             authorizationOutcome: authorizationOutcome,
-            declaredTarget: sanitizedAuditTarget(entry.target),
-            status: status ?? auditStatus(for: result),
-            exitCode: nil,
             authorizationMode: authorizationMode,
-            caller: auditContext.caller
+            status: status
         )
-        do {
-            // The production daemon supplies an independent Keychain audit key.
-            // This call must never go through resolvedMasterKey().
-            try await auditLog.append(event)
-            auditHealthStore.recordAppendSuccess()
-            CatalogSecurityAuditNotifier.notify()
-        } catch {
-            // Explicit test callers may have supplied an already-held
-            // master key. Never acquire one merely to record a failed audit.
-            if let masterKey {
-                do {
-                    try await auditLog.append(event, masterKey: masterKey)
-                    auditHealthStore.recordAppendSuccess()
-                    CatalogSecurityAuditNotifier.notify()
-                } catch {
-                    // Audit persistence must not make the user operation fail.
-                    auditHealthStore.recordAppendFailure(at: now())
-                    Self.logAuditAppendFailure()
-                }
-            }
-            if masterKey == nil {
-                auditHealthStore.recordAppendFailure(at: now())
-                Self.logAuditAppendFailure()
-            }
-        }
     }
 
     private func persistSecureInputReceipts() {
@@ -5439,13 +5398,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             Logger(subsystem: "com.agent-secret-vault.SVLT", category: "secure-input")
                 .error("SECURE_INPUT_RECEIPT_PERSIST_FAILED")
         }
-    }
-
-    private static func logAuditAppendFailure() {
-        // Stable, path-free diagnostics make the failure observable without
-        // turning the audit channel into a sensitive-data channel.
-        Logger(subsystem: "com.agent-secret-vault.SVLT", category: "audit")
-            .error("AUDIT_APPEND_FAILED")
     }
 
     private func agentAuditContext() -> AuditContext {
@@ -5488,73 +5440,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             authorizationOutcome: context.requestID == nil ? .notRequired : .approved,
             status: .failure
         )
-    }
-
-    private func auditOperation(for action: String) -> AuditOperation {
-        if action.contains("格式") {
-            return action.contains("修复") ? .formatRepair : .formatCheck
-        }
-        if action.contains("目录") || action.contains("分组") || action.contains("条目") {
-            return .catalogMutation
-        }
-        if action.contains("凭据") || action.contains("密码") {
-            return .credentialUse
-        }
-        if action.contains("显示") || action.contains("脱密") || action.contains("文件") {
-            return .reveal
-        }
-        if action.contains("扫描") || action.contains("连接") || action.contains("元数据") {
-            return .status
-        }
-        return .secureExecute
-    }
-
-    private func auditStatus(for result: String) -> AuditStatus {
-        if result.contains("显示") {
-            return .displayedToUser
-        }
-        if result.contains("失败") {
-            return .failure
-        }
-        return .completed
-    }
-
-    private static func safeAuditEntry(_ event: AuditEvent) -> CatalogSecurityAuditEntry {
-        CatalogSecurityAuditEntry(
-            id: event.id,
-            timestamp: event.timestamp,
-            source: event.source,
-            operation: event.operation,
-            authorizationOutcome: event.authorizationOutcome,
-            result: event.status,
-            target: safeAuditTarget(event.declaredTarget),
-            referenceCount: event.referenceCount,
-            authorizationMode: event.authorizationMode,
-            caller: event.caller
-        )
-    }
-
-    private func sanitizedAuditTarget(_ target: String) -> String {
-        Self.safeAuditTarget(target)
-    }
-
-    private static func safeAuditTarget(_ target: String?) -> String {
-        guard let target, !target.isEmpty else { return "本机" }
-        let normalized = target
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\r", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowercased = normalized.lowercased()
-        if lowercased.contains("secret://") || lowercased.contains("token") ||
-            lowercased.contains("password") || lowercased.contains("cookie") ||
-            lowercased.contains("authorization") || normalized.contains("密码") {
-            return "敏感记录"
-        }
-        if normalized.contains("/") || normalized.contains("\\") ||
-            lowercased.contains("http") || lowercased.contains("api") {
-            return "受保护目标"
-        }
-        return String(normalized.prefix(80))
     }
 
     private func selectedCatalogStoreForApp() async throws -> SensitiveCatalogDocumentStore {
