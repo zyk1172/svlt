@@ -28,14 +28,6 @@ public enum VaultAppServicesSavedReferencesError: Error, Equatable, Sendable {
     case listUnavailable
 }
 
-public enum VaultAppServicesExportError: Error, Equatable, Sendable {
-    case invalidDestination
-    case destinationNotAllowed
-    case fileAlreadyExists
-    case directorySecurityInvalid
-    case writeFailed
-}
-
 public struct AgentAutomationAuditEntry: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let occurredAt: Date
@@ -232,7 +224,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let auditLog: EncryptedAuditLog?
     private var auditHealthStore: CatalogAuditHealthStore
     private let secureInputReceiptStore: CatalogSecureInputReceiptStore
-    private let exportDirectory: URL
+    private let exportCoordinator: CatalogExportCoordinator
     private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
     private let secureInputNotifier: CatalogAgentSecureInputNotifier
     private var pluginConnectedAt: Date?
@@ -341,7 +333,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.secureInputReceiptStore = secureInputReceiptStore
         let persistedSecureInputReceipts = secureInputReceiptStore.load(now: now())
         self.secureInputLifecycle = CatalogSecureInputLifecycle(receipts: persistedSecureInputReceipts)
-        self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
+        self.exportCoordinator = CatalogExportCoordinator(root: exportDirectory ?? CatalogExportCoordinator.defaultRoot())
         self.writeAccessNotifier = writeAccessNotifier
         self.secureInputNotifier = secureInputNotifier
     }
@@ -1490,20 +1482,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func secretOperationCapabilities() async -> [SecretOperationCapability] {
-        let exportRootIsReady = SecureExportWriter().canWrite(to: exportDirectory)
-        return operationExecutor.capabilities()
-            + [SecretOperationCapability(
-                kind: .export,
-                status: exportRootIsReady ? .supported : .unavailable,
-                operations: [.exportPlaintext],
-                reason: exportRootIsReady
-                    ? "App-owned export writer creates a new owner-only file below the configured export root"
-                    : "配置的导出根目录不存在、包含 symlink 或不是 owner-only 目录",
-                features: SecretOperationCapabilityFeatures(
-                    response: ["exportStatus", "path"],
-                    transportSessionReuse: false
-                )
-            )]
+        operationExecutor.capabilities() + [exportCoordinator.capability()]
     }
 
     public func deleteRecord(_ reference: String) async throws {
@@ -3824,15 +3803,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         context: RevealContext,
         destinationPath: String
     ) async throws -> String {
-        let destination = try validatedExportDestination(destinationPath)
+        let destination = try exportCoordinator.validatedDestination(destinationPath)
         // Export is not an executor adapter, so perform its capability check
         // explicitly before issuing any device-owner approval. A missing,
         // shared, or symlinked root must never consume an approval ticket or
         // establish a reusable export lease for an operation that cannot be
         // committed safely.
-        guard SecureExportWriter().canWrite(to: exportDirectory) else {
-            throw VaultAppServicesExportError.directorySecurityInvalid
-        }
+        try exportCoordinator.requireReadyForApproval()
         let operationGeneration = securityGeneration
         let operationContext = RevealContext(
             reason: context.reason,
@@ -3920,7 +3897,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 scope: scope,
                 for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                 reason: operationContext.reason,
-                destination: exportDirectory.standardizedFileURL.path,
+                destination: exportCoordinator.authorizationDestination,
                 authenticationContext: authorizationPath.authenticationContext,
                 forceFreshWhenUnscoped: true
             )
@@ -3966,7 +3943,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                         scope: scope,
                         for: authorizationPolicy(for: currentMetadata.map(\.policy)),
                         reason: operationContext.reason,
-                        destination: exportDirectory.standardizedFileURL.path,
+                        destination: exportCoordinator.authorizationDestination,
                         authenticationContext: authorizationPath.authenticationContext,
                         forceFreshWhenUnscoped: true
                     )
@@ -4003,19 +3980,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             guard operationGeneration == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
             }
-            do {
-                try SecureExportWriter().write(
-                    Data(resolvedText.utf8),
-                    to: destination,
-                    under: exportDirectory
-                )
-            } catch SecureExportWriterError.fileAlreadyExists {
-                throw VaultAppServicesExportError.fileAlreadyExists
-            } catch SecureExportWriterError.invalidRoot {
-                throw VaultAppServicesExportError.directorySecurityInvalid
-            } catch {
-                throw VaultAppServicesExportError.writeFailed
-            }
+            try exportCoordinator.write(
+                Data(resolvedText.utf8),
+                to: destination
+            )
         } catch {
             throw error
         }
@@ -4492,7 +4460,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // The export root is the validated security boundary. The leaf
             // file name intentionally stays out of the scope so distinct new
             // files within the same root can reuse the same authorization.
-            destination = exportDirectory.standardizedFileURL.path
+            destination = exportCoordinator.authorizationDestination
             port = nil
             username = nil
             protocolType = SecretOperationProtocol.file.rawValue
@@ -5464,48 +5432,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private static func canonicalReference(_ reference: String) -> String? {
         try? SecretReference(reference).description
-    }
-
-    private func validatedExportDestination(_ destinationPath: String) throws -> URL {
-        guard destinationPath.hasPrefix("/") else {
-            throw VaultAppServicesExportError.invalidDestination
-        }
-
-        let destination = URL(fileURLWithPath: destinationPath).standardizedFileURL
-        let exportRoot = exportDirectory.standardizedFileURL
-        let allowedExtensions = Set(["md", "txt"])
-        let fileExtension = destination.pathExtension.lowercased()
-        let fileName = destination.lastPathComponent
-
-        guard !fileName.isEmpty,
-              fileName != ".",
-              fileName != "..",
-              allowedExtensions.contains(fileExtension)
-        else {
-            throw VaultAppServicesExportError.invalidDestination
-        }
-
-        guard destination.deletingLastPathComponent().standardizedFileURL.path == exportRoot.path else {
-            throw VaultAppServicesExportError.destinationNotAllowed
-        }
-
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: exportRoot.path, isDirectory: &isDirectory),
-              isDirectory.boolValue
-        else {
-            throw VaultAppServicesExportError.invalidDestination
-        }
-
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw VaultAppServicesExportError.fileAlreadyExists
-        }
-
-        return destination
-    }
-
-    private static func defaultExportDirectory() -> URL {
-        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
     }
 
     private func emitAudit(
