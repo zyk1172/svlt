@@ -313,3 +313,132 @@ struct CatalogSecureInputTransaction: Sendable {
         }
     }
 }
+
+struct CatalogSecureInputLifecycleCompletion: Sendable {
+    let request: CatalogAgentSecureInputRequest
+    let auditContext: AuditContext?
+}
+
+/// Actor-confined owner for the state that must advance with one Secure Input
+/// request. The transaction keeps the cancellation/commit state machine; this
+/// owner couples it with the request-scoped audit context and expiry task so the
+/// service cannot independently forget one side of the lifecycle.
+struct CatalogSecureInputLifecycle: Sendable {
+    private var transaction: CatalogSecureInputTransaction
+    private var expiryTasks: [UUID: Task<Void, Never>] = [:]
+    private var auditContexts: [UUID: AuditContext] = [:]
+
+    init(receipts: [CatalogSecureInputReceiptRecord] = []) {
+        transaction = CatalogSecureInputTransaction(receipts: receipts)
+    }
+
+    var pendingRequestIDs: [UUID] {
+        transaction.pendingRequestIDs
+    }
+
+    var requestIDs: [UUID] {
+        transaction.requestIDs
+    }
+
+    func request(id: UUID) -> CatalogAgentSecureInputRequest? {
+        transaction.request(id: id)
+    }
+
+    func pendingRequest(id: UUID) -> CatalogAgentSecureInputRequest? {
+        transaction.pendingRequest(id: id)
+    }
+
+    func state(for id: UUID) -> CatalogSecureInputState? {
+        transaction.state(for: id)
+    }
+
+    func status(for requestID: UUID) -> CatalogSecureInputStatus {
+        transaction.status(for: requestID)
+    }
+
+    func hasRequest(forEntryID entryID: String) -> Bool {
+        transaction.hasRequest(forEntryID: entryID)
+    }
+
+    func auditContext(for id: UUID) -> AuditContext? {
+        auditContexts[id]
+    }
+
+    mutating func insert(
+        _ request: CatalogAgentSecureInputRequest,
+        auditContext: AuditContext
+    ) {
+        transaction.insert(request)
+        auditContexts[request.id] = auditContext
+    }
+
+    mutating func setExpiryTask(_ task: Task<Void, Never>, for id: UUID) {
+        expiryTasks[id] = task
+    }
+
+    mutating func beginSubmission(
+        id: UUID,
+        now: Date
+    ) throws -> CatalogAgentSecureInputRequest {
+        try transaction.beginSubmission(id: id, now: now)
+    }
+
+    mutating func latchAbort(
+        _ reason: CatalogSecureInputAbortReason,
+        for id: UUID
+    ) {
+        transaction.latchAbort(reason, for: id)
+    }
+
+    func ensureSubmissionIsStillActive(
+        id: UUID,
+        request: CatalogAgentSecureInputRequest,
+        now: Date
+    ) throws {
+        try transaction.ensureSubmissionIsStillActive(
+            id: id,
+            request: request,
+            now: now
+        )
+    }
+
+    mutating func markCommitting(
+        id: UUID,
+        request: CatalogAgentSecureInputRequest,
+        now: Date
+    ) throws {
+        try transaction.markCommitting(id: id, request: request, now: now)
+    }
+
+    func dueRequestIDs(now: Date) -> [UUID] {
+        transaction.dueRequestIDs(now: now)
+    }
+
+    mutating func finish(
+        id: UUID,
+        status: CatalogSecureInputStatus,
+        terminalDate: Date
+    ) -> CatalogSecureInputLifecycleCompletion? {
+        guard let request = transaction.finish(
+            id: id,
+            status: status,
+            terminalDate: terminalDate
+        ) else {
+            return nil
+        }
+        expiryTasks.removeValue(forKey: id)?.cancel()
+        let auditContext = auditContexts.removeValue(forKey: id)
+        return CatalogSecureInputLifecycleCompletion(
+            request: request,
+            auditContext: auditContext
+        )
+    }
+
+    mutating func prune(now: Date) -> Bool {
+        transaction.prune(now: now)
+    }
+
+    func receiptRecords(now: Date) -> [CatalogSecureInputReceiptRecord] {
+        transaction.receiptRecords(now: now)
+    }
+}
