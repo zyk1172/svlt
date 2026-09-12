@@ -296,11 +296,9 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             guard let sensitiveIndexStore else {
                 throw AgentSecretVaultRuntimeError.notStarted
             }
-            sensitiveIndexURL = await sensitiveIndexStore.selectedDocumentURL().flatMap {
-                FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
-            }
-            if let documentURL = await sensitiveIndexStore.selectedDocumentURL(),
-               FileManager.default.fileExists(atPath: documentURL.path) {
+            let existingDocumentURL = await sensitiveIndexStore.selectedExistingDocumentURL()
+            sensitiveIndexURL = existingDocumentURL
+            if let documentURL = existingDocumentURL {
                 // A missing previously selected file is not recreated on
                 // startup. The user must explicitly choose an existing file.
                 SensitiveIndexSelectionStore.save(documentURL)
@@ -929,9 +927,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             sensitiveCatalogSnapshot = nil
             return
         }
-        guard let selectedURL = await sensitiveCatalogStore.selectedDocumentURL(),
-              FileManager.default.fileExists(atPath: selectedURL.path)
-        else {
+        guard await sensitiveCatalogStore.selectedDocumentExists() else {
             sensitiveCatalogSnapshot = nil
             sensitiveCatalogCanAdoptV2 = false
             sensitiveCatalogCanAdoptV3 = false
@@ -957,7 +953,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
         } catch SensitiveCatalogDocumentStoreError.integrityMissing {
             sensitiveCatalogSnapshot = nil
-            updateCatalogAdoptionAvailability()
+            await updateCatalogAdoptionAvailability()
             sensitiveIndexError = sensitiveCatalogCanAdoptV3
                 ? "检测到合法但尚未建立本机 accepted state 的 v3 文件，请验证并接纳。"
                 : "检测到合法但尚未被 SVLT 接管的 v2 文件，请验证并升级为 v3。"
@@ -969,22 +965,16 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         }
     }
 
-    private func updateCatalogAdoptionAvailability() {
+    private func updateCatalogAdoptionAvailability() async {
         sensitiveCatalogCanAdoptV2 = false
         sensitiveCatalogCanAdoptV3 = false
-        guard let url = sensitiveIndexURL,
-              let data = try? Data(contentsOf: url, options: [.mappedIfSafe])
+        guard let sensitiveCatalogStore,
+              let availability = try? await sensitiveCatalogStore.adoptionAvailability()
         else {
             return
         }
-        switch SensitiveCatalogDocumentCodec.format(data) {
-        case .managedV2:
-            sensitiveCatalogCanAdoptV2 = true
-        case .managedV3:
-            sensitiveCatalogCanAdoptV3 = true
-        case .unmanaged, .legacy:
-            break
-        }
+        sensitiveCatalogCanAdoptV2 = availability.canAdoptV2
+        sensitiveCatalogCanAdoptV3 = availability.canAdoptV3
     }
 
     func validateSensitiveCatalog() async {
@@ -1006,7 +996,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
                 sensitiveCatalogCanAdoptV3 = false
                 sensitiveIndexError = "当前敏感信息.md 是旧版格式。SVLT 不提供自动升级，请手动转换为 Catalog v3。"
             case .integrityMissing:
-                updateCatalogAdoptionAvailability()
+                await updateCatalogAdoptionAvailability()
                 sensitiveIndexError = sensitiveCatalogCanAdoptV3
                     ? "检测到合法但尚未建立本机 accepted state 的 v3 文件，请验证并接纳。"
                     : "检测到合法但尚未被 SVLT 接管的 v2 文件，请验证并升级为 v3。"
@@ -1490,7 +1480,7 @@ private final class AgentSecretVaultRuntime: ObservableObject {
         let priorURL = await sensitiveIndexStore.selectedDocumentURL()
 
         do {
-            guard FileManager.default.fileExists(atPath: url.path) else {
+            guard await sensitiveIndexStore.documentExists(at: url) else {
                 throw SensitiveCatalogDocumentStoreError.noSelectedDocument
             }
             try await sensitiveIndexStore.selectDocument(at: url)
