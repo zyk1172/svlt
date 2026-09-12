@@ -158,7 +158,7 @@ import VaultIPC
         }
     )
 
-    var coordinator: CatalogAuditPersistenceCoordinator? = CatalogAuditPersistenceCoordinator(
+    var coordinator = CatalogAuditPersistenceCoordinator(
         auditLog: auditLog,
         auditHealthURL: healthURL,
         fallbackMasterKey: nil,
@@ -167,13 +167,12 @@ import VaultIPC
         integrityScanRetryInterval: 3_600
     )
 
-    #expect(await coordinator?.healthSignal() == nil)
+    #expect(await coordinator.healthSignal() == nil)
     #expect(await waitForIntegrityScan(healthURL: healthURL, expectedAt: clock.now()))
     #expect(await keyCalls.count == 1)
 
     // Recreate the coordinator to verify that the success timestamp persisted
     // across daemon lifetime rather than existing only in actor memory.
-    coordinator = nil
     clock.advance(by: 3_600)
     coordinator = CatalogAuditPersistenceCoordinator(
         auditLog: auditLog,
@@ -183,14 +182,14 @@ import VaultIPC
         integrityScanInterval: 86_400,
         integrityScanRetryInterval: 3_600
     )
-    #expect(await coordinator?.healthSignal() == nil)
+    #expect(await coordinator.healthSignal() == nil)
     try? await Task.sleep(for: .milliseconds(30))
     #expect(await keyCalls.count == 1)
     #expect(CatalogAuditHealthStore(url: healthURL).lastIntegrityScanAttemptAt == Date(timeIntervalSinceReferenceDate: 50_000))
 
     clock.advance(by: 82_801)
     let secondScanAt = clock.now()
-    #expect(await coordinator?.healthSignal() == nil)
+    #expect(await coordinator.healthSignal() == nil)
     #expect(await waitForIntegrityScan(healthURL: healthURL, expectedAt: secondScanAt))
     #expect(await keyCalls.count == 2)
 }
@@ -221,6 +220,7 @@ import VaultIPC
 
     _ = await coordinator.healthSignal()
     #expect(await waitForAuditCallCount(keyCalls, atLeast: 1))
+    try? await Task.sleep(for: .milliseconds(30))
     #expect(CatalogAuditHealthStore(url: healthURL).lastIntegrityScanAttemptAt == clock.now())
     #expect(CatalogAuditHealthStore(url: healthURL).lastIntegrityScanAt == nil)
 
