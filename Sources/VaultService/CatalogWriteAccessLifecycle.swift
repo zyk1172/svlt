@@ -137,6 +137,11 @@ struct CatalogWriteAccessLifecycle: Sendable {
         states[id] = .denied
     }
 
+    mutating func markCancelled(id: UUID) {
+        guard states[id] != nil else { return }
+        states[id] = .cancelled
+    }
+
     @discardableResult
     mutating func markExpiredIfActive(id: UUID) -> CatalogWriteAccessContinuationBox? {
         guard states[id]?.isPendingForPresentation == true else { return nil }
