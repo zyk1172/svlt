@@ -34,8 +34,8 @@ jobs:
           tests = tests_path.read_text()
 
           old_properties = """    private var secureInputTransactions = CatalogSecureInputTransaction()
-              private var secureInputExpiryTasks: [UUID: Task<Void, Never>] = [:]
-              private var secureInputAuditContexts: [UUID: AuditContext] = [:]
+          private var secureInputExpiryTasks: [UUID: Task<Void, Never>] = [:]
+          private var secureInputAuditContexts: [UUID: AuditContext] = [:]
           """
           new_properties = "    private var secureInputLifecycle = CatalogSecureInputLifecycle()\n"
           assert app.count(old_properties) == 1
@@ -46,45 +46,30 @@ jobs:
           assert app.count(old_init) == 1
           app = app.replace(old_init, new_init, 1)
 
-          old_insert = """        secureInputTransactions.insert(request)
-              secureInputAuditContexts[request.id] = operationContext
-              secureInputExpiryTasks[request.id] = Task { [weak self] in
-                  try? await Task.sleep(for: .seconds(180))
-                  guard !Task.isCancelled else { return }
-                  await self?.expireCatalogSecureInputRequest(id: request.id)
-              }
-          """
+          insert_start = app.index("        secureInputTransactions.insert(request)\n")
+          insert_end = app.index("        await emitAudit(\n", insert_start)
           new_insert = """        secureInputLifecycle.insert(request, auditContext: operationContext)
-              let expiryTask = Task { [weak self] in
-                  try? await Task.sleep(for: .seconds(180))
-                  guard !Task.isCancelled else { return }
-                  await self?.expireCatalogSecureInputRequest(id: request.id)
-              }
-              secureInputLifecycle.setExpiryTask(expiryTask, for: request.id)
+          let expiryTask = Task { [weak self] in
+              try? await Task.sleep(for: .seconds(180))
+              guard !Task.isCancelled else { return }
+              await self?.expireCatalogSecureInputRequest(id: request.id)
+          }
+          secureInputLifecycle.setExpiryTask(expiryTask, for: request.id)
           """
-          assert app.count(old_insert) == 1
-          app = app.replace(old_insert, new_insert, 1)
+          app = app[:insert_start] + new_insert + app[insert_end:]
 
-          old_finish = """        guard let request = secureInputTransactions.finish(
-                  id: id,
-                  status: status,
-                  terminalDate: now()
-              ) else { return }
-              persistSecureInputReceipts()
-              secureInputExpiryTasks.removeValue(forKey: id)?.cancel()
-              let context = secureInputAuditContexts.removeValue(forKey: id)
-          """
+          finish_start = app.index("        guard let request = secureInputTransactions.finish(\n")
+          finish_end = app.index("        secureInputNotifier.notifyQueueChanged(requestID: id)\n", finish_start)
           new_finish = """        guard let completion = secureInputLifecycle.finish(
-                  id: id,
-                  status: status,
-                  terminalDate: now()
-              ) else { return }
-              let request = completion.request
-              persistSecureInputReceipts()
-              let context = completion.auditContext
+              id: id,
+              status: status,
+              terminalDate: now()
+          ) else { return }
+          let request = completion.request
+          persistSecureInputReceipts()
+          let context = completion.auditContext
           """
-          assert app.count(old_finish) == 1
-          app = app.replace(old_finish, new_finish, 1)
+          app = app[:finish_start] + new_finish + app[finish_end:]
 
           assert app.count("secureInputAuditContexts[id]") == 2
           app = app.replace(
