@@ -9,8 +9,13 @@ import { IpcFrameCodec, MAX_FRAME_BYTES } from "../src/protocol.js";
 
 const cleanupDirectories: string[] = [];
 const cleanupServers: net.Server[] = [];
+const cleanupSockets = new Set<net.Socket>();
 
 afterEach(async () => {
+  for (const socket of cleanupSockets) {
+    socket.destroy();
+  }
+  cleanupSockets.clear();
   await Promise.all(cleanupServers.splice(0).map(closeServer));
   await Promise.all(cleanupDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
@@ -19,6 +24,7 @@ describe("LocalIpcClient transport bounds", () => {
   it("accepts a normal framed response", async () => {
     const fixture = await makeFixture();
     const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      trackSocket(socket);
       socket.once("data", () => {
         socket.end(IpcFrameCodec.encode({ type: "status", locked: false }));
       });
@@ -34,10 +40,11 @@ describe("LocalIpcClient transport bounds", () => {
   it("uses a wall-clock deadline even when the peer keeps sending data", async () => {
     const fixture = await makeFixture(75);
     const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      trackSocket(socket);
       socket.once("data", () => {
         let writes = 0;
         const interval = setInterval(() => {
-          if (socket.destroyed || writes >= 30) {
+          if (socket.destroyed || !socket.writable || writes >= 30) {
             clearInterval(interval);
             return;
           }
@@ -45,6 +52,7 @@ describe("LocalIpcClient transport bounds", () => {
           writes += 1;
         }, 15);
         socket.once("close", () => clearInterval(interval));
+        socket.once("error", () => clearInterval(interval));
       });
     });
     await listen(server, fixture.socketPath);
@@ -57,6 +65,7 @@ describe("LocalIpcClient transport bounds", () => {
   it("rejects an oversized declared frame before buffering its body", async () => {
     const fixture = await makeFixture(1_000);
     const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      trackSocket(socket);
       socket.once("data", () => {
         const header = Buffer.alloc(4);
         header.writeUInt32BE(MAX_FRAME_BYTES + 1, 0);
@@ -91,6 +100,12 @@ async function makeFixture(requestTimeoutMs = 500): Promise<{
   };
 }
 
+function trackSocket(socket: net.Socket): void {
+  cleanupSockets.add(socket);
+  socket.on("error", () => undefined);
+  socket.once("close", () => cleanupSockets.delete(socket));
+}
+
 function listen(server: net.Server, socketPath: string): Promise<void> {
   cleanupServers.push(server);
   return new Promise((resolve, reject) => {
@@ -101,7 +116,7 @@ function listen(server: net.Server, socketPath: string): Promise<void> {
 
 function closeServer(server: net.Server): Promise<void> {
   return new Promise((resolve) => {
-    server.close(() => resolve());
     server.closeAllConnections?.();
+    server.close(() => resolve());
   });
 }
