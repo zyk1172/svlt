@@ -43,4 +43,10 @@ write(path, text)
 if text.count(anchor) != 1:
     raise RuntimeError("wire-model anchor not found exactly once")
 text = text.replace(anchor, budget_trim + anchor, 1)
+
+old_ending = 'write(path, text.rstrip() + append + "\\n")'
+new_ending = 'write(path, text.rstrip() + "\\n" + append.strip() + "\\n")'
+if text.count(old_ending) != 1:
+    raise RuntimeError("test-file ending writer not found exactly once")
+text = text.replace(old_ending, new_ending, 1)
 path.write_text(text)
