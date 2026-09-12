@@ -4,7 +4,7 @@ on:
   push:
     branches: [codex/daemon-owned-catalog-state]
     paths:
-      - scripts/apply-catalog-owner-refactor.py
+      - scripts/apply-catalog-owner-refactor*
 
 permissions:
   contents: write
