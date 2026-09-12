@@ -12,17 +12,37 @@ struct CatalogAuditHealthRecord: Codable, Sendable {
     let lastFailureAt: Date?
     let gapDetected: Bool
     let lastSuccessfulSequence: UInt64
+    let lastIntegrityScanAttemptAt: Date?
+    let lastIntegrityScanAt: Date?
+
+    init(
+        schemaVersion: Int,
+        lastFailureAt: Date?,
+        gapDetected: Bool,
+        lastSuccessfulSequence: UInt64,
+        lastIntegrityScanAttemptAt: Date? = nil,
+        lastIntegrityScanAt: Date? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.lastFailureAt = lastFailureAt
+        self.gapDetected = gapDetected
+        self.lastSuccessfulSequence = lastSuccessfulSequence
+        self.lastIntegrityScanAttemptAt = lastIntegrityScanAttemptAt
+        self.lastIntegrityScanAt = lastIntegrityScanAt
+    }
 }
 
 /// Owns the non-sensitive audit-health sidecar and the state persisted in it.
 /// `VaultAppServices` reports append outcomes; this value keeps the sticky gap,
-/// first-failure timestamp, monotonic success sequence, and filesystem policy
-/// in one independently testable boundary.
+/// first-failure timestamp, monotonic success sequence, integrity-maintenance
+/// cadence, and filesystem policy in one independently testable boundary.
 struct CatalogAuditHealthStore: Sendable {
     private let url: URL?
     private(set) var lastFailureAt: Date?
     private(set) var gapDetected: Bool
     private(set) var lastSuccessfulSequence: UInt64
+    private(set) var lastIntegrityScanAttemptAt: Date?
+    private(set) var lastIntegrityScanAt: Date?
 
     init(url: URL?) {
         let standardizedURL = url?.standardizedFileURL
@@ -31,10 +51,28 @@ struct CatalogAuditHealthStore: Sendable {
         self.lastFailureAt = record?.lastFailureAt
         self.gapDetected = record?.gapDetected ?? false
         self.lastSuccessfulSequence = record?.lastSuccessfulSequence ?? 0
+        self.lastIntegrityScanAttemptAt = record?.lastIntegrityScanAttemptAt
+        self.lastIntegrityScanAt = record?.lastIntegrityScanAt
     }
 
     var healthSignal: String? {
         gapDetected ? "AUDIT_APPEND_FAILED" : nil
+    }
+
+    func isIntegrityScanDue(
+        at date: Date,
+        successInterval: TimeInterval,
+        retryInterval: TimeInterval
+    ) -> Bool {
+        if let lastIntegrityScanAt,
+           date.timeIntervalSince(lastIntegrityScanAt) < successInterval {
+            return false
+        }
+        if let lastIntegrityScanAttemptAt,
+           date.timeIntervalSince(lastIntegrityScanAttemptAt) < retryInterval {
+            return false
+        }
+        return true
     }
 
     mutating func recordAppendFailure(at date: Date) {
@@ -50,13 +88,25 @@ struct CatalogAuditHealthStore: Sendable {
         persist()
     }
 
+    mutating func recordIntegrityScanAttempt(at date: Date) {
+        lastIntegrityScanAttemptAt = date
+        persist()
+    }
+
+    mutating func recordIntegrityScanSuccess(at date: Date) {
+        lastIntegrityScanAt = date
+        persist()
+    }
+
     private func persist() {
         guard let url else { return }
         let record = CatalogAuditHealthRecord(
             schemaVersion: CatalogAuditHealthRecord.currentSchemaVersion,
             lastFailureAt: lastFailureAt,
             gapDetected: gapDetected,
-            lastSuccessfulSequence: lastSuccessfulSequence
+            lastSuccessfulSequence: lastSuccessfulSequence,
+            lastIntegrityScanAttemptAt: lastIntegrityScanAttemptAt,
+            lastIntegrityScanAt: lastIntegrityScanAt
         )
         do {
             let parentURL = url.deletingLastPathComponent()
