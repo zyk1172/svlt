@@ -1827,20 +1827,20 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				5248DC09F2511964B47BA1C6 /* AgentSecretVault */,
+				BE4703D12B227579B175C972 /* AgentSecretVaultApp */,
+				11FA050282C48DA372F026A5 /* AgentSecretVaultAppTests */,
+				9B25E141FA32BA15CC63CDBD /* LeakTests */,
+				518A74E184DD0753026716CD /* SVLTAgent */,
+				839BA397656D992385802D9A /* VaultAuthorization */,
+				B1504E1197E69DE63A69534C /* VaultAuthorizationTests */,
 				220CDA200412FA123E185C24 /* VaultCore */,
 				561F723C545CFF984CFD7A7D /* VaultCoreTests */,
-				839BA397656D992385802D9A /* VaultAuthorization */,
 				160319EC3D54A6D48327EF69 /* VaultExecution */,
-				B74A522843B3D6B8F8D2D0F6 /* VaultService */,
-				4D4AAA86B56416ED476802A7 /* VaultIPC */,
-				BE4703D12B227579B175C972 /* AgentSecretVaultApp */,
-				518A74E184DD0753026716CD /* SVLTAgent */,
-				5248DC09F2511964B47BA1C6 /* AgentSecretVault */,
-				11FA050282C48DA372F026A5 /* AgentSecretVaultAppTests */,
-				B1504E1197E69DE63A69534C /* VaultAuthorizationTests */,
 				579CF4058E72E253F0EA1615 /* VaultExecutionTests */,
+				4D4AAA86B56416ED476802A7 /* VaultIPC */,
 				A2D83343D01B65E759D05B81 /* VaultIPCTests */,
-				9B25E141FA32BA15CC63CDBD /* LeakTests */,
+				B74A522843B3D6B8F8D2D0F6 /* VaultService */,
 			);
 		};
 /* End PBXProject section */
