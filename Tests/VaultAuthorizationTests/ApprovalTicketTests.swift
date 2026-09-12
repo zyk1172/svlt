@@ -63,9 +63,13 @@ import VaultCore
     let firstWindow = UUID()
     let secondWindow = UUID()
 
-    #expect(gate.shouldNotify(approvalID: firstWindow))
-    #expect(!gate.shouldNotify(approvalID: firstWindow))
-    #expect(gate.shouldNotify(approvalID: secondWindow))
+    let firstDelivery = gate.shouldNotify(approvalID: firstWindow)
+    let duplicateDelivery = gate.shouldNotify(approvalID: firstWindow)
+    let secondDelivery = gate.shouldNotify(approvalID: secondWindow)
+
+    #expect(firstDelivery)
+    #expect(!duplicateDelivery)
+    #expect(secondDelivery)
 }
 
 @Test func approvalNotificationCopyIsFixedAndContainsNoOperationDetails() {

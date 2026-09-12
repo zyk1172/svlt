@@ -44,9 +44,11 @@ public struct AgentApprovalPresentationNotifier: Sendable {
 
     private let activateAppInBackground: @Sendable () -> Void
 
-    public init(
-        activateAppInBackground: @escaping @Sendable () -> Void = Self.activateSVLTAppInBackground
-    ) {
+    public init() {
+        self.activateAppInBackground = Self.activateSVLTAppInBackground
+    }
+
+    public init(activateAppInBackground: @escaping @Sendable () -> Void) {
         self.activateAppInBackground = activateAppInBackground
     }
 
@@ -68,8 +70,8 @@ public struct AgentApprovalPresentationNotifier: Sendable {
     }
 
     private static func post(approvalID: UUID) {
-        DistributedNotificationCenter.default().post(
-            name: notificationName,
+        DistributedNotificationCenter.default().postNotificationName(
+            notificationName,
             object: nil,
             userInfo: ["approvalID": approvalID.uuidString],
             deliverImmediately: true
