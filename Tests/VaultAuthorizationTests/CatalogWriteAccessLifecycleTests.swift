@@ -126,11 +126,10 @@ import VaultCore
 
 @Test func catalogWriteAccessContinuationBoxResumesOnlyOnce() async throws {
     let box = CatalogWriteAccessContinuationBox()
-    let completed: Bool = try await withCheckedThrowingContinuation { continuation in
+
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
         box.store(continuation)
         box.resume()
         box.resume()
     }
-
-    #expect(completed)
 }
