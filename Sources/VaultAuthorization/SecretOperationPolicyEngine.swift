@@ -7,11 +7,10 @@ import VaultCore
 /// The deterministic classifiers remain the security floor: malformed,
 /// contradictory, identity-invalid, and explicitly unsafe transport requests
 /// are denied, while destructive/high-impact rules still require one-shot
-/// fresh approval. A semantic judge may escalate any ordinary operation, but
-/// it may lower an ordinary reusable approval to automatic execution only
-/// when it is an attested SVLT judge result, the judge reports read-only or
-/// bounded mutation risk, explicitly recommends automatic execution, and has
-/// high confidence.
+/// fresh approval. A semantic judge may escalate any ordinary operation. It
+/// may lower a normal reusable operation to automatic execution, and may
+/// relax the generic HTTPS credential-send baseline only when the independent
+/// judge supplies a high-confidence low-risk result.
 ///
 /// The judge is intentionally not given conversation history. The MCP boundary
 /// supplies only the main agent's short problem statement plus the canonical
@@ -54,6 +53,10 @@ public struct SecretOperationPolicyEngine: Sendable {
         let approval: Approval
         let confidence: Double
         let reason: String
+
+        var isHighConfidenceOrdinaryRisk: Bool {
+            confidence >= 0.80 && (semanticRisk == .readOnly || semanticRisk == .mutating)
+        }
     }
 
     private let configuration: Configuration
@@ -97,8 +100,24 @@ public struct SecretOperationPolicyEngine: Sendable {
            !local.technicalFailure {
             switch local.authorizationRequirement {
             case .freshApprovalRequired:
-                // Deterministic fresh rules are a non-downgradable floor.
-                break
+                // Fixed destructive/transport/security fresh rules are a
+                // non-downgradable floor. The one exception is the generic
+                // HTTPS credential-send baseline: without a judge it remains
+                // fresh exactly as before, but a high-confidence independent
+                // low-risk assessment may relax it for ordinary API use.
+                guard local.policyRuleID == HTTPFreshRules.secretNetworkSend else { break }
+                switch independentJudge.approval {
+                case .fresh:
+                    effectiveRequirement = .freshApprovalRequired
+                case .reusable:
+                    effectiveRequirement = independentJudge.isHighConfidenceOrdinaryRisk
+                        ? .reusableApproval
+                        : .freshApprovalRequired
+                case .none:
+                    let safeForAutomatic = independentJudge.automaticExecution
+                        && independentJudge.isHighConfidenceOrdinaryRisk
+                    effectiveRequirement = safeForAutomatic ? .none : .freshApprovalRequired
+                }
             case .reusableApproval:
                 switch independentJudge.approval {
                 case .fresh:
@@ -107,9 +126,7 @@ public struct SecretOperationPolicyEngine: Sendable {
                     effectiveRequirement = .reusableApproval
                 case .none:
                     let safeForAutomatic = independentJudge.automaticExecution
-                        && independentJudge.confidence >= 0.80
-                        && (independentJudge.semanticRisk == .readOnly
-                            || independentJudge.semanticRisk == .mutating)
+                        && independentJudge.isHighConfidenceOrdinaryRisk
                     effectiveRequirement = safeForAutomatic ? .none : .reusableApproval
                 }
             case .none:
@@ -635,13 +652,14 @@ public struct SecretOperationPolicyEngine: Sendable {
         public static let delete = "http.fresh.delete"
         public static let insecureSecretTransport = "http.fresh.insecure-secret-transport"
         public static let credentialInURL = "http.fresh.credential-in-url"
-        public static let secretNetworkSend = "http.credential-bearing-https"
+        public static let secretNetworkSend = "http.fresh.secret-network-send"
         public static let explicitSecretRelease = "http.fresh.explicit-secret-release"
 
         public static let all: [String] = [
             delete,
             insecureSecretTransport,
             credentialInURL,
+            secretNetworkSend,
             explicitSecretRelease
         ]
     }
@@ -692,8 +710,8 @@ public struct SecretOperationPolicyEngine: Sendable {
         if carriesSecret {
             return (
                 .approvalRequired,
-                .reusableApproval,
-                ["HTTPS Secret 请求属于普通凭据使用；独立风险裁判可根据实际问题和操作判断是否自动执行或升级审批"],
+                .freshApprovalRequired,
+                ["Secret 将发送到网络目标；没有独立风险裁判时维持每次审批，裁判确认低风险后可按本次实际操作放宽"],
                 HTTPFreshRules.secretNetworkSend
             )
         }
@@ -914,6 +932,9 @@ public struct SecretOperationPolicyEngine: Sendable {
         }
 
         if semanticRisk == .destructive || semanticRisk == .catastrophic || semanticRisk == .unknown {
+            guard approval == .fresh, !automaticExecution else { return nil }
+        }
+        if confidence < 0.65 {
             guard approval == .fresh, !automaticExecution else { return nil }
         }
         if approval != .none && automaticExecution {
