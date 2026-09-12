@@ -1,0 +1,72 @@
+name: PR79 Review Polish
+
+on:
+  push:
+    branches:
+      - codex/daemon-owned-catalog-state
+
+permissions:
+  contents: write
+
+jobs:
+  polish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: codex/daemon-owned-catalog-state
+      - name: Remove source NUL and make boundary guard portable
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('Sources/VaultService/CatalogDocumentOwner.swift')
+          data = p.read_bytes()
+          needle = b'contains("' + bytes([0]) + b'")'
+          replacement = b'contains("' + bytes([92]) + b'0")'
+          count = data.count(needle)
+          if count != 1:
+              raise SystemExit(f'expected one embedded NUL guard, found {count}')
+          p.write_bytes(data.replace(needle, replacement, 1))
+          PY
+          cat > scripts/check-catalog-owner-boundary.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+          RUNTIME_DIR="$ROOT_DIR/Sources/AgentSecretVaultApp"
+
+          if ! find "$RUNTIME_DIR" -type f -name '*.swift' -print -quit | grep -q .; then
+            echo "No GUI Swift sources found under $RUNTIME_DIR" >&2
+            exit 1
+          fi
+
+          for forbidden in \
+            'SensitiveCatalogDocumentStore' \
+            'SensitiveInformationDocumentStore' \
+            'SensitiveIndexSelectionStore' \
+            'SecretCatalogSelectionStore'; do
+            if find "$RUNTIME_DIR" -type f -name '*.swift' -exec grep -nFH "$forbidden" {} +; then
+              echo "GUI runtime must consume Catalog state through daemon App-control IPC; forbidden owner symbol: $forbidden" >&2
+              exit 1
+            fi
+          done
+
+          echo "Catalog ownership boundary verified across the complete GUI target."
+          EOF
+          chmod +x scripts/check-catalog-owner-boundary.sh
+          bash -n scripts/check-catalog-owner-boundary.sh
+          git diff --check
+      - name: Commit and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/pr79-review-polish.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: polish PR79 catalog boundary safeguards"
+          git push origin HEAD:codex/daemon-owned-catalog-state
