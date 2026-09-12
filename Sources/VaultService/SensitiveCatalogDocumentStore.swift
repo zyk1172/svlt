@@ -2095,7 +2095,7 @@ public actor SensitiveCatalogDocumentStore {
         let key: Data
         do { key = try keyStore.loadOrCreateKey() } catch { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
         let computed = Data(HMAC<SHA256>.authenticationCode(for: integrityPayload(record.acceptedState), using: SymmetricKey(data: key)))
-        guard constantTimeEqual(computed, expected) else { throw SensitiveCatalogDocumentStoreError.externalModification }
+        guard constantTimeEqual(computed, expected) else { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
     }
 
     private func integrityPayload(_ state: CatalogAcceptedState) -> Data {
