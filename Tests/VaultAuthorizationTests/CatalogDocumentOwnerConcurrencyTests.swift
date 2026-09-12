@@ -174,7 +174,6 @@ private struct CatalogOwnerFixture {
     #expect(presentation.validation.revision == persistedSecond.revision)
 }
 
-
 @Test func catalogOperationIdentityCanBeRehydratedWithoutRetainingLiveStore() async throws {
     let fixture = try await CatalogOwnerFixture()
     defer { fixture.cleanup() }
