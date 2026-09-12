@@ -69,11 +69,14 @@ jobs:
 
           """
           app = app[:persist_start] + replacement + app[audit_load_start:]
-          assert "loadSecureInputReceipts" not in app
-          assert "secureInputReceiptURL" not in app
+          assert "    private let secureInputReceiptURL: URL?\n" not in app
+          assert "Self.loadSecureInputReceipts(" not in app
+          assert "private static func loadSecureInputReceipts" not in app
+          # Keep the public initializer label `secureInputReceiptURL` unchanged.
+          assert "secureInputReceiptURL: URL? = nil" in app
           app_path.write_text(app)
 
-          marker = "/// Owns the synchronous state transitions for one-shot Catalog Secure Input\n"
+          marker = "struct CatalogSecureInputTransaction: Sendable {"
           assert transaction.count(marker) == 1
           receipt_store = """/// Owns the non-sensitive Secure Input receipt sidecar I/O. Keeping this
           /// persistence boundary beside the transaction state machine prevents the service
