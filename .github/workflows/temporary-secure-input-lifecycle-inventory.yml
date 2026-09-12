@@ -1,4 +1,4 @@
-name: Temporary secure-input lifecycle extraction
+name: Temporary secure-input lifecycle cleanup
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  apply-refactor:
+  cleanup:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -18,7 +18,7 @@ jobs:
         with:
           ref: codex/extract-secure-input-lifecycle-owner
           fetch-depth: 0
-      - name: Apply lifecycle extraction
+      - name: Tighten lifecycle ownership and formatting
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -33,35 +33,22 @@ jobs:
           transaction = transaction_path.read_text()
           tests = tests_path.read_text()
 
-          old_transaction_property = "    private var secureInputTransactions = CatalogSecureInputTransaction()\n"
-          old_expiry_property = "    private var secureInputExpiryTasks: [UUID: Task<Void, Never>] = [:]\n"
-          old_audit_property = "    private var secureInputAuditContexts: [UUID: AuditContext] = [:]\n"
-          new_property = "    private var secureInputLifecycle = CatalogSecureInputLifecycle()\n"
-          assert app.count(old_transaction_property) == 1
-          assert app.count(old_expiry_property) == 1
-          assert app.count(old_audit_property) == 1
-          app = app.replace(old_transaction_property, new_property, 1)
-          app = app.replace(old_expiry_property, "", 1)
-          app = app.replace(old_audit_property, "", 1)
-
-          old_init = "        self.secureInputTransactions = CatalogSecureInputTransaction(receipts: persistedSecureInputReceipts)\n"
-          new_init = "        self.secureInputLifecycle = CatalogSecureInputLifecycle(receipts: persistedSecureInputReceipts)\n"
-          assert app.count(old_init) == 1
-          app = app.replace(old_init, new_init, 1)
-
-          insert_start = app.index("        secureInputTransactions.insert(request)\n")
+          insert_start = app.index("        secureInputLifecycle.insert(request, auditContext: operationContext)\n")
           insert_end = app.index("        await emitAudit(\n", insert_start)
-          new_insert = """        secureInputLifecycle.insert(request, auditContext: operationContext)
-          let expiryTask = Task { [weak self] in
+          new_insert = """        let expiryTask = Task { [weak self] in
               try? await Task.sleep(for: .seconds(180))
               guard !Task.isCancelled else { return }
               await self?.expireCatalogSecureInputRequest(id: request.id)
           }
-          secureInputLifecycle.setExpiryTask(expiryTask, for: request.id)
+          secureInputLifecycle.insert(
+              request,
+              auditContext: operationContext,
+              expiryTask: expiryTask
+          )
           """
           app = app[:insert_start] + new_insert + app[insert_end:]
 
-          finish_start = app.index("        guard let request = secureInputTransactions.finish(\n")
+          finish_start = app.index("        guard let completion = secureInputLifecycle.finish(\n")
           finish_end = app.index("        secureInputNotifier.notifyQueueChanged(requestID: id)\n", finish_start)
           new_finish = """        guard let completion = secureInputLifecycle.finish(
               id: id,
@@ -73,194 +60,36 @@ jobs:
           let context = completion.auditContext
           """
           app = app[:finish_start] + new_finish + app[finish_end:]
-
-          assert app.count("secureInputAuditContexts[id]") == 2
-          app = app.replace(
-              "secureInputAuditContexts[id]",
-              "secureInputLifecycle.auditContext(for: id)"
-          )
-
-          app = app.replace("secureInputTransactions.", "secureInputLifecycle.")
-
-          assert "secureInputTransactions" not in app
-          assert "secureInputExpiryTasks" not in app
-          assert "secureInputAuditContexts" not in app
           app_path.write_text(app)
 
-          lifecycle_marker = "struct CatalogSecureInputLifecycle: Sendable {"
-          assert lifecycle_marker not in transaction
-          lifecycle_code = r'''
-
-          struct CatalogSecureInputLifecycleCompletion: Sendable {
-              let request: CatalogAgentSecureInputRequest
-              let auditContext: AuditContext?
+          lifecycle_insert_start = transaction.index("    mutating func insert(\n        _ request: CatalogAgentSecureInputRequest,\n")
+          lifecycle_insert_end = transaction.index("    mutating func beginSubmission(\n", lifecycle_insert_start)
+          new_lifecycle_insert = """    mutating func insert(
+              _ request: CatalogAgentSecureInputRequest,
+              auditContext: AuditContext,
+              expiryTask: Task<Void, Never>
+          ) {
+              transaction.insert(request)
+              auditContexts[request.id] = auditContext
+              expiryTasks[request.id] = expiryTask
           }
 
-          /// Actor-confined owner for the state that must advance with one Secure Input
-          /// request. The transaction keeps the cancellation/commit state machine; this
-          /// owner couples it with the request-scoped audit context and expiry task so the
-          /// service cannot independently forget one side of the lifecycle.
-          struct CatalogSecureInputLifecycle: Sendable {
-              private var transaction: CatalogSecureInputTransaction
-              private var expiryTasks: [UUID: Task<Void, Never>] = [:]
-              private var auditContexts: [UUID: AuditContext] = [:]
-
-              init(receipts: [CatalogSecureInputReceiptRecord] = []) {
-                  transaction = CatalogSecureInputTransaction(receipts: receipts)
-              }
-
-              var pendingRequestIDs: [UUID] {
-                  transaction.pendingRequestIDs
-              }
-
-              var requestIDs: [UUID] {
-                  transaction.requestIDs
-              }
-
-              func request(id: UUID) -> CatalogAgentSecureInputRequest? {
-                  transaction.request(id: id)
-              }
-
-              func pendingRequest(id: UUID) -> CatalogAgentSecureInputRequest? {
-                  transaction.pendingRequest(id: id)
-              }
-
-              func state(for id: UUID) -> CatalogSecureInputState? {
-                  transaction.state(for: id)
-              }
-
-              func status(for requestID: UUID) -> CatalogSecureInputStatus {
-                  transaction.status(for: requestID)
-              }
-
-              func hasRequest(forEntryID entryID: String) -> Bool {
-                  transaction.hasRequest(forEntryID: entryID)
-              }
-
-              func auditContext(for id: UUID) -> AuditContext? {
-                  auditContexts[id]
-              }
-
-              mutating func insert(
-                  _ request: CatalogAgentSecureInputRequest,
-                  auditContext: AuditContext
-              ) {
-                  transaction.insert(request)
-                  auditContexts[request.id] = auditContext
-              }
-
-              mutating func setExpiryTask(_ task: Task<Void, Never>, for id: UUID) {
-                  expiryTasks[id] = task
-              }
-
-              mutating func beginSubmission(
-                  id: UUID,
-                  now: Date
-              ) throws -> CatalogAgentSecureInputRequest {
-                  try transaction.beginSubmission(id: id, now: now)
-              }
-
-              mutating func latchAbort(
-                  _ reason: CatalogSecureInputAbortReason,
-                  for id: UUID
-              ) {
-                  transaction.latchAbort(reason, for: id)
-              }
-
-              func ensureSubmissionIsStillActive(
-                  id: UUID,
-                  request: CatalogAgentSecureInputRequest,
-                  now: Date
-              ) throws {
-                  try transaction.ensureSubmissionIsStillActive(
-                      id: id,
-                      request: request,
-                      now: now
-                  )
-              }
-
-              mutating func markCommitting(
-                  id: UUID,
-                  request: CatalogAgentSecureInputRequest,
-                  now: Date
-              ) throws {
-                  try transaction.markCommitting(id: id, request: request, now: now)
-              }
-
-              func dueRequestIDs(now: Date) -> [UUID] {
-                  transaction.dueRequestIDs(now: now)
-              }
-
-              mutating func finish(
-                  id: UUID,
-                  status: CatalogSecureInputStatus,
-                  terminalDate: Date
-              ) -> CatalogSecureInputLifecycleCompletion? {
-                  guard let request = transaction.finish(
-                      id: id,
-                      status: status,
-                      terminalDate: terminalDate
-                  ) else {
-                      return nil
-                  }
-                  expiryTasks.removeValue(forKey: id)?.cancel()
-                  let auditContext = auditContexts.removeValue(forKey: id)
-                  return CatalogSecureInputLifecycleCompletion(
-                      request: request,
-                      auditContext: auditContext
-                  )
-              }
-
-              mutating func prune(now: Date) -> Bool {
-                  transaction.prune(now: now)
-              }
-
-              func receiptRecords(now: Date) -> [CatalogSecureInputReceiptRecord] {
-                  transaction.receiptRecords(now: now)
-              }
-          }
-          '''
-          transaction = (transaction.rstrip() + lifecycle_code).rstrip() + "\n"
+          """
+          transaction = transaction[:lifecycle_insert_start] + new_lifecycle_insert + transaction[lifecycle_insert_end:]
+          assert "setExpiryTask" not in transaction
           transaction_path.write_text(transaction)
 
-          test_marker = "private func secureInputRequest(\n"
-          assert tests.count(test_marker) == 1
-          lifecycle_test = r'''@Test func secureInputLifecycleFinishesRequestWithAuditContextAndCancelsExpiryTask() {
-              var lifecycle = CatalogSecureInputLifecycle()
-              let requestID = UUID()
-              let request = secureInputRequest(id: requestID)
-              let auditContext = AuditContext(source: .agent).withRequestID(requestID)
-              let expiryTask = Task<Void, Never> {
-                  try? await Task.sleep(for: .seconds(60))
-              }
-
-              lifecycle.insert(request, auditContext: auditContext)
+          old_test_registration = """    lifecycle.insert(request, auditContext: auditContext)
               lifecycle.setExpiryTask(expiryTask, for: requestID)
-
-              #expect(lifecycle.request(id: requestID) == request)
-              #expect(lifecycle.auditContext(for: requestID)?.requestID == requestID)
-
-              let status = CatalogSecureInputStatus(
-                  requestID: requestID,
-                  status: .completed,
-                  revision: 9
-              )
-              let completion = lifecycle.finish(
-                  id: requestID,
-                  status: status,
-                  terminalDate: request.createdAt
-              )
-
-              #expect(completion?.request == request)
-              #expect(completion?.auditContext?.requestID == requestID)
-              #expect(expiryTask.isCancelled)
-              #expect(lifecycle.request(id: requestID) == nil)
-              #expect(lifecycle.auditContext(for: requestID)?.requestID == nil)
-              #expect(lifecycle.status(for: requestID) == status)
-          }
-
-          '''
-          tests = tests.replace(test_marker, lifecycle_test + test_marker, 1)
+          """
+          new_test_registration = """    lifecycle.insert(
+              request,
+              auditContext: auditContext,
+              expiryTask: expiryTask
+          )
+          """
+          assert tests.count(old_test_registration) == 1
+          tests = tests.replace(old_test_registration, new_test_registration, 1)
           tests_path.write_text(tests)
 
           budget = budget_path.read_text()
@@ -270,12 +99,11 @@ jobs:
           budget, count = re.subn(pattern, replacement, budget, count=1)
           assert count == 1
           budget_path.write_text(budget)
-
           print(f"VaultAppServices.swift reduced to {new_size} bytes")
           PY
           git diff --check
           bash scripts/check-architecture-budgets.sh
-      - name: Commit lifecycle extraction
+      - name: Commit cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -284,5 +112,5 @@ jobs:
                   Tests/VaultAuthorizationTests/CatalogSecureInputTransactionTests.swift \
                   scripts/check-architecture-budgets.sh
           git diff --cached --exit-code && exit 1 || true
-          git commit -m "refactor: own secure input request lifecycle state"
+          git commit -m "refactor: register secure input lifecycle atomically"
           git push origin HEAD:codex/extract-secure-input-lifecycle-owner
