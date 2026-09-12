@@ -139,6 +139,8 @@ jobs:
           test -x scripts/release-e2e.sh
       - name: Enforce large-file architecture budgets
         run: bash scripts/check-architecture-budgets.sh
+      - name: Enforce app runtime mutation boundary
+        run: bash scripts/check-runtime-mutation-boundary.sh
       - name: Check whitespace
         run: |
           # Select the complete event range instead of checking only the
