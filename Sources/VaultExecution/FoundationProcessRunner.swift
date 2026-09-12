@@ -47,21 +47,61 @@ public struct FoundationProcessRunner: ProcessRunning {
             try await withCheckedThrowingContinuation { continuation in
                 let completion = ProcessRunCompletion(continuation)
                 let timeoutTask = Task {
-                    try? await Task.sleep(for: timeout)
+                    do {
+                        try await Task.sleep(for: timeout)
+                    } catch {
+                        return
+                    }
+
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     runState.markTimedOutAndTerminate()
                 }
 
                 process.terminationHandler = { terminatedProcess in
+                    // Claim process exit before cancelling the timeout task so
+                    // a cancelled sleep cannot reclassify a completed child.
+                    // Output validation may still turn this provisional exit
+                    // into outputLimitExceeded while the final bytes drain.
+                    _ = runState.markProcessExited()
                     timeoutTask.cancel()
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
 
                     if !output.hasExceededLimit {
-                        output.append(stdoutPipe.fileHandleForReading.readDataToEndOfFile(), to: .stdout)
-                        output.append(stderrPipe.fileHandleForReading.readDataToEndOfFile(), to: .stderr)
+                        let drainDeadline = DispatchTime.now().uptimeNanoseconds
+                            &+ processOutputDrainGraceNanoseconds
+                        drainAvailableOutput(
+                            from: stdoutPipe.fileHandleForReading,
+                            to: .stdout,
+                            output: output,
+                            runState: runState,
+                            deadline: drainDeadline
+                        )
+                        drainAvailableOutput(
+                            from: stderrPipe.fileHandleForReading,
+                            to: .stderr,
+                            output: output,
+                            runState: runState,
+                            deadline: drainDeadline
+                        )
                     }
 
-                    switch runState.finishReason {
+                    cleanup(stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
+
+                    let finishReason = runState.finalizeProcessExit(
+                        outputLimitExceeded: output.hasExceededLimit
+                    )
+                    switch finishReason {
+                    case .completed:
+                        completion.resume(
+                            returning: ProcessResult(
+                                exitCode: terminatedProcess.terminationStatus,
+                                stdout: output.stdout,
+                                stderr: output.stderr
+                            )
+                        )
                     case .cancelled:
                         completion.resume(throwing: CancellationError())
                     case .outputLimitExceeded:
@@ -70,19 +110,15 @@ public struct FoundationProcessRunner: ProcessRunning {
                         completion.resume(throwing: ProcessRunError.timedOut)
                     case let .stdinWriteFailed(message):
                         completion.resume(throwing: ProcessRunError.stdinWriteFailed(message))
-                    case .none:
-                        completion.resume(
-                            returning: ProcessResult(
-                                exitCode: terminatedProcess.terminationStatus,
-                                stdout: output.stdout,
-                                stderr: output.stderr
-                            )
-                        )
                     }
                 }
 
                 do {
                     try process.run()
+                    runState.markRunning()
+                    try? stdinPipe.fileHandleForReading.close()
+                    try? stdoutPipe.fileHandleForWriting.close()
+                    try? stderrPipe.fileHandleForWriting.close()
                 } catch {
                     timeoutTask.cancel()
                     cleanup(stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
@@ -123,6 +159,10 @@ public struct FoundationProcessRunner: ProcessRunning {
         }
     }
 }
+
+private let processOutputDrainGraceNanoseconds: UInt64 = 100_000_000
+private let processOutputDrainPollMicroseconds: UInt64 = 5_000
+private let processOutputReadBufferSize = 16_384
 
 private enum ProcessOutputStream {
     case stdout
@@ -181,20 +221,33 @@ private final class BoundedProcessOutput: @unchecked Sendable {
     }
 }
 
-private enum FoundationProcessFinishReason {
+enum FoundationProcessFinishReason: Equatable {
+    case completed
     case cancelled
     case timedOut
     case outputLimitExceeded
     case stdinWriteFailed(String)
 }
 
-private final class FoundationProcessRunState: @unchecked Sendable {
+final class FoundationProcessRunState: @unchecked Sendable {
+    private enum Phase {
+        case preparing
+        case running
+        case processExited
+        case finished(FoundationProcessFinishReason)
+    }
+
     private let lock = NSLock()
     private var process: Process?
-    private var reason: FoundationProcessFinishReason?
+    private var phase: Phase = .preparing
 
     var finishReason: FoundationProcessFinishReason? {
-        lock.withLock { reason }
+        lock.withLock {
+            guard case let .finished(reason) = phase else {
+                return nil
+            }
+            return reason
+        }
     }
 
     func attach(_ process: Process) {
@@ -203,79 +256,133 @@ private final class FoundationProcessRunState: @unchecked Sendable {
         }
     }
 
+    func markRunning() {
+        var processToTerminate: Process?
+        lock.withLock {
+            switch phase {
+            case .preparing:
+                phase = .running
+            case .finished:
+                if let process, process.isRunning {
+                    processToTerminate = process
+                }
+            case .running, .processExited:
+                break
+            }
+        }
+
+        if let processToTerminate {
+            requestTermination(processToTerminate, killFallback: true)
+        }
+    }
+
+    @discardableResult
+    func markProcessExited() -> FoundationProcessFinishReason? {
+        lock.withLock {
+            switch phase {
+            case let .finished(reason):
+                return reason
+            case .processExited:
+                return nil
+            case .preparing, .running:
+                phase = .processExited
+                return nil
+            }
+        }
+    }
+
+    func finalizeProcessExit(outputLimitExceeded: Bool) -> FoundationProcessFinishReason {
+        lock.withLock {
+            switch phase {
+            case let .finished(reason):
+                return reason
+            case .preparing, .running, .processExited:
+                let reason: FoundationProcessFinishReason = outputLimitExceeded
+                    ? .outputLimitExceeded
+                    : .completed
+                phase = .finished(reason)
+                return reason
+            }
+        }
+    }
+
     func markCancelledAndTerminate() {
-        markAndTerminate(.cancelled, killFallback: true)
+        markAndTerminate(.cancelled, killFallback: true, allowAfterProcessExit: false)
     }
 
     func markTimedOutAndTerminate() {
-        markAndTerminate(.timedOut, killFallback: true)
+        markAndTerminate(.timedOut, killFallback: true, allowAfterProcessExit: false)
     }
 
     func markOutputLimitExceededAndTerminate() {
-        markAndTerminate(.outputLimitExceeded, killFallback: true)
+        markAndTerminate(.outputLimitExceeded, killFallback: true, allowAfterProcessExit: true)
     }
 
     @discardableResult
     func markStdinWriteFailedAndTerminate(_ message: String) -> Bool {
-        var processToKill: Process?
-        var wasRunning = false
-        lock.withLock {
-            if reason == nil {
-                reason = .stdinWriteFailed(message)
-            }
-            guard let process, process.isRunning else { return }
-
-            process.terminate()
-            processToKill = process
-            wasRunning = true
-        }
-
-        if let processToKill {
-            Task {
-                try? await Task.sleep(for: .seconds(2))
-                self.killIfNeeded(processToKill)
-            }
-        }
-        return wasRunning
+        markAndTerminate(
+            .stdinWriteFailed(message),
+            killFallback: true,
+            allowAfterProcessExit: true
+        )
     }
 
     func terminate() {
-        lock.withLock {
-            guard let process, process.isRunning else { return }
-
-            process.terminate()
+        let processToTerminate = lock.withLock { () -> Process? in
+            guard let process, process.isRunning else { return nil }
+            return process
+        }
+        if let processToTerminate {
+            processToTerminate.terminate()
         }
     }
 
+    @discardableResult
     private func markAndTerminate(
         _ finishReason: FoundationProcessFinishReason,
-        killFallback: Bool
-    ) {
-        var processToKill: Process?
+        killFallback: Bool,
+        allowAfterProcessExit: Bool
+    ) -> Bool {
+        var processToTerminate: Process?
+        var wasRunning = false
+
         lock.withLock {
-            // Record the first terminal reason even if the child has not quite
-            // started yet. The post-launch Task.isCancelled check closes that
-            // race without allowing a later timeout to overwrite cancellation.
-            if reason == nil {
-                reason = finishReason
+            switch phase {
+            case .preparing, .running:
+                phase = .finished(finishReason)
+            case .processExited:
+                guard allowAfterProcessExit else {
+                    return
+                }
+                phase = .finished(finishReason)
+            case .finished:
+                break
             }
 
             guard let process, process.isRunning else {
                 return
             }
-
-            process.terminate()
-            if killFallback {
-                processToKill = process
-            }
+            processToTerminate = process
+            wasRunning = true
         }
 
-        guard let processToKill else {
+        if let processToTerminate {
+            requestTermination(processToTerminate, killFallback: killFallback)
+        }
+        return wasRunning
+    }
+
+    private func requestTermination(_ process: Process, killFallback: Bool) {
+        if process.isRunning {
+            process.terminate()
+        }
+        guard killFallback else {
             return
         }
+
         Task {
             try? await Task.sleep(for: .seconds(2))
-            self.killIfNeeded(processToKill)
+            self.killIfNeeded(process)
         }
     }
 
@@ -314,9 +421,72 @@ private final class ProcessRunCompletion: @unchecked Sendable {
     }
 }
 
+private func drainAvailableOutput(
+    from handle: FileHandle,
+    to stream: ProcessOutputStream,
+    output: BoundedProcessOutput,
+    runState: FoundationProcessRunState,
+    deadline: UInt64
+) {
+    let fileDescriptor = handle.fileDescriptor
+    guard fileDescriptor >= 0 else {
+        return
+    }
+
+    let originalFlags = Darwin.fcntl(fileDescriptor, F_GETFL)
+    guard originalFlags >= 0 else {
+        return
+    }
+    guard Darwin.fcntl(fileDescriptor, F_SETFL, originalFlags | O_NONBLOCK) != -1 else {
+        return
+    }
+    defer {
+        _ = Darwin.fcntl(fileDescriptor, F_SETFL, originalFlags)
+    }
+
+    var buffer = [UInt8](repeating: 0, count: processOutputReadBufferSize)
+    while true {
+        let byteCount = buffer.withUnsafeMutableBytes { rawBuffer -> Int in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                return 0
+            }
+            return Darwin.read(fileDescriptor, baseAddress, rawBuffer.count)
+        }
+
+        if byteCount > 0 {
+            if output.append(Data(buffer.prefix(byteCount)), to: stream) {
+                runState.markOutputLimitExceededAndTerminate()
+                return
+            }
+            continue
+        }
+
+        if byteCount == 0 {
+            return
+        }
+
+        if errno == EINTR {
+            continue
+        }
+
+        guard errno == EAGAIN || errno == EWOULDBLOCK else {
+            return
+        }
+
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now < deadline else {
+            return
+        }
+        let remainingMicroseconds = (deadline - now) / 1_000
+        Darwin.usleep(useconds_t(min(remainingMicroseconds, processOutputDrainPollMicroseconds)))
+    }
+}
+
 private func cleanup(stdoutPipe: Pipe, stderrPipe: Pipe) {
     stdoutPipe.fileHandleForReading.readabilityHandler = nil
     stderrPipe.fileHandleForReading.readabilityHandler = nil
     try? stdoutPipe.fileHandleForReading.close()
     try? stderrPipe.fileHandleForReading.close()
+    try? stdoutPipe.fileHandleForWriting.close()
+    try? stderrPipe.fileHandleForWriting.close()
 }
