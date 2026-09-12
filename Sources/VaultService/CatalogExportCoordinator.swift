@@ -1,4 +1,5 @@
 import Foundation
+import VaultExecution
 import VaultIPC
 
 public enum VaultAppServicesExportError: Error, Equatable, Sendable {
