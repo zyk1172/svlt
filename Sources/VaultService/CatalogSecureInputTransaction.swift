@@ -52,6 +52,62 @@ struct CatalogSecureInputReceiptRecord: Codable, Sendable {
 /// requests. The surrounding service owns authentication, encryption, I/O,
 /// notifications, and audit contexts; this value owns only request state and
 /// non-sensitive terminal receipts.
+/// Owns the non-sensitive Secure Input receipt sidecar I/O. Keeping this
+/// persistence boundary beside the transaction state machine prevents the service
+/// actor from owning JSON/file-permission mechanics while preserving the existing
+/// fail-closed, bounded receipt semantics.
+struct CatalogSecureInputReceiptStore: Sendable {
+    private let url: URL?
+
+    init(url: URL?) {
+        self.url = url?.standardizedFileURL
+    }
+
+    func load(now: Date) -> [CatalogSecureInputReceiptRecord] {
+        guard let url,
+              let data = try? Data(contentsOf: url),
+              let records = try? JSONDecoder().decode([CatalogSecureInputReceiptRecord].self, from: data)
+        else {
+            return []
+        }
+        let cutoff = now.addingTimeInterval(-15 * 60)
+        let recent = records
+            .filter {
+                $0.schemaVersion == CatalogSecureInputReceiptRecord.currentSchemaVersion
+                    && $0.status != .pending
+                    && $0.terminalAt >= cutoff
+                    && $0.terminalAt <= now
+            }
+            .sorted { $0.terminalAt > $1.terminalAt }
+            .prefix(128)
+        // CatalogSecureInputTransaction restores in input order; oldest-to-newest
+        // means a duplicate request ID deterministically keeps its newest receipt.
+        return Array(recent.reversed())
+    }
+
+    func persist(_ records: [CatalogSecureInputReceiptRecord]) throws {
+        guard let url else { return }
+        let parentURL = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: parentURL,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: parentURL.path
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(records)
+        try data.write(to: url, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+}
+
 struct CatalogSecureInputTransaction: Sendable {
     private var requests: [UUID: CatalogAgentSecureInputRequest] = [:]
     private var states: [UUID: CatalogSecureInputState] = [:]

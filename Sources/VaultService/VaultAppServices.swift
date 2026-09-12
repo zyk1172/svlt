@@ -244,7 +244,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)?
     private let auditLog: EncryptedAuditLog?
     private let auditHealthURL: URL?
-    private let secureInputReceiptURL: URL?
+    private let secureInputReceiptStore: CatalogSecureInputReceiptStore
     private let exportDirectory: URL
     private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
     private let secureInputNotifier: CatalogAgentSecureInputNotifier
@@ -355,15 +355,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let resolvedSecureInputReceiptURL = (secureInputReceiptURL
             ?? auditHealthURL?.deletingLastPathComponent().appendingPathComponent("secure-input-receipts.json"))?
             .standardizedFileURL
-        self.secureInputReceiptURL = resolvedSecureInputReceiptURL
+        let secureInputReceiptStore = CatalogSecureInputReceiptStore(url: resolvedSecureInputReceiptURL)
+        self.secureInputReceiptStore = secureInputReceiptStore
         let persistedAuditHealth = Self.loadAuditHealth(from: auditHealthURL)
         self.auditAppendFailureAt = persistedAuditHealth?.lastFailureAt
         self.auditAppendGapDetected = persistedAuditHealth?.gapDetected ?? false
         self.lastSuccessfulAuditSequence = persistedAuditHealth?.lastSuccessfulSequence ?? 0
-        let persistedSecureInputReceipts = Self.loadSecureInputReceipts(
-            from: resolvedSecureInputReceiptURL,
-            now: now()
-        )
+        let persistedSecureInputReceipts = secureInputReceiptStore.load(now: now())
         self.secureInputTransactions = CatalogSecureInputTransaction(receipts: persistedSecureInputReceipts)
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
         self.writeAccessNotifier = writeAccessNotifier
@@ -5651,56 +5649,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func persistSecureInputReceipts() {
-        guard let secureInputReceiptURL else { return }
-        let records = secureInputTransactions.receiptRecords(now: now())
-
-        do {
-            let parentURL = secureInputReceiptURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: parentURL,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o700],
-                ofItemAtPath: parentURL.path
-            )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            let data = try encoder.encode(Array(records))
-            try data.write(to: secureInputReceiptURL, options: [.atomic])
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: secureInputReceiptURL.path
-            )
-        } catch {
-            Logger(subsystem: "com.agent-secret-vault.SVLT", category: "secure-input")
-                .error("SECURE_INPUT_RECEIPT_PERSIST_FAILED")
-        }
+    do {
+        try secureInputReceiptStore.persist(
+            secureInputTransactions.receiptRecords(now: now())
+        )
+    } catch {
+        Logger(subsystem: "com.agent-secret-vault.SVLT", category: "secure-input")
+            .error("SECURE_INPUT_RECEIPT_PERSIST_FAILED")
     }
-
-    private static func loadSecureInputReceipts(
-        from url: URL?,
-        now: Date
-    ) -> [CatalogSecureInputReceiptRecord] {
-        guard let url,
-              let data = try? Data(contentsOf: url),
-              let records = try? JSONDecoder().decode([CatalogSecureInputReceiptRecord].self, from: data)
-        else {
-            return []
-        }
-        let cutoff = now.addingTimeInterval(-15 * 60)
-        let recent = records
-            .filter {
-                $0.schemaVersion == CatalogSecureInputReceiptRecord.currentSchemaVersion
-                    && $0.status != .pending
-                    && $0.terminalAt >= cutoff
-                    && $0.terminalAt <= now
-            }
-            .sorted { $0.terminalAt > $1.terminalAt }
-            .prefix(128)
-        return Array(recent.reversed())
-    }
+}
 
     private static func loadAuditHealth(from url: URL?) -> CatalogAuditHealthRecord? {
         guard let url,

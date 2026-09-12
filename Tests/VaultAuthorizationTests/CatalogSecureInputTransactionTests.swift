@@ -89,6 +89,99 @@ private let transactionFieldKey = "password"
     #expect(transaction.dueRequestIDs(now: now.addingTimeInterval(181)) == [requestID])
 }
 
+@Test func secureInputReceiptStoreRoundTripsWithOwnerOnlyPermissions() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-secure-input-receipt-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let receiptURL = root.appendingPathComponent("secure-input-receipts.json")
+    let store = CatalogSecureInputReceiptStore(url: receiptURL)
+    let now = Date(timeIntervalSinceReferenceDate: 30_000)
+    let requestID = UUID()
+    let record = CatalogSecureInputReceiptRecord(
+        schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion,
+        requestID: requestID,
+        status: .completed,
+        revision: 7,
+        errorCode: nil,
+        terminalAt: now
+    )
+
+    try store.persist([record])
+    let loaded = store.load(now: now)
+
+    #expect(loaded.count == 1)
+    #expect(loaded.first?.requestID == requestID)
+    #expect(loaded.first?.status == .completed)
+    #expect(loaded.first?.revision == 7)
+    #expect(loaded.first?.terminalAt == now)
+
+    let directoryAttributes = try FileManager.default.attributesOfItem(atPath: root.path)
+    let fileAttributes = try FileManager.default.attributesOfItem(atPath: receiptURL.path)
+    #expect((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+    #expect((fileAttributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+}
+
+@Test func secureInputReceiptStoreFiltersBoundsAndRestoresOldestToNewest() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-secure-input-receipt-filter-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = CatalogSecureInputReceiptStore(
+        url: root.appendingPathComponent("secure-input-receipts.json")
+    )
+    let now = Date(timeIntervalSinceReferenceDate: 40_000)
+    var records = (0..<130).map { offset in
+        CatalogSecureInputReceiptRecord(
+            schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion,
+            requestID: UUID(),
+            status: .completed,
+            revision: UInt64(offset),
+            errorCode: nil,
+            terminalAt: now.addingTimeInterval(-TimeInterval(offset))
+        )
+    }
+    records.append(CatalogSecureInputReceiptRecord(
+        schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion,
+        requestID: UUID(),
+        status: .pending,
+        revision: nil,
+        errorCode: nil,
+        terminalAt: now
+    ))
+    records.append(CatalogSecureInputReceiptRecord(
+        schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion,
+        requestID: UUID(),
+        status: .failed,
+        revision: nil,
+        errorCode: "OLD",
+        terminalAt: now.addingTimeInterval(-(15 * 60 + 1))
+    ))
+    records.append(CatalogSecureInputReceiptRecord(
+        schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion,
+        requestID: UUID(),
+        status: .failed,
+        revision: nil,
+        errorCode: "FUTURE",
+        terminalAt: now.addingTimeInterval(1)
+    ))
+    records.append(CatalogSecureInputReceiptRecord(
+        schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion + 1,
+        requestID: UUID(),
+        status: .failed,
+        revision: nil,
+        errorCode: "UNKNOWN_SCHEMA",
+        terminalAt: now
+    ))
+
+    try store.persist(records)
+    let loaded = store.load(now: now)
+
+    #expect(loaded.count == 128)
+    #expect(loaded.first?.terminalAt == now.addingTimeInterval(-127))
+    #expect(loaded.last?.terminalAt == now)
+    #expect(loaded.allSatisfy { $0.status == .completed })
+    #expect(loaded.allSatisfy { $0.schemaVersion == CatalogSecureInputReceiptRecord.currentSchemaVersion })
+}
+
 private func secureInputRequest(
     id: UUID,
     createdAt: Date = Date(timeIntervalSinceReferenceDate: 1_000)
