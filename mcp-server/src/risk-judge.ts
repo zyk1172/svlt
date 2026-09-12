@@ -52,7 +52,11 @@ export function riskJudgeConfigurationFromEnvironment(
   } catch {
     return undefined;
   }
-  if (parsedEndpoint.protocol !== "https:" && parsedEndpoint.hostname !== "127.0.0.1" && parsedEndpoint.hostname !== "localhost") {
+  if (
+    parsedEndpoint.protocol !== "https:" &&
+    parsedEndpoint.hostname !== "127.0.0.1" &&
+    parsedEndpoint.hostname !== "localhost"
+  ) {
     return undefined;
   }
 
@@ -76,18 +80,39 @@ export function riskJudgeConfigurationFromEnvironment(
  * to SVLT. It never receives chat history, memory, secret plaintext, tools, or
  * the main agent's free-form risk rationale.
  *
- * When no judge is configured, the request is returned unchanged for backward
- * compatibility. Once configured, judge failure is fail-conservative: the
- * request is marked unknown/fresh rather than silently falling back to the
- * main agent's risk hint.
+ * Once configured, judge failure is fail-conservative: the request is marked
+ * unknown/fresh rather than silently falling back to the main agent's risk
+ * hint. When no judge is configured, ordinary legacy hints remain unchanged,
+ * but a caller-supplied SVLT_JUDGE_V1 marker is stripped so it cannot fake an
+ * independent assessment.
  */
 export async function applyContextBoundedRiskJudge(
   request: IpcRequest,
   configuration: RiskJudgeConfiguration | undefined = riskJudgeConfigurationFromEnvironment(),
   transport: RiskJudgeTransport = defaultTransport
 ): Promise<IpcRequest> {
-  if (request.type !== "executeSecretOperation" || configuration === undefined) {
+  if (request.type !== "executeSecretOperation") {
     return request;
+  }
+
+  if (configuration === undefined) {
+    if (!isIndependentRiskJudgeAssessment(request.descriptor.agentAssessment.reason)) {
+      return request;
+    }
+    return {
+      ...request,
+      descriptor: {
+        ...request.descriptor,
+        agentAssessment: {
+          declaredRisk: "approvalRequired",
+          reason: "Independent risk judge is not configured; caller-supplied judge marker ignored",
+          intendedEffect: boundedText(
+            request.descriptor.agentAssessment.intendedEffect || "unspecified operation goal",
+            MAX_PROBLEM_CHARS
+          )
+        }
+      }
+    };
   }
 
   const problem = boundedText(
