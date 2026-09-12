@@ -9,7 +9,8 @@ import {
   CapabilityToken,
   IpcFrameCodec,
   IpcRequest,
-  IpcResponse
+  IpcResponse,
+  MAX_FRAME_BYTES
 } from "./protocol.js";
 import { applyContextBoundedRiskJudge } from "./risk-judge.js";
 
@@ -34,6 +35,8 @@ const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
 // adapter-owned execution timeout, which starts after any device-owner
 // approval completes, so the MCP transport must not reuse this deadline.
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const FRAME_HEADER_BYTES = 4;
+const MAX_WIRE_FRAME_BYTES = FRAME_HEADER_BYTES + MAX_FRAME_BYTES;
 
 export function appSupportIpcPaths(): IpcPaths {
   const directory = path.join(
@@ -156,30 +159,82 @@ function sendFramedRequest(
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     const chunks: Buffer[] = [];
+    const header = Buffer.alloc(FRAME_HEADER_BYTES);
+    let headerBytes = 0;
+    let receivedBytes = 0;
+    let expectedFrameBytes: number | undefined;
     let settled = false;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
 
     const settle = (callback: () => void) => {
-      if (!settled) {
-        settled = true;
-        callback();
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (deadlineTimer !== undefined) {
+        clearTimeout(deadlineTimer);
       }
       socket.destroy();
+      callback();
     };
 
+    // net.Socket#setTimeout is an inactivity timeout: a peer can keep the
+    // request alive forever by periodically sending a byte. Control requests
+    // need a real wall-clock deadline that includes connect/write/read time.
     if (timeoutMs !== undefined) {
-      socket.setTimeout(timeoutMs, () => {
+      deadlineTimer = setTimeout(() => {
         settle(() => reject(new Error("IPC request timed out.")));
-      });
+      }, timeoutMs);
     }
 
     socket.on("connect", () => {
       socket.end(requestFrame);
     });
     socket.on("data", (chunk) => {
+      if (settled) {
+        return;
+      }
+
+      receivedBytes += chunk.byteLength;
+      if (receivedBytes > MAX_WIRE_FRAME_BYTES) {
+        settle(() => reject(new Error("IPC frame too large")));
+        return;
+      }
+
+      if (headerBytes < FRAME_HEADER_BYTES) {
+        const bytesToCopy = Math.min(FRAME_HEADER_BYTES - headerBytes, chunk.byteLength);
+        chunk.copy(header, headerBytes, 0, bytesToCopy);
+        headerBytes += bytesToCopy;
+      }
+
+      if (headerBytes === FRAME_HEADER_BYTES && expectedFrameBytes === undefined) {
+        const payloadLength = header.readUInt32BE(0);
+        if (payloadLength > MAX_FRAME_BYTES) {
+          settle(() => reject(new Error("IPC frame too large")));
+          return;
+        }
+        expectedFrameBytes = FRAME_HEADER_BYTES + payloadLength;
+      }
+
+      if (expectedFrameBytes !== undefined && receivedBytes > expectedFrameBytes) {
+        const declaredPayloadBytes = expectedFrameBytes - FRAME_HEADER_BYTES;
+        settle(() => reject(new Error(
+          `IPC frame length mismatch: expected ${declaredPayloadBytes}, got ${receivedBytes - FRAME_HEADER_BYTES}`
+        )));
+        return;
+      }
+
       chunks.push(chunk);
     });
     socket.on("end", () => {
-      settle(() => resolve(Buffer.concat(chunks)));
+      if (expectedFrameBytes !== undefined && receivedBytes !== expectedFrameBytes) {
+        const declaredPayloadBytes = expectedFrameBytes - FRAME_HEADER_BYTES;
+        settle(() => reject(new Error(
+          `IPC frame length mismatch: expected ${declaredPayloadBytes}, got ${receivedBytes - FRAME_HEADER_BYTES}`
+        )));
+        return;
+      }
+      settle(() => resolve(Buffer.concat(chunks, receivedBytes)));
     });
     socket.on("error", (error) => {
       settle(() => reject(error));
