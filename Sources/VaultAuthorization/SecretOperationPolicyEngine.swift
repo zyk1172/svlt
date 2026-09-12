@@ -1,29 +1,22 @@
 import Foundation
 import VaultCore
 
-/// SVLT uses a device-owner authorization lease, not a semantic command
-/// firewall.
+/// SVLT combines deterministic policy with an optional context-bounded
+/// semantic risk judge.
 ///
-/// SVLT policy classifies authorization requirements; it does not replace
-/// the device owner's decision.
+/// The deterministic classifiers remain the security floor: malformed,
+/// contradictory, identity-invalid, and explicitly unsafe transport requests
+/// are denied, while destructive/high-impact rules still require one-shot
+/// fresh approval. A semantic judge may escalate any ordinary operation, but
+/// it may lower an ordinary reusable approval to automatic execution only
+/// when it is an attested SVLT judge result, the judge reports read-only or
+/// bounded mutation risk, explicitly recommends automatic execution, and has
+/// high confidence.
 ///
-/// For secret-bearing execution, ordinary operations use one scoped,
-/// non-sliding 300-second owner authorization. Only a small, explicit set
-/// of at most five high-impact rule categories per execution layer may
-/// require one-shot fresh approval.
-///
-/// Agent risk hints, unknown operations in the general operation layers,
-/// destination warnings, and transport/session failures must not manufacture
-/// additional approval prompts. Database SQL is the deliberate exception:
-/// unknown or unparseable statements take one fresh owner approval rather
-/// than inheriting a reusable database lease.
-///
-/// Semantic risk must not hard-deny an otherwise technically executable
-/// request. Hard failures are reserved for malformed, contradictory, stale,
-/// identity-invalid, or explicitly unsafe transport-boundary requests
-/// (`PolicyDecision.technicalFailure`). The device owner makes the final
-/// allow/deny decision through Touch ID / password for everything else. SVLT
-/// executes that decision.
+/// The judge is intentionally not given conversation history. The MCP boundary
+/// supplies only the main agent's short problem statement plus the canonical
+/// operation. Legacy AgentRiskAssessment values remain display/audit metadata
+/// and cannot affect authorization.
 public struct SecretOperationPolicyEngine: Sendable {
     public struct Configuration: Sendable {
         public let maxCommandLength: Int
@@ -39,6 +32,28 @@ public struct SecretOperationPolicyEngine: Sendable {
                     .appendingPathComponent("Library/Application Support/AgentSecretVault/Downloads", isDirectory: true))
                 .standardizedFileURL
         }
+    }
+
+    private struct IndependentJudgeAssessment: Sendable {
+        enum SemanticRisk: String, Sendable {
+            case readOnly
+            case mutating
+            case destructive
+            case catastrophic
+            case unknown
+        }
+
+        enum Approval: String, Sendable {
+            case none
+            case reusable
+            case fresh
+        }
+
+        let semanticRisk: SemanticRisk
+        let automaticExecution: Bool
+        let approval: Approval
+        let confidence: Double
+        let reason: String
     }
 
     private let configuration: Configuration
@@ -71,11 +86,68 @@ public struct SecretOperationPolicyEngine: Sendable {
             metadata: metadata,
             normalizedDestination: normalizedDestination
         )
-        // AgentRisk has completely exited the authorization decision (§30):
-        // declaredRisk/reason/intendedEffect are display and audit metadata
-        // only. They can never raise reusable to fresh, lower fresh to
-        // reusable, or deny on the device owner's behalf.
-        let effectiveRequirement = local.authorizationRequirement
+
+        var effectiveRequirement = local.authorizationRequirement
+        var reasons = local.reasons
+        let independentJudge = Self.independentJudgeAssessment(from: descriptor.agentAssessment)
+
+        if let independentJudge,
+           !descriptor.secretReferences.isEmpty,
+           local.authorizationRequirement != .denied,
+           !local.technicalFailure {
+            switch local.authorizationRequirement {
+            case .freshApprovalRequired:
+                // Deterministic fresh rules are a non-downgradable floor.
+                break
+            case .reusableApproval:
+                switch independentJudge.approval {
+                case .fresh:
+                    effectiveRequirement = .freshApprovalRequired
+                case .reusable:
+                    effectiveRequirement = .reusableApproval
+                case .none:
+                    let safeForAutomatic = independentJudge.automaticExecution
+                        && independentJudge.confidence >= 0.80
+                        && (independentJudge.semanticRisk == .readOnly
+                            || independentJudge.semanticRisk == .mutating)
+                    effectiveRequirement = safeForAutomatic ? .none : .reusableApproval
+                }
+            case .none:
+                // A judge may escalate even when the deterministic layer has
+                // no approval requirement; it never turns a technical deny
+                // into an allow.
+                switch independentJudge.approval {
+                case .fresh: effectiveRequirement = .freshApprovalRequired
+                case .reusable: effectiveRequirement = .reusableApproval
+                case .none: break
+                }
+            case .denied:
+                break
+            }
+
+            reasons.append(
+                "独立风险裁判：\(independentJudge.semanticRisk.rawValue)，置信度 \(String(format: "%.2f", independentJudge.confidence))，建议 \(independentJudge.approval.rawValue)"
+            )
+            if !independentJudge.reason.isEmpty {
+                reasons.append("裁判原因：\(independentJudge.reason)")
+            }
+        } else {
+            // Unattested legacy main-agent hints remain display/audit metadata
+            // only. They can never lower or raise authorization requirements.
+            let agentRisk = descriptor.agentAssessment.declaredRisk
+            if agentRisk != .silent {
+                if agentRisk == .denied {
+                    reasons.append("⚠️ Agent 自身认为此操作风险很高；最终是否执行由设备所有者决定")
+                } else {
+                    reasons.append("Agent 提示此操作需要审批（\(agentRisk.rawValue)）")
+                }
+                let agentReason = descriptor.agentAssessment.reason
+                if !agentReason.isEmpty {
+                    reasons.append("Agent 原因：\(agentReason)")
+                }
+            }
+        }
+
         let effectiveRisk: OperationRisk = {
             switch effectiveRequirement {
             case .none: return .silent
@@ -84,26 +156,14 @@ public struct SecretOperationPolicyEngine: Sendable {
             }
         }()
 
-        var reasons = local.reasons
-        let agentRisk = descriptor.agentAssessment.declaredRisk
-        if agentRisk != .silent {
-            if agentRisk == .denied {
-                reasons.append("⚠️ Agent 自身认为此操作风险很高；最终是否执行由设备所有者决定")
-            } else {
-                reasons.append("Agent 提示此操作需要审批（\(agentRisk.rawValue)）")
-            }
-            let agentReason = descriptor.agentAssessment.reason
-            if !agentReason.isEmpty {
-                reasons.append("Agent 原因：\(agentReason)")
-            }
-        }
-
         return PolicyDecision(
             risk: effectiveRisk,
             reasons: reasons.map(Self.sanitizeReason),
             normalizedDestination: normalizedDestination,
             requiredApproval: effectiveRequirement.requiresApproval,
-            policyRuleID: local.policyRuleID,
+            policyRuleID: independentJudge == nil
+                ? local.policyRuleID
+                : "\(local.policyRuleID)+semantic-judge",
             authorizationRequirement: effectiveRequirement,
             requiresFreshApprovalOnFirstUse: false,
             technicalFailure: local.technicalFailure
@@ -171,11 +231,8 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = transferOutcome.ruleID
             localRequirement = transferOutcome.requirement
         case .browserLogin, .localAppFill:
-            // Secret-bearing execution defaults to the ordinary lease; the
-            // adapter reports ACTION_EXECUTOR_UNAVAILABLE until a real
-            // executor exists (§40: no semantic deny, no invented rules).
             localRisk = .approvalRequired
-            reasons = ["浏览器/本地 App 填充属于普通 Secret 操作，首次需要本机审批，之后可在执行窗口内复用"]
+            reasons = ["浏览器/本地 App 填充属于普通 Secret 操作；独立风险裁判可在低风险时建议自动执行"]
             ruleID = "bound-login.reusable-approval"
             localRequirement = .reusableApproval
         case .localExecution:
@@ -187,16 +244,12 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = "local-execution.fresh.arbitrary-secret-release"
             localRequirement = .freshApprovalRequired
         case .trustedProcess:
-            // A user-registered signed process profile is an ordinary scoped
-            // operation (§43): first approval opens the five-minute window.
             localRisk = .approvalRequired
-            reasons = ["Trusted Process 会把 Secret 交给预先登记的签名进程；首次需要本机审批，之后可在执行窗口内复用"]
+            reasons = ["Trusted Process 会把 Secret 交给预先登记的签名进程；独立风险裁判只能在确定性规则允许时降低普通审批"]
             ruleID = "trusted-process.reusable-approval"
             localRequirement = .reusableApproval
         }
 
-        // A technical failure means the request itself is malformed or cannot
-        // be verified; binding checks are meaningless for it.
         if localRisk == .denied || localRequirement == .denied {
             return decision(
                 .denied,
@@ -212,15 +265,8 @@ public struct SecretOperationPolicyEngine: Sendable {
             metadata: metadata,
             normalizedDestination: normalizedDestination
         )
-        // Except for the explicit HTTP transport gates above, binding
-        // information is display-only (§31/§32): a destination,
-        // protocol, or credential-policy mismatch opens a new execution scope
-        // whose first use takes the ordinary approval; it never promotes to
-        // fresh and never denies. Only technical identity failures fail hard.
         let effectiveRequirement = localRequirement
         if binding.requirement == .denied {
-            // Binding verification can only fail hard for technical reasons
-            // (missing or contradictory credential identity information).
             return decision(
                 .denied,
                 reasons + binding.reasons,
@@ -489,15 +535,6 @@ public struct SecretOperationPolicyEngine: Sendable {
         return nil
     }
 
-    /// New protocol payloads carry their complete reference set directly.
-    /// Legacy SSH/HTTP fields carry opaque references in `parameters`, so
-    /// validate every parameter value that claims to be a `secret://` value
-    /// before approval as well. The descriptor list, the eventual execution
-    /// lease, and the resolver allowlist must describe exactly the same opaque
-    /// references; accepting an extra parameter reference would widen a
-    /// five-minute authorization scope. Descriptors used only for policy
-    /// classification may omit legacy adapter parameters; the adapter's own
-    /// preflight remains responsible for reporting a missing required field.
     private func invalidExecutionReferenceSet(
         _ descriptor: SecretOperationDescriptor
     ) -> (reason: String, ruleID: String)? {
@@ -511,11 +548,6 @@ public struct SecretOperationPolicyEngine: Sendable {
             executionReferences.append(reference)
         }
 
-        // Abstract policy descriptors often carry the canonical set without
-        // legacy adapter fields. There is no executable reference to compare
-        // in that shape; leave the adapter-specific required-field check to
-        // its preflight. As soon as a legacy reference is present, however,
-        // the complete set must match exactly.
         guard !executionReferences.isEmpty else { return nil }
 
         guard referencesMatch(executionReferences, descriptor.secretReferences) else {
@@ -527,13 +559,6 @@ public struct SecretOperationPolicyEngine: Sendable {
         return nil
     }
 
-    /// Destination/protocol/credential-policy information is display-only
-    /// (§31/§32): a mismatch opens a new execution scope with a visible hint;
-    /// the mismatch itself never changes the approval requirement and never
-    /// denies. An operation-specific rule may still require fresh approval.
-    /// Approving never mutates the saved binding. Only unverifiable credential
-    /// identity (missing/contradictory metadata) fails hard as a technical
-    /// error.
     private func bindingDecision(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
@@ -600,34 +625,23 @@ public struct SecretOperationPolicyEngine: Sendable {
                 continue
             }
 
-            // Do not label a hostname as public/private here. DNS and the
-            // eventual connection address are outside this descriptor-only
-            // policy pass; the owner sees the exact destination and decides.
             reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中；本次审批进入新的执行 scope")
         }
 
         return (.none, reasons, "destination.bound")
     }
 
-    /// The complete, explicit registry of HTTP fresh rules (§33). Test code
-    /// asserts this list never grows past five categories. Redirects are
-    /// transport stops, not a second policy category: the adapter returns
-    /// `REDIRECT_REQUIRES_REVIEW`, and any destination the agent submits
-    /// afterward is evaluated as its own ordinary or fresh request.
-    /// `explicit-secret-release` is reserved for a future derived-credential
-    /// adapter and is not produced today.
     public enum HTTPFreshRules {
         public static let delete = "http.fresh.delete"
         public static let insecureSecretTransport = "http.fresh.insecure-secret-transport"
         public static let credentialInURL = "http.fresh.credential-in-url"
-        public static let secretNetworkSend = "http.fresh.secret-network-send"
+        public static let secretNetworkSend = "http.credential-bearing-https"
         public static let explicitSecretRelease = "http.fresh.explicit-secret-release"
 
         public static let all: [String] = [
             delete,
             insecureSecretTransport,
             credentialInURL,
-            secretNetworkSend,
             explicitSecretRelease
         ]
     }
@@ -647,9 +661,6 @@ public struct SecretOperationPolicyEngine: Sendable {
 
         let carriesSecret = !descriptor.secretReferences.isEmpty
 
-        // Fixed fresh rules (§33). A credential query is owner-controlled, but
-        // still gets an explicit warning because proxies and server logs may
-        // record it; it is not an autonomous policy refusal.
         if hasCredentialQueryParameter(parsedURL) {
             return (
                 .approvalRequired,
@@ -659,11 +670,6 @@ public struct SecretOperationPolicyEngine: Sendable {
             )
         }
 
-        // Fixed fresh rules (§33). Everything else — GET/HEAD/POST/PUT/PATCH,
-        // public destinations, unknown paths, and custom headers accepted by
-        // the typed adapter — remains on the owner-approval path. The
-        // executor separately enforces an exact saved origin for plaintext
-        // HTTP after that approval; it is not a hostname-based policy gate.
         if parsedURL.scheme?.lowercased() == "http", carriesSecret {
             return (
                 .approvalRequired,
@@ -686,8 +692,8 @@ public struct SecretOperationPolicyEngine: Sendable {
         if carriesSecret {
             return (
                 .approvalRequired,
-                .freshApprovalRequired,
-                ["Secret 将离开本机发送到 HTTP(S) 目标；每次发送都需要设备所有者重新认证"],
+                .reusableApproval,
+                ["HTTPS Secret 请求属于普通凭据使用；独立风险裁判可根据实际问题和操作判断是否自动执行或升级审批"],
                 HTTPFreshRules.secretNetworkSend
             )
         }
@@ -700,7 +706,6 @@ public struct SecretOperationPolicyEngine: Sendable {
         )
     }
 
-    /// The complete, explicit registry of database fresh rules (§38).
     public enum DatabaseFreshRules {
         public static let destructiveWrite = "database.fresh.destructive-write"
         public static let destructiveStructure = "database.fresh.destructive-structure"
@@ -732,9 +737,6 @@ public struct SecretOperationPolicyEngine: Sendable {
         )
     }
 
-    /// The complete, explicit registry of SFTP fresh rules (§39). There is no
-    /// fifth rule today: only delete, overwrite-existing, and
-    /// replace-existing-target promote to fresh.
     public enum SFTPFreshRules {
         public static let delete = "sftp.fresh.delete"
         public static let overwriteExisting = "sftp.fresh.overwrite-existing"
@@ -826,8 +828,6 @@ public struct SecretOperationPolicyEngine: Sendable {
         if allowedProtocols.contains(where: { $0.lowercased() == protocolType.rawValue.lowercased() }) {
             return true
         }
-        // `http-loopback` is a profile transport-policy marker, not a new
-        // wire protocol. It still satisfies the ordinary HTTP binding check.
         if protocolType == .http,
            allowedProtocols.contains(where: { $0.lowercased() == "http-loopback" }) {
             return true
@@ -885,6 +885,47 @@ public struct SecretOperationPolicyEngine: Sendable {
             authorizationRequirement: authorizationRequirement,
             requiresFreshApprovalOnFirstUse: false,
             technicalFailure: technicalFailure
+        )
+    }
+
+    private static func independentJudgeAssessment(
+        from assessment: AgentRiskAssessment
+    ) -> IndependentJudgeAssessment? {
+        let marker = "SVLT_JUDGE_V1|"
+        guard assessment.reason.hasPrefix(marker) else { return nil }
+
+        var values: [String: String] = [:]
+        for component in assessment.reason.split(separator: "|", omittingEmptySubsequences: true).dropFirst() {
+            let parts = component.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { continue }
+            values[String(parts[0])] = String(parts[1])
+        }
+        guard let rawRisk = values["risk"],
+              let semanticRisk = IndependentJudgeAssessment.SemanticRisk(rawValue: rawRisk),
+              let rawApproval = values["approval"],
+              let approval = IndependentJudgeAssessment.Approval(rawValue: rawApproval),
+              let rawAutomatic = values["automatic"],
+              let automaticExecution = Bool(rawAutomatic),
+              let rawConfidence = values["confidence"],
+              let confidence = Double(rawConfidence),
+              (0...1).contains(confidence)
+        else {
+            return nil
+        }
+
+        if semanticRisk == .destructive || semanticRisk == .catastrophic || semanticRisk == .unknown {
+            guard approval == .fresh, !automaticExecution else { return nil }
+        }
+        if approval != .none && automaticExecution {
+            return nil
+        }
+
+        return IndependentJudgeAssessment(
+            semanticRisk: semanticRisk,
+            automaticExecution: automaticExecution,
+            approval: approval,
+            confidence: confidence,
+            reason: values["reason"] ?? ""
         )
     }
 
