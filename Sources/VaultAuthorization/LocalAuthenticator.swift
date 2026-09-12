@@ -1,6 +1,8 @@
 import Foundation
 import LocalAuthentication
 
+public typealias LocalAuthenticationPresentationObserver = @Sendable (UUID) -> Void
+
 protocol LocalAuthenticationEvaluating: Sendable {
     func evaluate(policy: LAPolicy, localizedReason: String) async throws -> Bool
     func evaluate(
@@ -24,8 +26,14 @@ public struct LocalAuthenticator: BiometricAuthorizing, KeychainContextAuthorizi
     public let policy: LAPolicy
     private let evaluator: any LocalAuthenticationEvaluating
 
-    public init(policy: LAPolicy = .deviceOwnerAuthentication) {
-        self.init(policy: policy, evaluator: LAContextEvaluator())
+    public init(
+        policy: LAPolicy = .deviceOwnerAuthentication,
+        presentationObserver: LocalAuthenticationPresentationObserver? = nil
+    ) {
+        self.init(
+            policy: policy,
+            evaluator: LAContextEvaluator(presentationObserver: presentationObserver)
+        )
     }
 
     init(
@@ -85,6 +93,12 @@ public struct LocalAuthenticator: BiometricAuthorizing, KeychainContextAuthorizi
 }
 
 private struct LAContextEvaluator: LocalAuthenticationEvaluating {
+    private let presentationObserver: LocalAuthenticationPresentationObserver?
+
+    init(presentationObserver: LocalAuthenticationPresentationObserver? = nil) {
+        self.presentationObserver = presentationObserver
+    }
+
     func evaluate(policy: LAPolicy, localizedReason: String) async throws -> Bool {
         try await evaluate(
             policy: policy,
@@ -98,7 +112,16 @@ private struct LAContextEvaluator: LocalAuthenticationEvaluating {
         localizedReason: String,
         using context: LocalAuthenticationContext
     ) async throws -> Bool {
-        try await withCheckedThrowingContinuation { continuation in
+        var availabilityError: NSError?
+        guard context.rawContext.canEvaluatePolicy(policy, error: &availabilityError) else {
+            if let availabilityError {
+                throw availabilityError
+            }
+            throw BiometricAuthorizationError.unavailable
+        }
+
+        let approvalID = UUID()
+        return try await withCheckedThrowingContinuation { continuation in
             context.rawContext.evaluatePolicy(policy, localizedReason: localizedReason) { success, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -107,6 +130,12 @@ private struct LAContextEvaluator: LocalAuthenticationEvaluating {
 
                 continuation.resume(returning: success)
             }
+
+            // This observer is intentionally attached to the call that asks
+            // LocalAuthentication to present its system-owned approval UI.
+            // Pending request creation, policy evaluation, automatic allow,
+            // and automatic deny paths never reach this point.
+            presentationObserver?(approvalID)
         }
     }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import VaultCore
+@testable import AgentSecretVaultApp
 @testable import VaultAuthorization
 
 @Test func approvalTicketBindsExactOperationAndIsOneShot() async throws {
@@ -55,6 +56,21 @@ import VaultCore
         now: Date(timeIntervalSinceReferenceDate: 205)
     )))
     #expect(await store.activeTicketCount(now: Date(timeIntervalSinceReferenceDate: 205)) == 0)
+}
+
+@Test func approvalNotificationGateAllowsOnlyOneDeliveryPerPresentedWindow() {
+    var gate = ApprovalNotificationOnceGate()
+    let firstWindow = UUID()
+    let secondWindow = UUID()
+
+    #expect(gate.shouldNotify(approvalID: firstWindow))
+    #expect(!gate.shouldNotify(approvalID: firstWindow))
+    #expect(gate.shouldNotify(approvalID: secondWindow))
+}
+
+@Test func approvalNotificationCopyIsFixedAndContainsNoOperationDetails() {
+    #expect(ApprovalNotificationCopy.title == "SVLT 需要审批")
+    #expect(ApprovalNotificationCopy.body == "有一项操作正在等待你的确认")
 }
 
 private func operation(command: String, destination: String) -> SecretOperationDescriptor {

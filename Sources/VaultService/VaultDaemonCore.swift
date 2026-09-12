@@ -235,6 +235,7 @@ public actor VaultDaemonCore {
                 SymmetricKey(data: try await auditKeyStore.loadOrCreateAuditKeyData())
             }
         )
+        let approvalPresentationNotifier = AgentApprovalPresentationNotifier()
         let services = VaultAppServices(
             textEncryptor: encryptor,
             activeRoot: configuration.vaultRootURL,
@@ -265,6 +266,13 @@ public actor VaultDaemonCore {
                 credentialTTL: configuration.credentialAuthorizationTTL,
                 externalSendTTL: configuration.externalSendAuthorizationTTL,
                 executionTTL: configuration.executionAuthorizationTTL
+            ),
+            operationApprover: LocalOperationApprover(
+                authenticator: LocalAuthenticator(
+                    presentationObserver: { approvalID in
+                        approvalPresentationNotifier.notify(approvalID: approvalID)
+                    }
+                )
             ),
             operationExecutor: LocalSecretOperationExecutor(
                 adapterRegistry: SecretOperationAdapterRegistry(
