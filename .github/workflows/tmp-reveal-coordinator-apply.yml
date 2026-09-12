@@ -1,0 +1,161 @@
+name: Temporary reveal coordinator apply
+
+on:
+  push:
+    branches:
+      - codex/extract-reveal-session-coordinator
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Delegate reveal session coordination
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('Sources/VaultService/VaultAppServices.swift')
+          text = path.read_text()
+
+          replacements = [
+              (
+                  'public protocol RevealSessionPresenting: Sendable {\n'
+                  '    func present(sessionID: String, store: RevealSessionStore) async\n'
+                  '}\n\n'
+                  'public struct NoopRevealSessionPresenter: RevealSessionPresenting {\n'
+                  '    public init() {}\n\n'
+                  '    public func present(sessionID: String, store: RevealSessionStore) async {}\n'
+                  '}\n\n',
+                  ''
+              ),
+              (
+                  '    private let revealSessionStore: RevealSessionStore\n'
+                  '    private let revealSessionPresenter: any RevealSessionPresenting\n',
+                  '    private let revealSessionCoordinator: RevealSessionCoordinator\n'
+              ),
+              (
+                  '        self.revealSessionStore = revealSessionStore\n'
+                  '        self.revealSessionPresenter = revealSessionPresenter\n',
+                  '        self.revealSessionCoordinator = RevealSessionCoordinator(\n'
+                  '            store: revealSessionStore,\n'
+                  '            presenter: revealSessionPresenter\n'
+                  '        )\n'
+              ),
+              (
+                  '    public func clearRevealSessions() async {\n'
+                  '        await revealSessionStore.clearAll()\n'
+                  '    }\n',
+                  '    public func clearRevealSessions() async {\n'
+                  '        await revealSessionCoordinator.clearAll()\n'
+                  '    }\n'
+              ),
+              (
+                  '        let sessionID = await revealSessionStore.create(resolvedParagraph: resolvedParagraph)\n'
+                  '        await revealSessionPresenter.present(sessionID: sessionID, store: revealSessionStore)\n',
+                  '        let sessionID = await revealSessionCoordinator.createAndPresent(resolvedParagraph)\n'
+              ),
+              (
+                  '    public func pendingRevealSessionIDs() async throws -> [String] {\n'
+                  '        await revealSessionStore.sessionIDs()\n'
+                  '    }\n\n'
+                  '    public func revealSessionData(sessionID: String) async throws -> RestoredParagraph {\n'
+                  '        guard let restoredParagraph = await revealSessionStore.restoredParagraph(id: sessionID) else {\n'
+                  '            throw VaultAppServicesRevealError.sessionNotFound\n'
+                  '        }\n'
+                  '        return restoredParagraph\n'
+                  '    }\n',
+                  '    public func pendingRevealSessionIDs() async throws -> [String] {\n'
+                  '        await revealSessionCoordinator.sessionIDs()\n'
+                  '    }\n\n'
+                  '    public func revealSessionData(sessionID: String) async throws -> RestoredParagraph {\n'
+                  '        try await revealSessionCoordinator.data(sessionID: sessionID)\n'
+                  '    }\n'
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+
+          if 'revealSessionStore' in text or 'revealSessionPresenter' in text:
+              # Initializer parameter names are intentionally retained as the public injection surface.
+              remaining = [line for line in text.splitlines() if 'revealSessionStore' in line or 'revealSessionPresenter' in line]
+              allowed = all(
+                  'revealSessionStore:' in line
+                  or 'revealSessionPresenter:' in line
+                  or 'store: revealSessionStore' in line
+                  or 'presenter: revealSessionPresenter' in line
+                  or 'revealSessionStore: revealSessionStore' in line
+                  or 'revealSessionPresenter: revealSessionPresenter' in line
+                  for line in remaining
+              )
+              if not allowed:
+                  raise SystemExit('unexpected direct reveal session dependency remains:\n' + '\n'.join(remaining))
+
+          path.write_text(text)
+
+          budget = Path('scripts/check-architecture-budgets.sh')
+          budget_text = budget.read_text()
+          actual = len(text.encode())
+          old_budget = 'Sources/VaultService/VaultAppServices.swift:262940'
+          new_budget = f'Sources/VaultService/VaultAppServices.swift:{actual}'
+          if budget_text.count(old_budget) != 1:
+              raise SystemExit('expected current VaultAppServices budget exactly once')
+          budget.write_text(budget_text.replace(old_budget, new_budget, 1))
+          print(f'VaultAppServices.swift architecture ceiling -> {actual} bytes')
+          PY
+
+      - name: Regenerate Xcode project without target-order noise
+        run: |
+          cp SVLT.xcodeproj/project.pbxproj /tmp/svlt-before-reveal.pbxproj
+          xcodegen generate --quiet --spec project.yml --project . --project-root . --cache-path /tmp/svlt-xcodegen-cache
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          before = Path('/tmp/svlt-before-reveal.pbxproj').read_text()
+          generated_path = Path('SVLT.xcodeproj/project.pbxproj')
+          generated = generated_path.read_text()
+          pattern = re.compile(r'(\n\s*targets\s*=\s*\(\n)(.*?)(\n\s*\);)', re.S)
+          old_match = pattern.search(before)
+          new_match = pattern.search(generated)
+          if old_match is None or new_match is None:
+              raise SystemExit('unable to locate PBXProject targets block')
+          generated = generated[:new_match.start(2)] + old_match.group(2) + generated[new_match.end(2):]
+          generated_path.write_text(generated)
+          PY
+
+      - name: Verify extraction
+        run: |
+          bash scripts/check-xcodegen-parity.sh
+          bash scripts/check-architecture-budgets.sh
+          git diff --check
+
+      - name: Commit extraction
+        run: |
+          git config user.name 'zyk1172'
+          git config user.email '53221608+zyk1172@users.noreply.github.com'
+          git add Sources/VaultService/VaultAppServices.swift \
+                  scripts/check-architecture-budgets.sh \
+                  SVLT.xcodeproj/project.pbxproj
+          if git diff --cached --quiet; then
+            echo 'No extraction changes to commit.'
+            exit 0
+          fi
+          git commit -m 'refactor: delegate reveal session coordination'
+          git push
