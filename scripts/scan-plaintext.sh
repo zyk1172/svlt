@@ -6,6 +6,17 @@ if [[ -z "${ASV_CANARY:-}" ]]; then
   exit 2
 fi
 
+require_paths=0
+if [[ "${1:-}" == "--require-paths" ]]; then
+  require_paths=1
+  shift
+fi
+
+if [[ "$require_paths" -eq 1 && "$#" -eq 0 ]]; then
+  echo "--require-paths needs at least one scan path" >&2
+  exit 2
+fi
+
 if [[ "$#" -gt 0 ]]; then
   scan_paths=("$@")
 else
@@ -22,11 +33,21 @@ else
 fi
 
 existing_paths=()
+missing_paths=()
 for path in "${scan_paths[@]}"; do
   if [[ -e "$path" ]]; then
     existing_paths+=("$path")
+  else
+    missing_paths+=("$path")
   fi
 done
+
+if [[ "$require_paths" -eq 1 && "${#missing_paths[@]}" -gt 0 ]]; then
+  for path in "${missing_paths[@]}"; do
+    printf 'Required plaintext scan path does not exist: %s\n' "$path" >&2
+  done
+  exit 2
+fi
 
 if [[ "${#existing_paths[@]}" -eq 0 ]]; then
   exit 0
