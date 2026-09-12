@@ -200,8 +200,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var pluginConnectedAt: Date?
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
-    private var pendingCatalogDraftOperations: [String: CatalogDocumentOperation] = [:]
-    private var catalogFormatRepairOperations: [String: CatalogDocumentOperation] = [:]
+    private var pendingCatalogDraftDocumentPaths: [String: String] = [:]
+    private var catalogFormatRepairDocumentPaths: [String: String] = [:]
     private var secureInputCatalogOperations: [UUID: CatalogDocumentOperation] = [:]
     private var approvalPending = false
     private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
@@ -1988,7 +1988,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             guard let match = catalogSearchService.get(entryID: entry.id, document: draftDocument).matches.first else {
                 throw SecretCatalogAgentError.invalidOperation
             }
-            pendingCatalogDraftOperations[draftID] = operation
+            pendingCatalogDraftDocumentPaths[draftID] = operation.selectedDocumentPath
+            await endCatalogOperation(operation)
             return CatalogDraft(draftID: draftID, baseRevision: snapshot.revision, entry: match.entry)
         } catch {
             await endCatalogOperation(operation)
@@ -2081,13 +2082,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
         let operation: CatalogDocumentOperation
-        let operationWasRetained: Bool
-        if let retained = pendingCatalogDraftOperations[draft.draftID] {
-            operation = retained
-            operationWasRetained = true
+        if let documentPath = pendingCatalogDraftDocumentPaths[draft.draftID] {
+            operation = try await beginCatalogOperation(documentPath: documentPath)
         } else {
             operation = try await beginCatalogOperation()
-            operationWasRetained = false
         }
         do {
             let snapshot = try await catalogSnapshotForAgent(using: operation)
@@ -2120,7 +2118,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             await emitCatalogMutationStarted(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
             let updatedSnapshot = try await operation.createEntry(pending, expectedRevision: expectedRevision)
             pendingCatalogDrafts.removeValue(forKey: draft.draftID)
-            pendingCatalogDraftOperations.removeValue(forKey: draft.draftID)
+            pendingCatalogDraftDocumentPaths.removeValue(forKey: draft.draftID)
             await emitAudit(
                 action: "提交目录条目草稿",
                 target: "catalog",
@@ -2138,14 +2136,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             await endCatalogOperation(operation)
             return result
         } catch let error as SensitiveCatalogDocumentStoreError {
-            if !operationWasRetained {
-                await endCatalogOperation(operation)
-            }
+            await endCatalogOperation(operation)
             throw catalogAgentError(for: error)
         } catch {
-            if !operationWasRetained {
-                await endCatalogOperation(operation)
-            }
+            await endCatalogOperation(operation)
             throw error
         }
     }
@@ -2351,11 +2345,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let operation = try await beginCatalogOperation()
         do {
             let plan = try await operation.formatRepairPlan()
+            catalogFormatRepairDocumentPaths.removeAll(keepingCapacity: true)
             if let plan, plan.canRepair {
-                catalogFormatRepairOperations[plan.currentRawSHA256] = operation
-            } else {
-                await endCatalogOperation(operation)
+                catalogFormatRepairDocumentPaths[plan.currentRawSHA256] = operation.selectedDocumentPath
             }
+            await endCatalogOperation(operation)
             await emitAudit(
                 action: "检查目录格式",
                 target: "catalog-format",
@@ -2380,8 +2374,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     public func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult {
         let operation: CatalogDocumentOperation
-        if let retained = catalogFormatRepairOperations.removeValue(forKey: expectedRawSHA256) {
-            operation = retained
+        if let documentPath = catalogFormatRepairDocumentPaths.removeValue(forKey: expectedRawSHA256) {
+            operation = try await beginCatalogOperation(documentPath: documentPath)
         } else {
             operation = try await beginCatalogOperation()
         }
@@ -5524,6 +5518,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.unavailable
         }
         return try await catalogDocumentOwner.beginOperation()
+    }
+
+    private func beginCatalogOperation(documentPath: String) async throws -> CatalogDocumentOperation {
+        guard let catalogDocumentOwner else {
+            throw SecretCatalogAgentError.unavailable
+        }
+        return try await catalogDocumentOwner.beginOperation(documentPath: documentPath)
     }
 
     private func endCatalogOperation(_ operation: CatalogDocumentOperation) async {

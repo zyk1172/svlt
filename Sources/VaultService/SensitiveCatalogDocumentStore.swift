@@ -1426,7 +1426,7 @@ public actor SensitiveCatalogDocumentStore {
         return value
     }
 
-    private func validationReportUnlocked() throws -> CatalogValidationReport {
+    func validationReportUnlocked() throws -> CatalogValidationReport {
         guard let url = documentURL else {
             throw SensitiveCatalogDocumentStoreError.noSelectedDocument
         }
@@ -1534,7 +1534,7 @@ public actor SensitiveCatalogDocumentStore {
         )
     }
 
-    private func snapshotUnlocked() throws -> SensitiveCatalogSnapshot {
+    func snapshotUnlocked() throws -> SensitiveCatalogSnapshot {
         guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
         try recoverInterruptedRecoveryUnlocked()
         try recoverInterruptedV2MigrationUnlocked()
@@ -2705,7 +2705,7 @@ public actor SensitiveCatalogDocumentStore {
         return directory.appendingPathComponent("catalog-integrity.json")
     }
 
-    private func withCatalogLock<T>(exclusive: Bool, _ operation: () throws -> T) throws -> T {
+    func withCatalogLock<T>(exclusive: Bool, _ operation: () throws -> T) throws -> T {
         let lockURL = try integrityURL().appendingPathExtension("lock")
         let parent = lockURL.deletingLastPathComponent()
         do {

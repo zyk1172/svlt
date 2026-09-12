@@ -173,3 +173,27 @@ private struct CatalogOwnerFixture {
     #expect(presentation.snapshot?.document == fixture.secondDocument)
     #expect(presentation.validation.revision == persistedSecond.revision)
 }
+
+
+@Test func catalogOperationIdentityCanBeRehydratedWithoutRetainingLiveStore() async throws {
+    let fixture = try await CatalogOwnerFixture()
+    defer { fixture.cleanup() }
+    let owner = fixture.makeOwner()
+
+    let original = try await owner.beginOperation()
+    let originalPath = original.selectedDocumentPath
+    await original.end()
+
+    try await owner.selectDocument(path: fixture.secondDocumentURL.path)
+    let resumed = try await owner.beginOperation(documentPath: originalPath)
+    let snapshot = try await resumed.snapshot()
+    await resumed.end()
+
+    #expect(originalPath == fixture.firstDocumentURL.path)
+    #expect(snapshot.document == fixture.firstDocument)
+
+    let current = await owner.catalogPresentationState()
+    #expect(current.selectedDocumentPath == fixture.secondDocumentURL.path)
+    #expect(current.snapshot?.document == fixture.secondDocument)
+    #expect(current.validation.revision == current.snapshot?.revision)
+}
