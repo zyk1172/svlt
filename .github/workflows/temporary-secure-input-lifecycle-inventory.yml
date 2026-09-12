@@ -1,4 +1,4 @@
-name: Temporary secure-input lifecycle cleanup
+name: Temporary secure-input lifecycle formatting
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  cleanup:
+  format:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -18,79 +18,49 @@ jobs:
         with:
           ref: codex/extract-secure-input-lifecycle-owner
           fetch-depth: 0
-      - name: Tighten lifecycle ownership and formatting
+      - name: Normalize generated Swift indentation
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
           app_path = Path("Sources/VaultService/VaultAppServices.swift")
-          transaction_path = Path("Sources/VaultService/CatalogSecureInputTransaction.swift")
-          tests_path = Path("Tests/VaultAuthorizationTests/CatalogSecureInputTransactionTests.swift")
           budget_path = Path("scripts/check-architecture-budgets.sh")
-
           app = app_path.read_text()
-          transaction = transaction_path.read_text()
-          tests = tests_path.read_text()
 
-          insert_start = app.index("        secureInputLifecycle.insert(request, auditContext: operationContext)\n")
+          insert_start = app.index("        let expiryTask = Task { [weak self] in\n")
           insert_end = app.index("        await emitAudit(\n", insert_start)
-          new_insert = """        let expiryTask = Task { [weak self] in
-              try? await Task.sleep(for: .seconds(180))
-              guard !Task.isCancelled else { return }
-              await self?.expireCatalogSecureInputRequest(id: request.id)
-          }
-          secureInputLifecycle.insert(
-              request,
-              auditContext: operationContext,
-              expiryTask: expiryTask
+          new_insert = (
+              "        let expiryTask = Task { [weak self] in\n"
+              "            try? await Task.sleep(for: .seconds(180))\n"
+              "            guard !Task.isCancelled else { return }\n"
+              "            await self?.expireCatalogSecureInputRequest(id: request.id)\n"
+              "        }\n"
+              "        secureInputLifecycle.insert(\n"
+              "            request,\n"
+              "            auditContext: operationContext,\n"
+              "            expiryTask: expiryTask\n"
+              "        )\n"
           )
-          """
           app = app[:insert_start] + new_insert + app[insert_end:]
 
           finish_start = app.index("        guard let completion = secureInputLifecycle.finish(\n")
           finish_end = app.index("        secureInputNotifier.notifyQueueChanged(requestID: id)\n", finish_start)
-          new_finish = """        guard let completion = secureInputLifecycle.finish(
-              id: id,
-              status: status,
-              terminalDate: now()
-          ) else { return }
-          let request = completion.request
-          persistSecureInputReceipts()
-          let context = completion.auditContext
-          """
-          app = app[:finish_start] + new_finish + app[finish_end:]
-          app_path.write_text(app)
-
-          lifecycle_insert_start = transaction.index("    mutating func insert(\n        _ request: CatalogAgentSecureInputRequest,\n")
-          lifecycle_insert_end = transaction.index("    mutating func beginSubmission(\n", lifecycle_insert_start)
-          new_lifecycle_insert = """    mutating func insert(
-              _ request: CatalogAgentSecureInputRequest,
-              auditContext: AuditContext,
-              expiryTask: Task<Void, Never>
-          ) {
-              transaction.insert(request)
-              auditContexts[request.id] = auditContext
-              expiryTasks[request.id] = expiryTask
-          }
-
-          """
-          transaction = transaction[:lifecycle_insert_start] + new_lifecycle_insert + transaction[lifecycle_insert_end:]
-          assert "setExpiryTask" not in transaction
-          transaction_path.write_text(transaction)
-
-          old_test_registration = """    lifecycle.insert(request, auditContext: auditContext)
-              lifecycle.setExpiryTask(expiryTask, for: requestID)
-          """
-          new_test_registration = """    lifecycle.insert(
-              request,
-              auditContext: auditContext,
-              expiryTask: expiryTask
+          new_finish = (
+              "        guard let completion = secureInputLifecycle.finish(\n"
+              "            id: id,\n"
+              "            status: status,\n"
+              "            terminalDate: now()\n"
+              "        ) else { return }\n"
+              "        let request = completion.request\n"
+              "        persistSecureInputReceipts()\n"
+              "        let context = completion.auditContext\n"
           )
-          """
-          assert tests.count(old_test_registration) == 1
-          tests = tests.replace(old_test_registration, new_test_registration, 1)
-          tests_path.write_text(tests)
+          app = app[:finish_start] + new_finish + app[finish_end:]
+
+          assert new_insert in app
+          assert new_finish in app
+          app_path.write_text(app)
 
           budget = budget_path.read_text()
           new_size = len(app.encode())
@@ -99,18 +69,15 @@ jobs:
           budget, count = re.subn(pattern, replacement, budget, count=1)
           assert count == 1
           budget_path.write_text(budget)
-          print(f"VaultAppServices.swift reduced to {new_size} bytes")
+          print(f"VaultAppServices.swift normalized at {new_size} bytes")
           PY
           git diff --check
           bash scripts/check-architecture-budgets.sh
-      - name: Commit cleanup
+      - name: Commit formatting
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Sources/VaultService/VaultAppServices.swift \
-                  Sources/VaultService/CatalogSecureInputTransaction.swift \
-                  Tests/VaultAuthorizationTests/CatalogSecureInputTransactionTests.swift \
-                  scripts/check-architecture-budgets.sh
+          git add Sources/VaultService/VaultAppServices.swift scripts/check-architecture-budgets.sh
           git diff --cached --exit-code && exit 1 || true
-          git commit -m "refactor: register secure input lifecycle atomically"
+          git commit -m "style: normalize secure input lifecycle formatting"
           git push origin HEAD:codex/extract-secure-input-lifecycle-owner
