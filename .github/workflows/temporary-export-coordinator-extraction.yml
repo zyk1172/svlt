@@ -1,0 +1,173 @@
+name: Temporary export coordinator extraction
+
+on:
+  push:
+    branches:
+      - codex/extract-export-coordinator
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/extract-export-coordinator
+          fetch-depth: 0
+
+      - name: Delegate export coordination
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          app_path = Path("Sources/VaultService/VaultAppServices.swift")
+          budget_path = Path("scripts/check-architecture-budgets.sh")
+          app = app_path.read_text()
+
+          export_error = '''public enum VaultAppServicesExportError: Error, Equatable, Sendable {
+              case invalidDestination
+              case destinationNotAllowed
+              case fileAlreadyExists
+              case directorySecurityInvalid
+              case writeFailed
+          }
+
+          '''
+          assert app.count(export_error) == 1
+          app = app.replace(export_error, "", 1)
+
+          old_property = "    private let exportDirectory: URL\n"
+          new_property = "    private let exportCoordinator: CatalogExportCoordinator\n"
+          assert app.count(old_property) == 1
+          app = app.replace(old_property, new_property, 1)
+
+          old_init = "        self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL\n"
+          new_init = "        self.exportCoordinator = CatalogExportCoordinator(root: exportDirectory ?? CatalogExportCoordinator.defaultRoot())\n"
+          assert app.count(old_init) == 1
+          app = app.replace(old_init, new_init, 1)
+
+          old_capability = '''    public func secretOperationCapabilities() async -> [SecretOperationCapability] {
+              let exportRootIsReady = SecureExportWriter().canWrite(to: exportDirectory)
+              return operationExecutor.capabilities()
+                  + [SecretOperationCapability(
+                      kind: .export,
+                      status: exportRootIsReady ? .supported : .unavailable,
+                      operations: [.exportPlaintext],
+                      reason: exportRootIsReady
+                          ? "App-owned export writer creates a new owner-only file below the configured export root"
+                          : "配置的导出根目录不存在、包含 symlink 或不是 owner-only 目录",
+                      features: SecretOperationCapabilityFeatures(
+                          response: ["exportStatus", "path"],
+                          transportSessionReuse: false
+                      )
+                  )]
+          }
+          '''
+          new_capability = '''    public func secretOperationCapabilities() async -> [SecretOperationCapability] {
+              operationExecutor.capabilities() + [exportCoordinator.capability()]
+          }
+          '''
+          assert app.count(old_capability) == 1
+          app = app.replace(old_capability, new_capability, 1)
+
+          old_destination_call = "        let destination = try validatedExportDestination(destinationPath)\n"
+          new_destination_call = "        let destination = try exportCoordinator.validatedDestination(destinationPath)\n"
+          assert app.count(old_destination_call) == 1
+          app = app.replace(old_destination_call, new_destination_call, 1)
+
+          old_ready = '''        guard SecureExportWriter().canWrite(to: exportDirectory) else {
+              throw VaultAppServicesExportError.directorySecurityInvalid
+          }
+          '''
+          new_ready = "        try exportCoordinator.requireReadyForApproval()\n"
+          assert app.count(old_ready) == 1
+          app = app.replace(old_ready, new_ready, 1)
+
+          root_path = "exportDirectory.standardizedFileURL.path"
+          count = app.count(root_path)
+          assert count >= 3, count
+          app = app.replace(root_path, "exportCoordinator.authorizationDestination")
+
+          old_write = '''            do {
+                  try SecureExportWriter().write(
+                      Data(resolvedText.utf8),
+                      to: destination,
+                      under: exportDirectory
+                  )
+              } catch SecureExportWriterError.fileAlreadyExists {
+                  throw VaultAppServicesExportError.fileAlreadyExists
+              } catch SecureExportWriterError.invalidRoot {
+                  throw VaultAppServicesExportError.directorySecurityInvalid
+              } catch {
+                  throw VaultAppServicesExportError.writeFailed
+              }
+          '''
+          new_write = '''            try exportCoordinator.write(
+                  Data(resolvedText.utf8),
+                  to: destination
+              )
+          '''
+          assert app.count(old_write) == 1
+          app = app.replace(old_write, new_write, 1)
+
+          validation_start = app.index("    private func validatedExportDestination(_ destinationPath: String) throws -> URL {\n")
+          audit_start = app.index("    private func emitAudit(\n", validation_start)
+          removed = app[validation_start:audit_start]
+          assert "private static func defaultExportDirectory()" in removed
+          app = app[:validation_start] + app[audit_start:]
+
+          for obsolete in (
+              "private let exportDirectory",
+              "validatedExportDestination(",
+              "defaultExportDirectory()",
+              "SecureExportWriter().canWrite(to: exportDirectory)",
+              "under: exportDirectory",
+          ):
+              assert obsolete not in app, obsolete
+
+          assert app.count("exportCoordinator") >= 7
+          app_path.write_text(app)
+
+          budget = budget_path.read_text()
+          new_size = len(app.encode())
+          pattern = r'"Sources/VaultService/VaultAppServices\.swift:\d+"'
+          replacement = f'"Sources/VaultService/VaultAppServices.swift:{new_size}"'
+          budget, count = re.subn(pattern, replacement, budget, count=1)
+          assert count == 1
+          budget_path.write_text(budget)
+          print(f"VaultAppServices.swift reduced to {new_size} bytes")
+          PY
+
+          git diff --check
+          bash scripts/check-architecture-budgets.sh
+
+      - name: Regenerate Xcode project
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate \
+            --quiet \
+            --spec project.yml \
+            --project . \
+            --project-root . \
+            --cache-path "$RUNNER_TEMP/xcodegen-cache"
+          ./scripts/check-xcodegen-parity.sh
+          git diff --check
+
+      - name: Commit extraction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Sources/VaultService/VaultAppServices.swift \
+                  scripts/check-architecture-budgets.sh \
+                  SVLT.xcodeproj/project.pbxproj
+          git diff --cached --exit-code && exit 1 || true
+          git commit -m "refactor: delegate export coordination"
+          git push origin HEAD:codex/extract-export-coordinator
