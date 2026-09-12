@@ -711,7 +711,7 @@ public struct SecretOperationPolicyEngine: Sendable {
             return (
                 .approvalRequired,
                 .freshApprovalRequired,
-                ["Secret 将发送到网络目标；没有独立风险裁判时维持每次审批，裁判确认低风险后可按本次实际操作放宽"],
+                ["Secret 将离开本机发送到 HTTP(S) 目标；没有独立风险裁判时维持每次审批，裁判确认低风险后可按本次实际操作放宽"],
                 HTTPFreshRules.secretNetworkSend
             )
         }
