@@ -1,4 +1,4 @@
-name: Temporary audit health extraction
+name: Temporary audit health project cleanup
 
 on:
   push:
@@ -9,142 +9,49 @@ permissions:
   contents: write
 
 jobs:
-  extract:
+  cleanup:
     if: github.actor != 'github-actions[bot]'
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Check out branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: codex/extract-audit-health-owner
           fetch-depth: 0
-      - name: Extract audit health ownership
+      - name: Restore presentation-only target order
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
+          import subprocess
 
-          app_path = Path("Sources/VaultService/VaultAppServices.swift")
-          budget_path = Path("scripts/check-architecture-budgets.sh")
-          app = app_path.read_text()
-
-          record_start = app.index("/// Non-sensitive, sticky audit-channel health.")
-          continuation_start = app.index("private final class CatalogWriteAccessContinuationBox", record_start)
-          app = app[:record_start] + app[continuation_start:]
-
-          old_url_property = "    private let auditHealthURL: URL?\n"
-          new_store_property = "    private var auditHealthStore: CatalogAuditHealthStore\n"
-          assert app.count(old_url_property) == 1
-          app = app.replace(old_url_property, new_store_property, 1)
-
-          for old_state in (
-              "    private var auditAppendFailureAt: Date?\n",
-              "    private var auditAppendGapDetected = false\n",
-              "    private var lastSuccessfulAuditSequence: UInt64 = 0\n",
-          ):
-              assert app.count(old_state) == 1
-              app = app.replace(old_state, "", 1)
-
-          old_init = "        self.auditHealthURL = auditHealthURL?.standardizedFileURL\n"
-          new_init = "        self.auditHealthStore = CatalogAuditHealthStore(url: auditHealthURL)\n"
-          assert app.count(old_init) == 1
-          app = app.replace(old_init, new_init, 1)
-
-          persisted_start = app.index("        let persistedAuditHealth = Self.loadAuditHealth(from: auditHealthURL)\n")
-          persisted_end = app.index("        let persistedSecureInputReceipts = secureInputReceiptStore.load(now: now())\n", persisted_start)
-          app = app[:persisted_start] + app[persisted_end:]
-
-          old_health = (
-              "    public func catalogAuditHealth() async -> String? {\n"
-              "        guard auditAppendGapDetected else { return nil }\n"
-              "        return \"AUDIT_APPEND_FAILED\"\n"
-              "    }\n"
+          path = Path("SVLT.xcodeproj/project.pbxproj")
+          current = path.read_text()
+          base = subprocess.check_output(
+              ["git", "show", "origin/main:SVLT.xcodeproj/project.pbxproj"],
+              text=True,
           )
-          new_health = (
-              "    public func catalogAuditHealth() async -> String? {\n"
-              "        auditHealthStore.healthSignal\n"
-              "    }\n"
-          )
-          assert app.count(old_health) == 1
-          app = app.replace(old_health, new_health, 1)
-
-          health_helpers_start = app.index("    private func recordAuditAppendFailure() {\n")
-          receipt_persist_start = app.index("    private func persistSecureInputReceipts() {\n", health_helpers_start)
-          app = app[:health_helpers_start] + app[receipt_persist_start:]
-
-          load_start = app.index("    private static func loadAuditHealth(from url: URL?) -> CatalogAuditHealthRecord? {\n")
-          log_start = app.index("    private static func logAuditAppendFailure() {\n", load_start)
-          app = app[:load_start] + app[log_start:]
-
-          assert app.count("recordAuditAppendSuccess()") == 2
-          assert app.count("recordAuditAppendFailure()") == 2
-          app = app.replace("recordAuditAppendSuccess()", "auditHealthStore.recordAppendSuccess()")
-          app = app.replace("recordAuditAppendFailure()", "auditHealthStore.recordAppendFailure(at: now())")
-
-          receipt_start = app.index("    private func persistSecureInputReceipts() {\n")
-          log_start = app.index("    private static func logAuditAppendFailure() {\n", receipt_start)
-          normalized_receipt = (
-              "    private func persistSecureInputReceipts() {\n"
-              "        do {\n"
-              "            try secureInputReceiptStore.persist(\n"
-              "                secureInputLifecycle.receiptRecords(now: now())\n"
-              "            )\n"
-              "        } catch {\n"
-              "            Logger(subsystem: \"com.agent-secret-vault.SVLT\", category: \"secure-input\")\n"
-              "                .error(\"SECURE_INPUT_RECEIPT_PERSIST_FAILED\")\n"
-              "        }\n"
-              "    }\n\n"
-          )
-          app = app[:receipt_start] + normalized_receipt + app[log_start:]
-
-          for obsolete in (
-              "CatalogAuditHealthRecord",
-              "auditAppendFailureAt",
-              "auditAppendGapDetected",
-              "lastSuccessfulAuditSequence",
-              "recordAuditAppendFailure",
-              "recordAuditAppendSuccess",
-              "persistAuditHealth",
-              "loadAuditHealth",
-              "private let auditHealthURL",
-          ):
-              assert obsolete not in app, obsolete
-
-          app_path.write_text(app)
-
-          budget = budget_path.read_text()
-          new_size = len(app.encode())
-          pattern = r'"Sources/VaultService/VaultAppServices\.swift:\d+"'
-          replacement = f'"Sources/VaultService/VaultAppServices.swift:{new_size}"'
-          budget, count = re.subn(pattern, replacement, budget, count=1)
-          assert count == 1
-          budget_path.write_text(budget)
-          print(f"VaultAppServices.swift reduced to {new_size} bytes")
+          pattern = re.compile(r"\n\t\t\ttargets = \(\n.*?\n\t\t\t\);", re.S)
+          current_matches = pattern.findall(current)
+          base_matches = pattern.findall(base)
+          assert len(current_matches) == 1
+          assert len(base_matches) == 1
+          current = current.replace(current_matches[0], base_matches[0], 1)
+          path.write_text(current)
           PY
-
           git diff --check
-          bash scripts/check-architecture-budgets.sh
-      - name: Regenerate Xcode project
+      - name: Verify project parity
         run: |
           if ! command -v xcodegen >/dev/null 2>&1; then
             brew install xcodegen
           fi
-          xcodegen generate \
-            --quiet \
-            --spec project.yml \
-            --project . \
-            --project-root . \
-            --cache-path "$RUNNER_TEMP/xcodegen-cache"
           ./scripts/check-xcodegen-parity.sh
-          git diff --check
-      - name: Commit extraction
+      - name: Commit project cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Sources/VaultService/VaultAppServices.swift \
-                  scripts/check-architecture-budgets.sh \
-                  SVLT.xcodeproj/project.pbxproj
+          git add SVLT.xcodeproj/project.pbxproj
           git diff --cached --exit-code && exit 1 || true
-          git commit -m "refactor: delegate audit health persistence"
+          git commit -m "chore: keep Xcode target ordering stable"
           git push origin HEAD:codex/extract-audit-health-owner
