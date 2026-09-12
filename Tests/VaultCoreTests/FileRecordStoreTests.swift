@@ -24,7 +24,7 @@ private let validRecordID = "01JABCDEF0123456789ABCDEFG"
     #expect(try await store.versions(id: validRecordID) == [1])
 }
 
-@Test func loadingLatestReturnsHighestValidVersion() async throws {
+@Test func loadingLatestFailsWhenHighestDiscoveredVersionIsCorrupt() async throws {
     let baseDirectory = try makeTemporaryDirectory()
     let store = FileRecordStore(baseDirectory: baseDirectory)
     let first = makeRecord(version: 1)
@@ -34,11 +34,39 @@ private let validRecordID = "01JABCDEF0123456789ABCDEFG"
     try await store.save(second)
     try Data("not json".utf8).write(to: versionURL(baseDirectory: baseDirectory, version: 3))
 
-    #expect(try await store.latest(id: validRecordID) == second)
+    do {
+        _ = try await store.latest(id: validRecordID)
+        Issue.record("Expected the corrupt highest version to make latest unavailable.")
+    } catch let error as FileRecordStoreError {
+        #expect(error == .latestVersionCorrupt(version: 3))
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+
     #expect(try await store.versions(id: validRecordID) == [1, 2])
 }
 
-@Test func failedReplacementLeavesPriorVersionReadable() async throws {
+@Test func corruptingSavedLatestVersionDoesNotFallBackToPriorVersion() async throws {
+    let baseDirectory = try makeTemporaryDirectory()
+    let store = FileRecordStore(baseDirectory: baseDirectory)
+
+    try await store.save(makeRecord(version: 1))
+    try await store.save(makeRecord(version: 2))
+    try Data("truncated".utf8).write(to: versionURL(baseDirectory: baseDirectory, version: 2))
+
+    do {
+        _ = try await store.latest(id: validRecordID)
+        Issue.record("Expected latest to fail instead of silently returning version 1.")
+    } catch let error as FileRecordStoreError {
+        #expect(error == .latestVersionCorrupt(version: 2))
+    } catch {
+        Issue.record("Unexpected error: \(error)")
+    }
+
+    #expect(try await store.versions(id: validRecordID) == [1])
+}
+
+@Test func failedReplacementDoesNotSilentlyFallBackToPriorVersion() async throws {
     let baseDirectory = try makeTemporaryDirectory()
     let store = FileRecordStore(baseDirectory: baseDirectory)
     let prior = makeRecord(version: 1)
@@ -53,7 +81,16 @@ private let validRecordID = "01JABCDEF0123456789ABCDEFG"
         try await store.save(makeRecord(version: 2))
         Issue.record("Expected save to fail when final version path cannot be replaced.")
     } catch {
-        #expect(try await store.latest(id: validRecordID) == prior)
+        #expect(try await store.versions(id: validRecordID) == [1])
+    }
+
+    do {
+        _ = try await store.latest(id: validRecordID)
+        Issue.record("Expected invalid version 2 path to make latest unavailable.")
+    } catch let error as FileRecordStoreError {
+        #expect(error == .latestVersionCorrupt(version: 2))
+    } catch {
+        Issue.record("Unexpected error: \(error)")
     }
 }
 
