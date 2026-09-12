@@ -9,25 +9,36 @@ import VaultIPC
 /// Business services provide the semantic audit entry and caller context;
 /// this actor owns only durable audit-channel mechanics.
 actor CatalogAuditPersistenceCoordinator {
+    private static let defaultIntegrityScanInterval: TimeInterval = 86_400
+    private static let defaultIntegrityScanRetryInterval: TimeInterval = 3_600
+
     private let auditLog: EncryptedAuditLog?
     private let fallbackMasterKey: SymmetricKey?
     private let now: @Sendable () -> Date
+    private let integrityScanInterval: TimeInterval
+    private let integrityScanRetryInterval: TimeInterval
     private var healthStore: CatalogAuditHealthStore
+    private var integrityScanTask: Task<Void, Never>?
 
     init(
         auditLog: EncryptedAuditLog?,
         auditHealthURL: URL?,
         fallbackMasterKey: SymmetricKey?,
-        now: @escaping @Sendable () -> Date
+        now: @escaping @Sendable () -> Date,
+        integrityScanInterval: TimeInterval = CatalogAuditPersistenceCoordinator.defaultIntegrityScanInterval,
+        integrityScanRetryInterval: TimeInterval = CatalogAuditPersistenceCoordinator.defaultIntegrityScanRetryInterval
     ) {
         self.auditLog = auditLog
         self.fallbackMasterKey = fallbackMasterKey
         self.now = now
+        self.integrityScanInterval = max(0, integrityScanInterval)
+        self.integrityScanRetryInterval = max(0, integrityScanRetryInterval)
         self.healthStore = CatalogAuditHealthStore(url: auditHealthURL)
     }
 
     func healthSignal() -> String? {
-        healthStore.healthSignal
+        scheduleIntegrityScanIfDue()
+        return healthStore.healthSignal
     }
 
     func recentCatalogEntries(limit: Int) async throws -> CatalogRecentAuditResult {
@@ -92,8 +103,67 @@ actor CatalogAuditPersistenceCoordinator {
         }
     }
 
+    private func scheduleIntegrityScanIfDue() {
+        guard integrityScanTask == nil,
+              let auditLog
+        else {
+            return
+        }
+
+        let startedAt = now()
+        guard healthStore.isIntegrityScanDue(
+            at: startedAt,
+            successInterval: integrityScanInterval,
+            retryInterval: integrityScanRetryInterval
+        ) else {
+            return
+        }
+
+        // Persist the attempt before detaching so a daemon restart or a
+        // repeatedly failing audit key cannot create a tight full-scan loop.
+        healthStore.recordIntegrityScanAttempt(at: startedAt)
+        let fallbackMasterKey = fallbackMasterKey
+        let clock = now
+
+        integrityScanTask = Task.detached(priority: .utility) { [weak self] in
+            let succeeded: Bool
+            do {
+                _ = try await auditLog.integrityDiagnostics()
+                succeeded = true
+            } catch {
+                if let fallbackMasterKey {
+                    // Compatibility path for tests/legacy callers that
+                    // explicitly supplied a master key to this coordinator.
+                    do {
+                        _ = try await auditLog.integrityDiagnostics(masterKey: fallbackMasterKey)
+                        succeeded = true
+                    } catch {
+                        succeeded = false
+                    }
+                } else {
+                    succeeded = false
+                }
+            }
+
+            await self?.finishIntegrityScan(succeeded: succeeded, at: clock())
+        }
+    }
+
+    private func finishIntegrityScan(succeeded: Bool, at date: Date) {
+        integrityScanTask = nil
+        if succeeded {
+            healthStore.recordIntegrityScanSuccess(at: date)
+            // A full scan may have refreshed historical corruption
+            // diagnostics in the authenticated recent index.
+            CatalogSecurityAuditNotifier.notify()
+        } else {
+            Self.logAuditIntegrityScanFailure()
+        }
+    }
+
     private func recordAppendSuccess() {
         healthStore.recordAppendSuccess()
+        scheduleIntegrityScanIfDue()
         CatalogSecurityAuditNotifier.notify()
     }
 
@@ -105,6 +175,11 @@ actor CatalogAuditPersistenceCoordinator {
     private static func logAuditAppendFailure() {
         Logger(subsystem: "com.agent-secret-vault.SVLT", category: "audit")
             .error("AUDIT_APPEND_FAILED")
+    }
+
+    private static func logAuditIntegrityScanFailure() {
+        Logger(subsystem: "com.agent-secret-vault.SVLT", category: "audit")
+            .error("AUDIT_INTEGRITY_SCAN_FAILED")
     }
 
     private static func auditOperation(for action: String) -> AuditOperation {
