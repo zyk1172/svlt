@@ -60,7 +60,11 @@ vi.mock("obsidian", () => ({
   }
 }));
 
-import AgentSecretVaultPlugin, { commandDefinitions, shouldWatchCatalogFile } from "../src/main";
+import AgentSecretVaultPlugin, {
+  catalogRawSHA256,
+  commandDefinitions,
+  shouldWatchCatalogFile
+} from "../src/main";
 
 function makeApp(options: {
   activeFile?: unknown;
@@ -76,7 +80,10 @@ function makeApp(options: {
         return eventRef;
       },
       getMarkdownFiles: () => options.markdownFiles ?? [],
-      cachedRead: async (file: { path: string }) => fileContents[file.path] ?? ""
+      cachedRead: async (file: { path: string }) => fileContents[file.path] ?? "",
+      readBinary: async (file: { path: string }) => (
+        new TextEncoder().encode(fileContents[file.path] ?? "").buffer as ArrayBuffer
+      )
     },
     workspace: {
       on: (name: string, callback: (...args: unknown[]) => void) => {
@@ -108,8 +115,15 @@ type ValidationTestPlugin = {
   createVaultClient: () => unknown;
   invalidateCatalogValidation: () => number;
   validateManagedCatalog: (generation: number) => Promise<void>;
+  activeCatalogFile?: unknown;
+  activeCatalogRawSHA256?: string;
+  latestDiagnostics: unknown[];
   latestValidation?: { status: string; rawSHA256?: string | null; fingerprint: string };
 };
+
+async function digest(text: string): Promise<string> {
+  return catalogRawSHA256(new TextEncoder().encode(text).buffer as ArrayBuffer);
+}
 
 describe("plugin commands", () => {
   beforeEach(() => {
@@ -155,10 +169,12 @@ describe("plugin commands", () => {
     vi.useFakeTimers();
     try {
       const file = { path: "敏感信息.md", extension: "md" };
+      const contents = "# 已删除 marker";
       obsidianMock.savedData = { managedCatalogPath: "敏感信息.md" };
       const plugin = makePlugin({
         type: "catalogValidation",
         catalogStatus: "CATALOG_INVALID",
+        rawSHA256: await digest(contents),
         diagnostics: [{
           id: "CATALOG_MARKER_MISSING:1:1",
           severity: "error",
@@ -171,7 +187,7 @@ describe("plugin commands", () => {
         }]
       }, {
         markdownFiles: [file],
-        fileContents: { "敏感信息.md": "# 已删除 marker" }
+        fileContents: { "敏感信息.md": contents }
       });
       await plugin.onload();
       await vi.advanceTimersByTimeAsync(350);
@@ -248,10 +264,15 @@ describe("plugin commands", () => {
   });
 
   it("reports diagnostics count and first location", async () => {
+    const file = { path: "敏感信息.md", extension: "md" };
+    const contents = "# tracked malformed catalog";
+    const rawSHA256 = await digest(contents);
+    obsidianMock.savedData = { managedCatalogPath: file.path };
     const plugin = makePlugin({
       type: "catalogValidation",
       catalogStatus: "CATALOG_INVALID",
       revision: 3,
+      rawSHA256,
       diagnostics: [
         {
           id: "HEADING_MARKER_MISMATCH:7:1",
@@ -274,6 +295,9 @@ describe("plugin commands", () => {
           hint: "每个条目的字段 key 必须唯一。"
         }
       ]
+    }, {
+      markdownFiles: [file],
+      fileContents: { [file.path]: contents }
     });
 
     await plugin.onload();
@@ -287,6 +311,8 @@ describe("plugin commands", () => {
 
   it("updates state when the same failure recurs after a successful validation", async () => {
     const plugin = makePlugin() as unknown as ValidationTestPlugin;
+    plugin.activeCatalogFile = { path: "敏感信息.md", extension: "md" };
+    plugin.activeCatalogRawSHA256 = "new";
     const responses = [
       { type: "failure", code: "APP_UNAVAILABLE" },
       { type: "catalogValidation", catalogStatus: "FOUND", rawSHA256: "new", diagnostics: [] },
@@ -308,6 +334,8 @@ describe("plugin commands", () => {
 
   it("ignores an older validation response that arrives after a newer result", async () => {
     const plugin = makePlugin() as unknown as ValidationTestPlugin;
+    plugin.activeCatalogFile = { path: "敏感信息.md", extension: "md" };
+    plugin.activeCatalogRawSHA256 = "new";
     const resolvers: Array<(value: unknown) => void> = [];
     plugin.createVaultClient = () => ({
       request: () => new Promise((resolve) => resolvers.push(resolve))
@@ -338,5 +366,35 @@ describe("plugin commands", () => {
     await first;
 
     expect(plugin.latestValidation?.rawSHA256).toBe("new");
+  });
+
+  it("rejects diagnostics validated against different catalog bytes", async () => {
+    const plugin = makePlugin() as unknown as ValidationTestPlugin;
+    plugin.activeCatalogFile = { path: "local.md", extension: "md" };
+    plugin.activeCatalogRawSHA256 = "local-hash";
+    plugin.createVaultClient = () => ({
+      request: async () => ({
+        type: "catalogValidation",
+        catalogStatus: "CATALOG_INVALID",
+        rawSHA256: "server-hash",
+        diagnostics: [{
+          id: "WRONG_DOCUMENT:9:1",
+          severity: "error",
+          code: "WRONG_DOCUMENT",
+          line: 9,
+          scope: "document",
+          message: "must not be applied"
+        }]
+      })
+    });
+
+    const generation = plugin.invalidateCatalogValidation();
+    await plugin.validateManagedCatalog(generation);
+
+    expect(plugin.latestValidation?.status).toBe("CATALOG_UNAVAILABLE");
+    expect(plugin.latestDiagnostics).toEqual([]);
+    expect(obsidianMock.notices).toEqual([
+      "SVLT：当前文件不是正在校验的目录，已忽略这次校验结果。"
+    ]);
   });
 });
