@@ -1,0 +1,195 @@
+name: Temporary plaintext planner apply
+
+on:
+  push:
+    branches:
+      - codex/extract-plaintext-operation-planner
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Delegate plaintext planning
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('Sources/VaultService/VaultAppServices.swift')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              text = text.replace(old, new, 1)
+
+          anchor = '    private let catalogSearchService = SecretCatalogEntrySearchService()\n'
+          replace_once(
+              anchor,
+              anchor + '    private let plaintextOperationPlanner = CatalogPlaintextOperationPlanner()\n',
+              'planner property'
+          )
+
+          old_plaintext = '''    private func plaintextOperation(
+              action: SecretOperationAction,
+              references: [String],
+              context: RevealContext,
+              effects: [String]
+          ) async throws -> (SecretOperationDescriptor, [SecretPolicyMetadata]) {
+              guard !references.isEmpty else {
+                  throw VaultAppServicesRevealError.invalidRevealContext
+              }
+
+              let parsedReferences: [SecretReference]
+              do {
+                  parsedReferences = try references.map(SecretReference.init)
+              } catch {
+                  throw VaultAppServicesRevealError.invalidReference
+              }
+              guard Set(parsedReferences).count == parsedReferences.count else {
+                  throw VaultAppServicesRevealError.invalidReference
+              }
+              try validateRevealContext(context, referenceCount: parsedReferences.count)
+              let metadata = try await policyMetadata(for: parsedReferences)
+              let descriptor = SecretOperationDescriptor(
+                  actionType: action,
+                  secretReferences: parsedReferences,
+                  destination: context.destination,
+                  requestedEffects: effects,
+                  agentAssessment: context.agentAssessment
+              )
+              return (descriptor, metadata)
+          }
+          '''
+          new_plaintext = '''    private func plaintextOperation(
+              action: SecretOperationAction,
+              references: [String],
+              context: RevealContext,
+              effects: [String]
+          ) async throws -> (SecretOperationDescriptor, [SecretPolicyMetadata]) {
+              let descriptor = try plaintextOperationPlanner.descriptor(
+                  action: action,
+                  references: references,
+                  context: context,
+                  effects: effects
+              )
+              let metadata = try await policyMetadata(for: descriptor.secretReferences)
+              return (descriptor, metadata)
+          }
+          '''
+          replace_once(old_plaintext, new_plaintext, 'plaintext operation planning')
+
+          old_validation = '''        guard !references.isEmpty else {
+              throw VaultAppServicesRevealError.invalidRevealContext
+          }
+
+          let validatedReferences: [String]
+          do {
+              validatedReferences = try references.map { try SecretReference($0).description }
+          } catch {
+              throw VaultAppServicesRevealError.invalidReference
+          }
+          guard Set(validatedReferences).count == validatedReferences.count else {
+              throw VaultAppServicesRevealError.invalidReference
+          }
+
+          try validateRevealContext(context, referenceCount: validatedReferences.count)
+          '''
+          new_validation = '''        let validatedReferences = try plaintextOperationPlanner.validatedReferences(
+              references,
+              context: context
+          )
+          '''
+          replace_once(old_validation, new_validation, 'resolve validation delegation')
+
+          replace_once(
+              '            text: try resolveTemplate(context.template, ranges: context.ranges, plaintexts: plaintexts),\n',
+              '''            text: try plaintextOperationPlanner.resolveTemplate(
+                  context.template,
+                  ranges: context.ranges,
+                  plaintexts: plaintexts
+              ),
+          ''',
+              'template resolution delegation'
+          )
+
+          helper_start = text.index('    private func resolveTemplate(_ template: String, ranges: [ReferenceRange], plaintexts: [String]) throws -> String {')
+          enum_start = text.index('\n}\n\npublic enum VaultAppServicesRevealError:', helper_start)
+          text = text[:helper_start] + text[enum_start:]
+
+          for forbidden in [
+              'private func validateRevealContext(',
+              'private func countOccurrences(',
+              'private func replacePlaceholders(',
+              'private func resolveTemplate('
+          ]:
+              if forbidden in text:
+                  raise SystemExit(f'planner helper remains in VaultAppServices: {forbidden}')
+
+          path.write_text(text)
+
+          budget = Path('scripts/check-architecture-budgets.sh')
+          budget_text = budget.read_text()
+          actual = len(text.encode())
+          old_budget = 'Sources/VaultService/VaultAppServices.swift:255049'
+          new_budget = f'Sources/VaultService/VaultAppServices.swift:{actual}'
+          if budget_text.count(old_budget) != 1:
+              raise SystemExit('expected current VaultAppServices budget exactly once')
+          budget.write_text(budget_text.replace(old_budget, new_budget, 1))
+          print(f'VaultAppServices.swift architecture ceiling -> {actual} bytes')
+          PY
+
+      - name: Regenerate Xcode project without target-order noise
+        run: |
+          cp SVLT.xcodeproj/project.pbxproj /tmp/svlt-before-plaintext-planner.pbxproj
+          xcodegen generate --quiet --spec project.yml --project . --project-root . --cache-path /tmp/svlt-xcodegen-cache
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          before = Path('/tmp/svlt-before-plaintext-planner.pbxproj').read_text()
+          generated_path = Path('SVLT.xcodeproj/project.pbxproj')
+          generated = generated_path.read_text()
+          pattern = re.compile(r'(\n\s*targets\s*=\s*\(\n)(.*?)(\n\s*\);)', re.S)
+          old_match = pattern.search(before)
+          new_match = pattern.search(generated)
+          if old_match is None or new_match is None:
+              raise SystemExit('unable to locate PBXProject targets block')
+          generated = generated[:new_match.start(2)] + old_match.group(2) + generated[new_match.end(2):]
+          generated_path.write_text(generated)
+          PY
+
+      - name: Verify extraction
+        run: |
+          bash scripts/check-xcodegen-parity.sh
+          bash scripts/check-architecture-budgets.sh
+          git diff --check
+          xcodebuild test -project SVLT.xcodeproj -scheme VaultAuthorization -destination 'platform=macOS' -only-testing:VaultAuthorizationTests/CatalogPlaintextOperationPlannerTests
+
+      - name: Commit extraction
+        run: |
+          git config user.name 'zyk1172'
+          git config user.email '53221608+zyk1172@users.noreply.github.com'
+          git add Sources/VaultService/VaultAppServices.swift \
+                  scripts/check-architecture-budgets.sh \
+                  SVLT.xcodeproj/project.pbxproj
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'refactor: delegate plaintext operation planning'
+          git push
