@@ -105,29 +105,6 @@ private enum CatalogWriteAccessState: Sendable {
     case cancelled
 }
 
-private enum CatalogSecureInputState: Sendable {
-    case awaitingInput
-    case submitting
-    /// The request has crossed the cancellation linearization point. No
-    /// cancellation/expiry request can turn this committed write into a
-    /// terminal cancellation after the store call begins.
-    case committing
-    case completed
-    case failed
-    case expired
-    case cancelled
-}
-
-private enum CatalogSecureInputAbortReason: Equatable, Sendable {
-    case cancelled
-    case expired
-}
-
-private enum CatalogSecureInputAbortError: Error, Sendable {
-    case cancelled
-    case expired
-}
-
 private enum SecretOperationAuthorizationPath: Sendable {
     case notRequired
     case freshLocalApproval(LocalAuthenticationContext?)
@@ -204,20 +181,6 @@ private struct CatalogAuditHealthRecord: Codable, Sendable {
     let lastFailureAt: Date?
     let gapDetected: Bool
     let lastSuccessfulSequence: UInt64
-}
-
-/// A bounded, non-sensitive terminal receipt.  It contains only the opaque
-/// request ID, outcome metadata, and timestamp; Catalog contents and
-/// plaintext never enter this sidecar.
-private struct CatalogSecureInputReceiptRecord: Codable, Sendable {
-    static let currentSchemaVersion = 1
-
-    let schemaVersion: Int
-    let requestID: UUID
-    let status: CatalogSecureInputStatusValue
-    let revision: UInt64?
-    let errorCode: String?
-    let terminalAt: Date
 }
 
 private final class CatalogWriteAccessContinuationBox: @unchecked Sendable {
@@ -302,17 +265,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var auditAppendFailureAt: Date?
     private var auditAppendGapDetected = false
     private var lastSuccessfulAuditSequence: UInt64 = 0
-    private var pendingSecureInputRequests: [UUID: CatalogAgentSecureInputRequest] = [:]
-    private var secureInputStates: [UUID: CatalogSecureInputState] = [:]
-    private var secureInputStatuses: [UUID: CatalogSecureInputStatus] = [:]
-    private var secureInputTerminalAt: [UUID: Date] = [:]
+    private var secureInputTransactions = CatalogSecureInputTransaction()
     private var secureInputExpiryTasks: [UUID: Task<Void, Never>] = [:]
     private var secureInputAuditContexts: [UUID: AuditContext] = [:]
     /// Cancellation/expiry is latched while the one-shot authentication or
     /// store call is suspended. The request is not removed during submission;
     /// this prevents a late SecureField callback from committing after the
     /// App has asked the daemon to cancel it.
-    private var secureInputAbortReasons: [UUID: CatalogSecureInputAbortReason] = [:]
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -405,23 +364,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             from: resolvedSecureInputReceiptURL,
             now: now()
         )
-        // The sidecar is non-authoritative and may have been interrupted or
-        // manually repaired.  Do not use Dictionary(uniqueKeysWithValues:),
-        // which traps on duplicate request IDs; the loader orders records
-        // oldest-to-newest so the newest valid record wins deterministically.
-        var restoredStatuses: [UUID: CatalogSecureInputStatus] = [:]
-        var restoredTerminalAt: [UUID: Date] = [:]
-        for record in persistedSecureInputReceipts {
-            restoredStatuses[record.requestID] = CatalogSecureInputStatus(
-                requestID: record.requestID,
-                status: record.status,
-                revision: record.revision,
-                errorCode: record.errorCode
-            )
-            restoredTerminalAt[record.requestID] = record.terminalAt
-        }
-        self.secureInputStatuses = restoredStatuses
-        self.secureInputTerminalAt = restoredTerminalAt
+        self.secureInputTransactions = CatalogSecureInputTransaction(receipts: persistedSecureInputReceipts)
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
         self.writeAccessNotifier = writeAccessNotifier
         self.secureInputNotifier = secureInputNotifier
@@ -562,10 +505,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func cancelAllSecureInputRequests() async {
-        let requestIDs = Array(pendingSecureInputRequests.keys)
+        let requestIDs = secureInputTransactions.requestIDs
         for id in requestIDs {
-            guard let request = pendingSecureInputRequests[id],
-                  let state = secureInputStates[id]
+            guard let request = secureInputTransactions.request(id: id),
+                  let state = secureInputTransactions.state(for: id)
             else { continue }
             switch state {
             case .awaitingInput:
@@ -582,7 +525,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     auditStatus: .cancelled
                 )
             case .submitting:
-                secureInputAbortReasons[id] = .cancelled
+                secureInputTransactions.latchAbort(.cancelled, for: id)
                 secureInputNotifier.notifyQueueChanged(requestID: id)
             case .committing, .completed, .failed, .expired, .cancelled:
                 // `.committing` is the linearization point: it is already
@@ -1878,47 +1821,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.revisionConflict
         }
 
-        var clientKeys = Set<String>()
-        for entry in request.entries {
-            guard !entry.clientKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  clientKeys.insert(entry.clientKey).inserted,
-                  entry.fields.allSatisfy({ field in
-                      field.secretRef == nil && !(field.type.isSecret && field.value != nil)
-                  })
-            else {
-                throw SecretCatalogAgentError.invalidOperation
-            }
-        }
-
-        let index: SecretCatalogIndex
-        var generatedEntries: [(clientKey: String, entry: SecretCatalogEntry)] = []
-        do {
-            index = try SecretCatalogIndex.generated(
-                title: request.index.title,
-                aliases: request.index.aliases,
-                tags: request.index.tags
-            )
-            generatedEntries.reserveCapacity(request.entries.count)
-            for item in request.entries {
-                let entry = try SecretCatalogEntry.generated(
-                    indexId: index.id,
-                    title: item.title,
-                    type: item.type,
-                    aliases: item.aliases,
-                    endpoints: item.endpoints,
-                    fields: item.fields,
-                    notes: item.notes,
-                    tags: item.tags
-                )
-                generatedEntries.append((clientKey: item.clientKey, entry: entry))
-            }
-        } catch {
-            throw SecretCatalogAgentError.invalidOperation
-        }
-
-        let mutation = CatalogBatchMutation(
-            operations: [.createIndex(index)] + generatedEntries.map { .createEntry($0.entry) }
-        )
+        let candidate = try CatalogMutationCandidateBuilder.makeStructure(from: request)
+        let index = candidate.index
+        let generatedEntries = candidate.entries
+        let mutation = candidate.mutation
         let next: SecretCatalogDocument
         do {
             next = try mutation.applying(to: snapshot.document)
@@ -2000,7 +1906,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         let entry: SecretCatalogEntry
         do {
-            entry = try makeCatalogEntry(from: request)
+            entry = try CatalogMutationCandidateBuilder.makeEntry(from: request)
         } catch {
             Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .model, error: error)
             throw error
@@ -2082,7 +1988,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         }
 
-        let entry = try makeCatalogEntry(from: request)
+        let entry = try CatalogMutationCandidateBuilder.makeEntry(from: request)
         let draftID = try SecretCatalogOpaqueID.generate()
         var draftDocument = snapshot.document
         draftDocument = SecretCatalogDocument(
@@ -2109,7 +2015,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         guard expectedRevision == snapshot.revision else {
             throw SecretCatalogAgentError.revisionConflict
         }
-        let updated = try metadataPatchedEntry(oldEntry, with: patch)
+        let updated = try CatalogMutationCandidateBuilder.patchMetadata(oldEntry, with: patch)
         var entries = snapshot.document.entries
         guard let offset = entries.firstIndex(where: { $0.id == entryID }) else {
             throw SecretCatalogAgentError.invalidOperation
@@ -2231,33 +2137,21 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         guard expectedRevision == snapshot.revision else {
             throw SecretCatalogAgentError.revisionConflict
         }
-        let field = SecretCatalogFieldValue(
-            key: key,
-            label: label,
-            type: .secret,
-            agentVisible: agentVisible,
-            searchable: searchable
-        )
+        let candidate: CatalogSecretPlaceholderCandidate
         let next: SecretCatalogDocument
         do {
             guard let existingEntry = snapshot.document.entries.first(where: { $0.id == entryID }),
-                  !existingEntry.fields.contains(where: { $0.key == key }),
                   let offset = snapshot.document.entries.firstIndex(where: { $0.id == entryID })
             else { throw SecretCatalogAgentError.invalidOperation }
-            let candidateEntry = SecretCatalogEntry(
-                id: existingEntry.id,
-                indexId: existingEntry.indexId,
-                title: existingEntry.title,
-                type: existingEntry.type,
-                aliases: existingEntry.aliases,
-                endpoints: existingEntry.endpoints,
-                fields: existingEntry.fields + [field],
-                notes: existingEntry.notes,
-                tags: existingEntry.tags,
-                schema: existingEntry.schema
+            candidate = try CatalogMutationCandidateBuilder.addingSecretPlaceholder(
+                to: existingEntry,
+                key: key,
+                label: label,
+                agentVisible: agentVisible,
+                searchable: searchable
             )
             var entries = snapshot.document.entries
-            entries[offset] = candidateEntry
+            entries[offset] = candidate.entry
             next = SecretCatalogDocument(indexes: snapshot.document.indexes, entries: entries)
             try next.validate()
         } catch let error as SecretCatalogAgentError {
@@ -2280,7 +2174,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         await emitCatalogMutationStarted(action: "新增目录加密字段占位", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
         do {
             let updatedSnapshot = try await catalogDocumentStore!.addField(
-                field,
+                candidate.field,
                 toEntryID: entryID,
                 expectedRevision: expectedRevision
             )
@@ -2453,18 +2347,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func pendingCatalogSecureInputRequestIDs() async -> [UUID] {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        return pendingSecureInputRequests
-            .filter { secureInputStates[$0.key] == .awaitingInput || secureInputStates[$0.key] == .submitting }
-            .map(\.value)
-            .sorted { $0.createdAt < $1.createdAt }
-            .map(\.id)
+        return secureInputTransactions.pendingRequestIDs
     }
 
     public func catalogSecureInputRequest(id: UUID) async throws -> CatalogAgentSecureInputRequest {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        guard let request = pendingSecureInputRequests[id],
-              secureInputStates[id] == .awaitingInput || secureInputStates[id] == .submitting
+        guard let request = secureInputTransactions.pendingRequest(id: id)
         else {
             throw SecretCatalogAgentError.invalidOperation
         }
@@ -2474,20 +2363,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func catalogSecureInputStatus(requestID: UUID) async -> CatalogSecureInputStatus {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        if let status = secureInputStatuses[requestID] {
-            return status
-        }
-        if let state = secureInputStates[requestID] {
-            return CatalogSecureInputStatus(
-                requestID: requestID,
-                status: secureInputStatusValue(for: state)
-            )
-        }
-        return CatalogSecureInputStatus(
-            requestID: requestID,
-            status: .unknown,
-            errorCode: "SECURE_INPUT_REQUEST_UNKNOWN"
-        )
+        return secureInputTransactions.status(for: requestID)
     }
 
     public func requestCatalogSecureInputs(
@@ -2552,13 +2428,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             expiresAt: createdAt.addingTimeInterval(180),
             targets: resolvedTargets
         )
-        pendingSecureInputRequests[request.id] = request
-        secureInputStates[request.id] = .awaitingInput
+        secureInputTransactions.insert(request)
         secureInputAuditContexts[request.id] = operationContext
-        secureInputStatuses[request.id] = CatalogSecureInputStatus(
-            requestID: request.id,
-            status: .pending
-        )
         secureInputExpiryTasks[request.id] = Task { [weak self] in
             try? await Task.sleep(for: .seconds(180))
             guard !Task.isCancelled else { return }
@@ -2587,13 +2458,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     ) async throws -> CatalogSecureInputStatus {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        guard let request = pendingSecureInputRequests[id],
-              secureInputStates[id] == .awaitingInput,
-              request.expiresAt > now()
-        else {
-            throw SecretCatalogAgentError.invalidOperation
-        }
-        secureInputStates[id] = .submitting
+        let request = try secureInputTransactions.beginSubmission(id: id, now: now())
         var createdReferences: [SecretReference] = []
         do {
             // This is the one device-owner authentication for this request.
@@ -2651,7 +2516,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // linearization point. There is intentionally no await between
             // the active check above and this assignment: cancellation and
             // expiry either win before this point or are rejected after it.
-            secureInputStates[id] = .committing
+            try secureInputTransactions.markCommitting(id: id, request: request, now: now())
             let updated = try await catalogDocumentStore!.updateEntry(
                 finalEntry,
                 expectedRevision: request.expectedRevision
@@ -2726,11 +2591,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func cancelCatalogSecureInput(id: UUID) async {
-        guard let request = pendingSecureInputRequests[id],
-              secureInputStates[id] == .awaitingInput || secureInputStates[id] == .submitting
+        guard let request = secureInputTransactions.request(id: id),
+              let state = secureInputTransactions.state(for: id),
+              state == .awaitingInput || state == .submitting
         else { return }
-        if secureInputStates[id] == .submitting {
-            secureInputAbortReasons[id] = .cancelled
+        if state == .submitting {
+            secureInputTransactions.latchAbort(.cancelled, for: id)
             secureInputNotifier.notifyQueueChanged(requestID: id)
             return
         }
@@ -2745,11 +2611,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func expireCatalogSecureInputRequest(id: UUID) async {
-        guard let request = pendingSecureInputRequests[id],
-              secureInputStates[id] == .awaitingInput || secureInputStates[id] == .submitting
+        guard let request = secureInputTransactions.request(id: id),
+              let state = secureInputTransactions.state(for: id),
+              state == .awaitingInput || state == .submitting
         else { return }
-        if secureInputStates[id] == .submitting {
-            secureInputAbortReasons[id] = .expired
+        if state == .submitting {
+            secureInputTransactions.latchAbort(.expired, for: id)
             secureInputNotifier.notifyQueueChanged(requestID: id)
             return
         }
@@ -2764,45 +2631,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func expireDueSecureInputRequests() async {
-        let due = pendingSecureInputRequests.values
-            .filter { $0.expiresAt <= now() }
-            .map(\.id)
+        let due = secureInputTransactions.dueRequestIDs(now: now())
         for id in due { await expireCatalogSecureInputRequest(id: id) }
     }
 
     private func pruneSecureInputReceipts() {
-        let cutoff = now().addingTimeInterval(-15 * 60)
-        var didChange = false
-        for id in Array(secureInputTerminalAt.keys) where secureInputTerminalAt[id, default: .distantFuture] < cutoff {
-            secureInputTerminalAt.removeValue(forKey: id)
-            secureInputStatuses.removeValue(forKey: id)
-            secureInputStates.removeValue(forKey: id)
-            didChange = true
-        }
-        if secureInputTerminalAt.count > 128 {
-            let oldest = secureInputTerminalAt
-                .sorted { $0.value < $1.value }
-                .prefix(secureInputTerminalAt.count - 128)
-            for (id, _) in oldest {
-                secureInputTerminalAt.removeValue(forKey: id)
-                secureInputStatuses.removeValue(forKey: id)
-                secureInputStates.removeValue(forKey: id)
-                didChange = true
-            }
-        }
-        if didChange {
+        if secureInputTransactions.prune(now: now()) {
             persistSecureInputReceipts()
-        }
-    }
-
-    private func secureInputStatusValue(for state: CatalogSecureInputState) -> CatalogSecureInputStatusValue {
-        switch state {
-        case .awaitingInput, .submitting: return .pending
-        case .committing: return .pending
-        case .completed: return .completed
-        case .failed: return .failed
-        case .expired: return .expired
-        case .cancelled: return .cancelled
         }
     }
 
@@ -2814,19 +2649,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         authorizationOutcome: AuditAuthorizationOutcome,
         auditStatus: AuditStatus
     ) async {
-        guard let request = pendingSecureInputRequests.removeValue(forKey: id) else { return }
-        secureInputStates[id] = switch status.status {
-        case .completed: .completed
-        case .failed: .failed
-        case .expired: .expired
-        case .cancelled: .cancelled
-        case .pending: .submitting
-        case .unknown: .failed
-        }
-        secureInputStatuses[id] = status
-        secureInputTerminalAt[id] = now()
+        guard let request = secureInputTransactions.finish(
+            id: id,
+            status: status,
+            terminalDate: now()
+        ) else { return }
         persistSecureInputReceipts()
-        secureInputAbortReasons.removeValue(forKey: id)
         secureInputExpiryTasks.removeValue(forKey: id)?.cancel()
         let context = secureInputAuditContexts.removeValue(forKey: id)
         secureInputNotifier.notifyQueueChanged(requestID: id)
@@ -2850,17 +2678,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         id: UUID,
         request: CatalogAgentSecureInputRequest
     ) throws {
-        guard pendingSecureInputRequests[id] != nil,
-              secureInputStates[id] == .submitting
-        else {
-            throw CatalogSecureInputAbortError.cancelled
-        }
-        if secureInputAbortReasons[id] == .expired || request.expiresAt <= now() {
-            throw CatalogSecureInputAbortError.expired
-        }
-        if secureInputAbortReasons[id] == .cancelled {
-            throw CatalogSecureInputAbortError.cancelled
-        }
+        try secureInputTransactions.ensureSubmissionIsStillActive(
+            id: id,
+            request: request,
+            now: now()
+        )
     }
 
     private func secureInputErrorCode(_ error: Error) -> String {
@@ -3491,7 +3313,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // A request-owned Secure Input transaction is the only path allowed
         // to consume plaintext for its Entry. Blocking the generic editor for
         // the lifetime of the request closes the stale-Sheet race.
-        guard !pendingSecureInputRequests.values.contains(where: { $0.entryID == entry.id }) else {
+        guard !secureInputTransactions.hasRequest(forEntryID: entry.id) else {
             throw SecretCatalogAgentError.invalidOperation
         }
         let snapshot = try await catalogSnapshotForAgent()
@@ -3590,7 +3412,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
 
         guard !secretInputs.isEmpty else {
-            guard !pendingSecureInputRequests.values.contains(where: { $0.entryID == entry.id }) else {
+            guard !secureInputTransactions.hasRequest(forEntryID: entry.id) else {
                 throw SecretCatalogAgentError.invalidOperation
             }
             do {
@@ -3656,7 +3478,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // encrypting. Re-check immediately before the store call so a
             // Secure Input request that began in that window cannot be
             // bypassed by this generic plaintext-consuming editor.
-            guard !pendingSecureInputRequests.values.contains(where: { $0.entryID == entry.id }) else {
+            guard !secureInputTransactions.hasRequest(forEntryID: entry.id) else {
                 throw SecretCatalogAgentError.invalidOperation
             }
             let updated = try await catalogDocumentStore!.updateEntry(finalEntry, expectedRevision: expectedRevision)
@@ -5830,25 +5652,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     private func persistSecureInputReceipts() {
         guard let secureInputReceiptURL else { return }
-        let cutoff = now().addingTimeInterval(-15 * 60)
-        let records = secureInputTerminalAt.compactMap { id, terminalAt -> CatalogSecureInputReceiptRecord? in
-            guard terminalAt >= cutoff,
-                  let status = secureInputStatuses[id],
-                  status.status != .pending
-            else {
-                return nil
-            }
-            return CatalogSecureInputReceiptRecord(
-                schemaVersion: CatalogSecureInputReceiptRecord.currentSchemaVersion,
-                requestID: id,
-                status: status.status,
-                revision: status.revision,
-                errorCode: status.errorCode,
-                terminalAt: terminalAt
-            )
-        }
-        .sorted { $0.terminalAt < $1.terminalAt }
-        .suffix(128)
+        let records = secureInputTransactions.receiptRecords(now: now())
 
         do {
             let parentURL = secureInputReceiptURL.deletingLastPathComponent()
@@ -6260,102 +6064,22 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return "unknown"
     }
 
-    private func makeCatalogEntry(from request: CatalogDraftRequest) throws -> SecretCatalogEntry {
-        try SecretCatalogEntry.generated(
-            indexId: request.indexID,
-            title: request.title,
-            type: request.type,
-            aliases: request.aliases,
-            endpoints: request.endpoints,
-            fields: request.fields,
-            notes: request.notes,
-            tags: request.tags
-        )
-    }
-
     private func validateCatalogPatchMutation(
         from oldEntry: SecretCatalogEntry,
         to newEntry: SecretCatalogEntry
     ) async throws {
         let hasSecretReference = oldEntry.fields.contains { $0.secretRef != nil }
         let changesTarget = oldEntry.endpoints != newEntry.endpoints && hasSecretReference
-        let changesSecretSemantics = catalogSensitiveChangeNeedsApproval(from: oldEntry, to: newEntry)
+        let changesSecretSemantics = CatalogMutationCandidateBuilder.sensitiveChangeNeedsApproval(
+            from: oldEntry,
+            to: newEntry
+        )
         let descriptor = CatalogMutationDescriptor(
             kind: changesSecretSemantics ? .changeSecretType : .patchMetadata,
             touchesExistingSecret: changesSecretSemantics,
             changesSecretTarget: changesTarget
         )
         try catalogMutationPolicyEngine.requireSilent(descriptor)
-    }
-
-    private func metadataPatchedEntry(
-        _ entry: SecretCatalogEntry,
-        with patch: CatalogMetadataPatch
-    ) throws -> SecretCatalogEntry {
-        var fields = entry.fields
-        if let incomingFields = patch.fields {
-            for incoming in incomingFields {
-                if let offset = fields.firstIndex(where: { $0.key == incoming.key }) {
-                    let current = fields[offset]
-                    guard !current.type.isSecret,
-                          !incoming.type.isSecret,
-                          current.secretRef == nil,
-                          incoming.secretRef == nil
-                    else {
-                        throw SecretCatalogAgentError.approvalRequired
-                    }
-                    fields[offset] = incoming
-                } else {
-                    if incoming.type.isSecret {
-                        guard incoming.value == nil, incoming.secretRef == nil else {
-                            throw SecretCatalogAgentError.approvalRequired
-                        }
-                    } else {
-                        guard incoming.secretRef == nil else {
-                            throw SecretCatalogAgentError.approvalRequired
-                        }
-                    }
-                    fields.append(incoming)
-                }
-            }
-        }
-
-        return SecretCatalogEntry(
-            id: entry.id,
-            indexId: entry.indexId,
-            title: patch.title ?? entry.title,
-            type: entry.type,
-            aliases: patch.aliases ?? entry.aliases,
-            endpoints: patch.endpoints ?? entry.endpoints,
-            fields: fields,
-            notes: patch.notes ?? entry.notes,
-            tags: patch.tags ?? entry.tags,
-            schema: entry.schema
-        )
-    }
-
-    private func catalogSensitiveChangeNeedsApproval(
-        from oldEntry: SecretCatalogEntry,
-        to newEntry: SecretCatalogEntry
-    ) -> Bool {
-        let oldFields = Dictionary(uniqueKeysWithValues: oldEntry.fields.map { ($0.key, $0) })
-        let newFields = Dictionary(uniqueKeysWithValues: newEntry.fields.map { ($0.key, $0) })
-        for key in Set(oldFields.keys).union(newFields.keys) {
-            let oldField = oldFields[key]
-            let newField = newFields[key]
-            if oldField == nil, newField?.type.isSecret == true, newField?.secretRef == nil {
-                // A new empty placeholder is intentionally silent; the user
-                // fills its value through the secure App-control form later.
-                continue
-            }
-            if oldField?.type.isSecret == true || newField?.type.isSecret == true {
-                guard let oldField, let newField else { return true }
-                if oldField.type != newField.type || oldField.secretRef != newField.secretRef {
-                    return true
-                }
-            }
-        }
-        return false
     }
 
     private func sanitizedReason(_ reason: String) -> String {
