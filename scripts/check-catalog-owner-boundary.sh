@@ -4,14 +4,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/Sources/AgentSecretVaultApp"
 
-mapfile -d '' swift_files < <(find "$RUNTIME_DIR" -type f -name '*.swift' -print0)
-if [ "${#swift_files[@]}" -eq 0 ]; then
+if ! find "$RUNTIME_DIR" -type f -name '*.swift' -print -quit | grep -q .; then
   echo "No GUI Swift sources found under $RUNTIME_DIR" >&2
   exit 1
 fi
 
-for forbidden in   'SensitiveCatalogDocumentStore'   'SensitiveInformationDocumentStore'   'SensitiveIndexSelectionStore'   'SecretCatalogSelectionStore'; do
-  if grep -nFH "$forbidden" "${swift_files[@]}"; then
+for forbidden in \
+  'SensitiveCatalogDocumentStore' \
+  'SensitiveInformationDocumentStore' \
+  'SensitiveIndexSelectionStore' \
+  'SecretCatalogSelectionStore'; do
+  if find "$RUNTIME_DIR" -type f -name '*.swift' -exec grep -nFH "$forbidden" {} +; then
     echo "GUI runtime must consume Catalog state through daemon App-control IPC; forbidden owner symbol: $forbidden" >&2
     exit 1
   fi
