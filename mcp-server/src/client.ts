@@ -11,6 +11,7 @@ import {
   IpcRequest,
   IpcResponse
 } from "./protocol.js";
+import { applyContextBoundedRiskJudge } from "./risk-judge.js";
 
 export interface IpcPaths {
   directory: string;
@@ -84,7 +85,14 @@ export class LocalIpcClient {
   }
 
   async request(request: IpcRequest, caller?: AgentCallerIdentity): Promise<IpcResponse> {
-    const parsedRequest = IpcRequest.parse(request);
+    // A configured judge is invoked here, after the MCP tool has constructed
+    // the exact operation but before the descriptor enters the daemon. Each
+    // invocation is a fresh stateless model call. It receives only the main
+    // agent's short intendedEffect (used as the problem statement) plus the
+    // canonical operation fields; chat history and the agent's risk rationale
+    // are intentionally excluded.
+    const riskJudgedRequest = await applyContextBoundedRiskJudge(request);
+    const parsedRequest = IpcRequest.parse(riskJudgedRequest);
     for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
       const response = await this.requestOnce(parsedRequest, caller ?? this.declaredCaller);
       if (
