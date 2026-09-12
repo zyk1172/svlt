@@ -1,0 +1,19 @@
+name: Temporary secure-input lifecycle inventory
+
+on:
+  push:
+    branches:
+      - codex/extract-secure-input-lifecycle-owner
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: List lifecycle state access points
+        run: |
+          grep -n -E 'secureInputTransactions|secureInputExpiryTasks|secureInputAuditContexts' Sources/VaultService/VaultAppServices.swift
