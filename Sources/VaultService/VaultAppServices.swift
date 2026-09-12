@@ -151,6 +151,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let recordResolver: VaultRecordResolver?
     private let catalogDocumentStore: SensitiveCatalogDocumentStore?
     private let catalogSelectionStore: SecretCatalogSelectionStore?
+    let catalogDocumentOwner: CatalogDocumentOwner?
     private let catalogSearchService: SecretCatalogEntrySearchService
     private let catalogAgentWriteAuthorization: CatalogAgentWriteAuthorization
     private let catalogMutationPolicyEngine: CatalogMutationPolicyEngine
@@ -242,7 +243,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.recordDeleter = recordDeleter
         self.recordResolver = recordResolver
         self.catalogDocumentStore = catalogDocumentStore
-        self.catalogSelectionStore = catalogSelectionManifestURL.map(SecretCatalogSelectionStore.init(manifestURL:))
+        let catalogSelectionStore = catalogSelectionManifestURL.map(SecretCatalogSelectionStore.init(manifestURL:))
+        self.catalogSelectionStore = catalogSelectionStore
+        self.catalogDocumentOwner = catalogDocumentStore.map {
+            CatalogDocumentOwner(store: $0, selectionStore: catalogSelectionStore)
+        }
         self.catalogSearchService = SecretCatalogEntrySearchService()
         self.catalogAgentWriteAuthorization = catalogAgentWriteAuthorization ?? CatalogAgentWriteAuthorization(now: now)
         self.catalogMutationPolicyEngine = CatalogMutationPolicyEngine()
@@ -5443,21 +5448,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func selectedCatalogStoreForApp() async throws -> SensitiveCatalogDocumentStore {
-        guard let catalogDocumentStore else {
+        guard let catalogDocumentOwner else {
             throw SecretCatalogAgentError.unavailable
         }
         do {
-            let selectedURL: URL?
-            if let catalogSelectionStore {
-                selectedURL = try catalogSelectionStore.selectedDocumentURL()
-            } else {
-                selectedURL = await catalogDocumentStore.selectedDocumentURL()
-            }
-            guard let selectedURL else {
-                throw SecretCatalogAgentError.unavailable
-            }
-            try await catalogDocumentStore.selectDocument(at: selectedURL)
-            return catalogDocumentStore
+            return try await catalogDocumentOwner.selectedStore()
         } catch let error as SecretCatalogAgentError {
             throw error
         } catch let error as SensitiveCatalogDocumentStoreError {
@@ -5564,21 +5559,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func catalogSnapshotForAgent() async throws -> SensitiveCatalogSnapshot {
-        guard let catalogDocumentStore else {
-            throw SecretCatalogAgentError.unavailable
-        }
-
+        let catalogDocumentStore = try await selectedCatalogStoreForApp()
         do {
-            let selectedURL: URL?
-            if let catalogSelectionStore {
-                selectedURL = try catalogSelectionStore.selectedDocumentURL()
-            } else {
-                selectedURL = await catalogDocumentStore.selectedDocumentURL()
-            }
-            guard let selectedURL else {
-                throw SecretCatalogAgentError.unavailable
-            }
-            try await catalogDocumentStore.selectDocument(at: selectedURL)
             let snapshot = try await catalogDocumentStore.snapshot()
             guard snapshot.integrity == .verified else {
                 throw SecretCatalogAgentError.unavailable
@@ -5618,19 +5600,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// access probe. This deliberately does not use the App process or a test
     /// temporary directory as a permission substitute.
     private func catalogFilePreflightForAgent() async throws -> CatalogFilePreflight {
-        guard let catalogDocumentStore else {
-            throw SecretCatalogAgentError.unavailable
-        }
-        let selectedURL: URL?
-        if let catalogSelectionStore {
-            selectedURL = try catalogSelectionStore.selectedDocumentURL()
-        } else {
-            selectedURL = await catalogDocumentStore.selectedDocumentURL()
-        }
-        guard let selectedURL else {
-            throw SecretCatalogAgentError.unavailable
-        }
-        try await catalogDocumentStore.selectDocument(at: selectedURL)
+        let catalogDocumentStore = try await selectedCatalogStoreForApp()
         return try await catalogDocumentStore.preflightFileAccess()
     }
 
