@@ -149,8 +149,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let recordLister: (any RecordListing)?
     private let recordDeleter: (any RecordDeleting)?
     private let recordResolver: VaultRecordResolver?
-    private let catalogDocumentStore: SensitiveCatalogDocumentStore?
-    private let catalogSelectionStore: SecretCatalogSelectionStore?
     let catalogDocumentOwner: CatalogDocumentOwner?
     private let catalogSearchService: SecretCatalogEntrySearchService
     private let catalogAgentWriteAuthorization: CatalogAgentWriteAuthorization
@@ -183,15 +181,33 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let exportCoordinator: CatalogExportCoordinator
     private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
     private let secureInputNotifier: CatalogAgentSecureInputNotifier
+    private lazy var catalogWriteAccessCoordinator: CatalogWriteAccessCoordinator = {
+        CatalogWriteAccessCoordinator(
+            authorization: catalogAgentWriteAuthorization,
+            approver: { [weak self] summary in
+                guard let self else {
+                    throw SecretCatalogAgentError.unavailable
+                }
+                _ = try await self.approveWithTimeout(summary: summary)
+            },
+            notifier: writeAccessNotifier,
+            now: now,
+            emitAudit: { [weak self] event in
+                await self?.emitCatalogWriteAccessAudit(event)
+            }
+        )
+    }()
     private var pluginConnectedAt: Date?
     private var agentDecryptAuthorizations: [String: AgentDecryptAuthorization] = [:]
     private var pendingCatalogDrafts: [String: SecretCatalogEntry] = [:]
+    private var pendingCatalogDraftOperations: [String: CatalogDocumentOperation] = [:]
+    private var catalogFormatRepairOperations: [String: CatalogDocumentOperation] = [:]
+    private var secureInputCatalogOperations: [UUID: CatalogDocumentOperation] = [:]
     private var approvalPending = false
     private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
     private var pendingExecutionApprovalIDs: Set<UUID> = []
     private var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
     private var securityGeneration: UInt64 = 0
-    private var writeAccessLifecycle = CatalogWriteAccessLifecycle()
     private var secureInputLifecycle = CatalogSecureInputLifecycle()
     /// Cancellation/expiry is latched while the one-shot authentication or
     /// store call is suspended. The request is not removed during submission;
@@ -242,9 +258,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.recordLister = recordLister
         self.recordDeleter = recordDeleter
         self.recordResolver = recordResolver
-        self.catalogDocumentStore = catalogDocumentStore
         let catalogSelectionStore = catalogSelectionManifestURL.map(SecretCatalogSelectionStore.init(manifestURL:))
-        self.catalogSelectionStore = catalogSelectionStore
         self.catalogDocumentOwner = catalogDocumentStore.map {
             CatalogDocumentOwner(store: $0, selectionStore: catalogSelectionStore)
         }
@@ -1601,7 +1615,29 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         resultIndexID: String? = nil,
         resultEntryID: String? = nil
     ) async throws -> CatalogWriteResult {
-        let snapshot = try await catalogSnapshotForAgent()
+        try await withCatalogOperation { operation in
+            try await performCatalogBatch(
+                mutation,
+                expectedRevision: expectedRevision,
+                requireAgentSafeWrite: requireAgentSafeWrite,
+                authorizationOperation: authorizationOperation,
+                resultIndexID: resultIndexID,
+                resultEntryID: resultEntryID,
+                operation: operation
+            )
+        }
+    }
+
+    private func performCatalogBatch(
+        _ mutation: CatalogBatchMutation,
+        expectedRevision: UInt64,
+        requireAgentSafeWrite: Bool,
+        authorizationOperation: CatalogAgentWriteOperation,
+        resultIndexID: String?,
+        resultEntryID: String?,
+        operation: CatalogDocumentOperation
+    ) async throws -> CatalogWriteResult {
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard snapshot.revision == expectedRevision else {
             throw SecretCatalogAgentError.revisionConflict
         }
@@ -1634,7 +1670,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             context: operationContext
         )
         do {
-            let updated = try await catalogDocumentStore!.applyBatch(mutation, expectedRevision: expectedRevision)
+            let updated = try await operation.applyBatch(mutation, expectedRevision: expectedRevision)
             await emitAudit(
                 action: "批量修改目录",
                 target: "catalog",
@@ -1647,7 +1683,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 revision: updated.revision,
                 indexID: resultIndexID,
                 entryID: resultEntryID,
-                validation: await postCommitCatalogValidation()
+                validation: await postCommitCatalogValidation(using: operation)
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(
@@ -1673,7 +1709,23 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         aliases: [String],
         tags: [String]
     ) async throws -> CatalogWriteResult {
-        let snapshot = try await catalogSnapshotForAgent()
+        try await withCatalogOperation { operation in
+            try await createCatalogIndex(
+                title: title,
+                aliases: aliases,
+                tags: tags,
+                operation: operation
+            )
+        }
+    }
+
+    private func createCatalogIndex(
+        title: String,
+        aliases: [String],
+        tags: [String],
+        operation: CatalogDocumentOperation
+    ) async throws -> CatalogWriteResult {
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         let index: SecretCatalogIndex
         do {
             index = try SecretCatalogIndex.generated(title: title, aliases: aliases, tags: tags)
@@ -1695,7 +1747,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         try await authorizeCatalogDiff(diff, transport: .createIndex, requireAgentSafeWrite: false)
         await emitCatalogMutationStarted(action: "创建目录分组", referenceCount: 0, context: operationContext)
         do {
-            let updated = try await catalogDocumentStore!.createIndex(index, expectedRevision: snapshot.revision)
+            let updated = try await operation.createIndex(index, expectedRevision: snapshot.revision)
             await emitAudit(
                 action: "创建目录分组",
                 target: "catalog",
@@ -1707,7 +1759,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return CatalogWriteResult(
                 revision: updated.revision,
                 indexID: index.id,
-                validation: await postCommitCatalogValidation()
+                validation: await postCommitCatalogValidation(using: operation)
             )
         } catch let error as VaultCryptoError where error == .randomGenerationFailed {
             await emitCatalogMutationFailed(action: "创建目录分组", referenceCount: 0, context: operationContext)
@@ -1731,7 +1783,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func createCatalogStructure(
         _ request: CatalogCreateStructureRequest
     ) async throws -> CatalogStructureWriteResult {
-        let snapshot = try await catalogSnapshotForAgent()
+        try await withCatalogOperation { operation in
+            try await createCatalogStructure(request, operation: operation)
+        }
+    }
+
+    private func createCatalogStructure(
+        _ request: CatalogCreateStructureRequest,
+        operation: CatalogDocumentOperation
+    ) async throws -> CatalogStructureWriteResult {
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         let expectedRevision = request.expectedRevision ?? snapshot.revision
         guard expectedRevision == snapshot.revision else {
             throw SecretCatalogAgentError.revisionConflict
@@ -1761,7 +1822,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         await emitCatalogMutationStarted(action: "创建目录结构", referenceCount: 0, context: operationContext)
 
         do {
-            let updated = try await catalogDocumentStore!.applyBatch(mutation, expectedRevision: expectedRevision)
+            let updated = try await operation.applyBatch(mutation, expectedRevision: expectedRevision)
             await emitAudit(
                 action: "创建目录结构",
                 target: "catalog",
@@ -1776,7 +1837,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     CatalogStructureEntryResult(clientKey: $0.clientKey, entryID: $0.entry.id)
                 },
                 revision: updated.revision,
-                validation: await postCommitCatalogValidation()
+                validation: await postCommitCatalogValidation(using: operation)
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "创建目录结构", referenceCount: 0, context: operationContext)
@@ -1794,6 +1855,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// plaintext secret values stay on their separate approval/secure-input
     /// paths.
     public func createCatalogEntry(_ request: CatalogDraftRequest) async throws -> CatalogWriteResult {
+        try await withCatalogOperation { operation in
+            try await createCatalogEntry(request, operation: operation)
+        }
+    }
+
+    private func createCatalogEntry(
+        _ request: CatalogDraftRequest,
+        operation: CatalogDocumentOperation
+    ) async throws -> CatalogWriteResult {
         do {
             let containsSecretValue = request.fields.contains { $0.type.isSecret && $0.value != nil }
             for reference in request.fields.compactMap(\.secretRef) {
@@ -1814,7 +1884,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         let snapshot: SensitiveCatalogSnapshot
         do {
-            snapshot = try await catalogSnapshotForAgent()
+            snapshot = try await catalogSnapshotForAgent(using: operation)
         } catch {
             Self.logCatalogMutationFailure(operation: "catalog-create-entry", phase: .snapshot, error: error)
             throw error
@@ -1851,7 +1921,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         await emitCatalogMutationStarted(action: "创建目录条目", referenceCount: referenceCount, context: operationContext)
 
         do {
-            let updated = try await catalogDocumentStore!.createEntry(entry, expectedRevision: snapshot.revision)
+            let updated = try await operation.createEntry(entry, expectedRevision: snapshot.revision)
             await emitAudit(
                 action: "创建目录条目",
                 target: "catalog",
@@ -1864,7 +1934,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 revision: updated.revision,
                 entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry,
                 entryID: entry.id,
-                validation: await postCommitCatalogValidation()
+                validation: await postCommitCatalogValidation(using: operation)
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "创建目录条目", referenceCount: referenceCount, context: operationContext)
@@ -1883,40 +1953,47 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func createCatalogDraft(
         _ request: CatalogDraftRequest
     ) async throws -> CatalogDraft {
-        let snapshot = try await catalogSnapshotForAgent()
-        let containsReference = request.fields.contains { $0.secretRef != nil }
-        let containsSecretValue = request.fields.contains { $0.type.isSecret && $0.value != nil }
-        for reference in request.fields.compactMap(\.secretRef) {
-            guard (try? SecretReference(reference)) != nil else {
-                try catalogMutationPolicyEngine.requireSilent(
-                    CatalogMutationDescriptor(kind: .forgedSecretReference)
-                )
+        let operation = try await beginCatalogOperation()
+        do {
+            let snapshot = try await catalogSnapshotForAgent(using: operation)
+            let containsReference = request.fields.contains { $0.secretRef != nil }
+            let containsSecretValue = request.fields.contains { $0.type.isSecret && $0.value != nil }
+            for reference in request.fields.compactMap(\.secretRef) {
+                guard (try? SecretReference(reference)) != nil else {
+                    try catalogMutationPolicyEngine.requireSilent(
+                        CatalogMutationDescriptor(kind: .forgedSecretReference)
+                    )
+                    throw SecretCatalogAgentError.invalidOperation
+                }
+            }
+            if containsSecretValue {
+                try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .plaintextSecretInCatalog))
+            }
+            if containsReference {
+                try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .bindExistingSecret))
+            }
+            guard snapshot.document.indexes.contains(where: { $0.id == request.indexID }) else {
                 throw SecretCatalogAgentError.invalidOperation
             }
-        }
-        if containsSecretValue {
-            try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .plaintextSecretInCatalog))
-        }
-        if containsReference {
-            try catalogMutationPolicyEngine.requireSilent(CatalogMutationDescriptor(kind: .bindExistingSecret))
-        }
-        guard snapshot.document.indexes.contains(where: { $0.id == request.indexID }) else {
-            throw SecretCatalogAgentError.invalidOperation
-        }
 
-        let entry = try CatalogMutationCandidateBuilder.makeEntry(from: request)
-        let draftID = try SecretCatalogOpaqueID.generate()
-        var draftDocument = snapshot.document
-        draftDocument = SecretCatalogDocument(
-            indexes: draftDocument.indexes,
-            entries: draftDocument.entries + [entry]
-        )
-        try draftDocument.validate()
-        pendingCatalogDrafts[draftID] = entry
-        guard let match = catalogSearchService.get(entryID: entry.id, document: draftDocument).matches.first else {
-            throw SecretCatalogAgentError.invalidOperation
+            let entry = try CatalogMutationCandidateBuilder.makeEntry(from: request)
+            let draftID = try SecretCatalogOpaqueID.generate()
+            var draftDocument = snapshot.document
+            draftDocument = SecretCatalogDocument(
+                indexes: draftDocument.indexes,
+                entries: draftDocument.entries + [entry]
+            )
+            try draftDocument.validate()
+            pendingCatalogDrafts[draftID] = entry
+            guard let match = catalogSearchService.get(entryID: entry.id, document: draftDocument).matches.first else {
+                throw SecretCatalogAgentError.invalidOperation
+            }
+            pendingCatalogDraftOperations[draftID] = operation
+            return CatalogDraft(draftID: draftID, baseRevision: snapshot.revision, entry: match.entry)
+        } catch {
+            await endCatalogOperation(operation)
+            throw error
         }
-        return CatalogDraft(draftID: draftID, baseRevision: snapshot.revision, entry: match.entry)
     }
 
     public func patchCatalogMetadata(
@@ -1924,7 +2001,23 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         patch: CatalogMetadataPatch,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
-        let snapshot = try await catalogSnapshotForAgent()
+        try await withCatalogOperation { operation in
+            try await patchCatalogMetadata(
+                entryID: entryID,
+                patch: patch,
+                expectedRevision: expectedRevision,
+                operation: operation
+            )
+        }
+    }
+
+    private func patchCatalogMetadata(
+        entryID: String,
+        patch: CatalogMetadataPatch,
+        expectedRevision: UInt64,
+        operation: CatalogDocumentOperation
+    ) async throws -> CatalogWriteResult {
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard let oldEntry = snapshot.document.entries.first(where: { $0.id == entryID }) else {
             throw SecretCatalogAgentError.invalidOperation
         }
@@ -1956,7 +2049,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         try await authorizeCatalogDiff(diff, transport: .patchMetadata, requireAgentSafeWrite: false)
         await emitCatalogMutationStarted(action: "修改目录条目元数据", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
         do {
-            let updatedSnapshot = try await catalogDocumentStore!.updateEntry(updated, expectedRevision: expectedRevision)
+            let updatedSnapshot = try await operation.updateEntry(updated, expectedRevision: expectedRevision)
             await emitAudit(
                 action: "修改目录条目元数据",
                 target: "catalog",
@@ -1969,7 +2062,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 revision: updatedSnapshot.revision,
                 entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry,
                 entryID: entryID,
-                validation: await postCommitCatalogValidation()
+                validation: await postCommitCatalogValidation(using: operation)
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "修改目录条目元数据", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
@@ -1984,40 +2077,50 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         _ draft: CatalogDraft,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
-        let snapshot = try await catalogSnapshotForAgent()
         guard let pending = pendingCatalogDrafts[draft.draftID] else {
             throw SecretCatalogAgentError.invalidOperation
         }
-        guard expectedRevision == snapshot.revision,
-              draft.baseRevision == snapshot.revision,
-              draft.entry.id == pending.id,
-              draft.entry.indexId == pending.indexId
-        else {
-            throw SecretCatalogAgentError.revisionConflict
+        let operation: CatalogDocumentOperation
+        let operationWasRetained: Bool
+        if let retained = pendingCatalogDraftOperations[draft.draftID] {
+            operation = retained
+            operationWasRetained = true
+        } else {
+            operation = try await beginCatalogOperation()
+            operationWasRetained = false
         }
-        let next: SecretCatalogDocument
         do {
-            next = try snapshot.document.insertingEntryInSourceOrder(pending)
-            try next.validate()
-        } catch {
-            throw SecretCatalogAgentError.invalidOperation
-        }
-        let operationContext = try await requestAgentCatalogAuthorization(
-            CatalogAgentWriteIntent(
-                operation: .commitDraft,
-                indexID: pending.indexId,
-                entryID: pending.id,
-                acceptedRevision: snapshot.revision,
-                candidateSemanticSHA256: CatalogSemanticDigest.sha256(next)
-            ),
-            reasonCategory: .knowledgeMaintenance
-        )
-        let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
-        try await authorizeCatalogDiff(diff, transport: .createEntry, requireAgentSafeWrite: false)
-        await emitCatalogMutationStarted(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
-        do {
-            let updatedSnapshot = try await catalogDocumentStore!.createEntry(pending, expectedRevision: expectedRevision)
+            let snapshot = try await catalogSnapshotForAgent(using: operation)
+            guard expectedRevision == snapshot.revision,
+                  draft.baseRevision == snapshot.revision,
+                  draft.entry.id == pending.id,
+                  draft.entry.indexId == pending.indexId
+            else {
+                throw SecretCatalogAgentError.revisionConflict
+            }
+            let next: SecretCatalogDocument
+            do {
+                next = try snapshot.document.insertingEntryInSourceOrder(pending)
+                try next.validate()
+            } catch {
+                throw SecretCatalogAgentError.invalidOperation
+            }
+            let operationContext = try await requestAgentCatalogAuthorization(
+                CatalogAgentWriteIntent(
+                    operation: .commitDraft,
+                    indexID: pending.indexId,
+                    entryID: pending.id,
+                    acceptedRevision: snapshot.revision,
+                    candidateSemanticSHA256: CatalogSemanticDigest.sha256(next)
+                ),
+                reasonCategory: .knowledgeMaintenance
+            )
+            let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
+            try await authorizeCatalogDiff(diff, transport: .createEntry, requireAgentSafeWrite: false)
+            await emitCatalogMutationStarted(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
+            let updatedSnapshot = try await operation.createEntry(pending, expectedRevision: expectedRevision)
             pendingCatalogDrafts.removeValue(forKey: draft.draftID)
+            pendingCatalogDraftOperations.removeValue(forKey: draft.draftID)
             await emitAudit(
                 action: "提交目录条目草稿",
                 target: "catalog",
@@ -2026,18 +2129,24 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 context: operationContext,
                 operation: .catalogMutation
             )
-            return CatalogWriteResult(
+            let result = CatalogWriteResult(
                 revision: updatedSnapshot.revision,
                 entry: catalogSearchService.get(entryID: pending.id, document: updatedSnapshot.document).matches.first?.entry,
                 entryID: pending.id,
-                validation: await postCommitCatalogValidation()
+                validation: await postCommitCatalogValidation(using: operation)
             )
+            await endCatalogOperation(operation)
+            return result
         } catch let error as SensitiveCatalogDocumentStoreError {
-            await emitCatalogMutationFailed(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
+            if !operationWasRetained {
+                await endCatalogOperation(operation)
+            }
             throw catalogAgentError(for: error)
         } catch {
-            await emitCatalogMutationFailed(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
-            throw SecretCatalogAgentError.writeFailed
+            if !operationWasRetained {
+                await endCatalogOperation(operation)
+            }
+            throw error
         }
     }
 
@@ -2049,7 +2158,29 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         searchable: Bool,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
-        let snapshot = try await catalogSnapshotForAgent()
+        try await withCatalogOperation { operation in
+            try await addCatalogSecretPlaceholder(
+                entryID: entryID,
+                key: key,
+                label: label,
+                agentVisible: agentVisible,
+                searchable: searchable,
+                expectedRevision: expectedRevision,
+                operation: operation
+            )
+        }
+    }
+
+    private func addCatalogSecretPlaceholder(
+        entryID: String,
+        key: String,
+        label: String,
+        agentVisible: Bool,
+        searchable: Bool,
+        expectedRevision: UInt64,
+        operation: CatalogDocumentOperation
+    ) async throws -> CatalogWriteResult {
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard expectedRevision == snapshot.revision else {
             throw SecretCatalogAgentError.revisionConflict
         }
@@ -2089,7 +2220,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         try await authorizeCatalogDiff(diff, transport: .createSecretPlaceholder, requireAgentSafeWrite: false)
         await emitCatalogMutationStarted(action: "新增目录加密字段占位", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
         do {
-            let updatedSnapshot = try await catalogDocumentStore!.addField(
+            let updatedSnapshot = try await operation.addField(
                 candidate.field,
                 toEntryID: entryID,
                 expectedRevision: expectedRevision
@@ -2106,7 +2237,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 revision: updatedSnapshot.revision,
                 entry: catalogSearchService.get(entryID: entryID, document: updatedSnapshot.document).matches.first?.entry,
                 entryID: entryID,
-                validation: await postCommitCatalogValidation()
+                validation: await postCommitCatalogValidation(using: operation)
             )
         } catch let error as SensitiveCatalogDocumentStoreError {
             await emitCatalogMutationFailed(action: "新增目录加密字段占位", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
@@ -2139,14 +2270,26 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// The store has already validated the candidate before replacing the
     /// document; this follow-up reads the authoritative post-commit state and
     /// preserves any integrity diagnostics without exposing document content.
-    private func postCommitCatalogValidation() async -> CatalogValidationResult {
-        (try? await validateCatalog()) ?? CatalogValidationResult(status: .unavailable)
+    private func postCommitCatalogValidation(
+        using operation: CatalogDocumentOperation
+    ) async -> CatalogValidationResult {
+        guard let report = try? await operation.validationReport() else {
+            return CatalogValidationResult(status: .unavailable)
+        }
+        return CatalogValidationResult(
+            status: report.status,
+            revision: report.revision,
+            rawSHA256: report.rawSHA256,
+            pendingExternalChange: report.pendingExternalChange,
+            diagnostics: report.diagnostics
+        )
     }
 
     public func validateCatalog() async throws -> CatalogValidationResult {
         do {
-            let store = try await selectedCatalogStoreForApp()
-            let report = try await store.validationReport()
+            let report = try await withCatalogOperation { operation in
+                try await operation.validationReport()
+            }
             return CatalogValidationResult(
                 status: report.status,
                 revision: report.revision,
@@ -2205,9 +2348,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan? {
-        let store = try await selectedCatalogStoreForApp()
+        let operation = try await beginCatalogOperation()
         do {
-            let plan = try await store.formatRepairPlan()
+            let plan = try await operation.formatRepairPlan()
+            if let plan, plan.canRepair {
+                catalogFormatRepairOperations[plan.currentRawSHA256] = operation
+            } else {
+                await endCatalogOperation(operation)
+            }
             await emitAudit(
                 action: "检查目录格式",
                 target: "catalog-format",
@@ -2222,14 +2370,23 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             return plan
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await endCatalogOperation(operation)
             throw catalogAgentError(for: error)
+        } catch {
+            await endCatalogOperation(operation)
+            throw error
         }
     }
 
     public func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult {
-        let store = try await selectedCatalogStoreForApp()
+        let operation: CatalogDocumentOperation
+        if let retained = catalogFormatRepairOperations.removeValue(forKey: expectedRawSHA256) {
+            operation = retained
+        } else {
+            operation = try await beginCatalogOperation()
+        }
         do {
-            _ = try await store.repairFormat(expectedRawSHA256: expectedRawSHA256)
+            _ = try await operation.repairFormat(expectedRawSHA256: expectedRawSHA256)
             await emitAudit(
                 action: "修复目录格式",
                 target: "catalog-format",
@@ -2238,9 +2395,21 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 context: AuditContext.current ?? AuditContext(source: .app),
                 operation: .formatRepair
             )
-            return try await validateCatalog()
+            let report = try await operation.validationReport()
+            await endCatalogOperation(operation)
+            return CatalogValidationResult(
+                status: report.status,
+                revision: report.revision,
+                rawSHA256: report.rawSHA256,
+                pendingExternalChange: report.pendingExternalChange,
+                diagnostics: report.diagnostics
+            )
         } catch let error as SensitiveCatalogDocumentStoreError {
+            await endCatalogOperation(operation)
             throw catalogAgentError(for: error)
+        } catch {
+            await endCatalogOperation(operation)
+            throw error
         }
     }
 
@@ -2281,7 +2450,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         targets: [CatalogSecureInputTargetRequest],
         expectedRevision: UInt64
     ) async throws -> CatalogSecureInputStatus {
-        let snapshot = try await catalogSnapshotForAgent()
+        let operation = try await beginCatalogOperation()
+        do {
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard snapshot.revision == expectedRevision else {
             throw SecretCatalogAgentError.revisionConflict
         }
@@ -2359,7 +2530,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             status: .requested
         )
         secureInputNotifier.present(requestID: request.id)
+        secureInputCatalogOperations[request.id] = operation
         return CatalogSecureInputStatus(requestID: request.id, status: .pending)
+        } catch {
+            await endCatalogOperation(operation)
+            throw error
+        }
     }
 
     /// Atomically authenticates, encrypts, evaluates the authoritative final
@@ -2371,6 +2547,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     ) async throws -> CatalogSecureInputStatus {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
+        guard catalogDocumentOwner != nil else {
+            throw SecretCatalogAgentError.unavailable
+        }
+        guard let operation = secureInputCatalogOperations[id] else {
+            throw SecretCatalogAgentError.invalidOperation
+        }
         let request = try secureInputLifecycle.beginSubmission(id: id, now: now())
         var createdReferences: [SecretReference] = []
         do {
@@ -2400,7 +2582,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             try ensureSecureInputSubmissionIsStillActive(id: id, request: request)
 
-            let snapshot = try await catalogSnapshotForAgent()
+            let snapshot = try await catalogSnapshotForAgent(using: operation)
             try ensureSecureInputSubmissionIsStillActive(id: id, request: request)
             guard snapshot.revision == request.expectedRevision,
                   let currentEntry = snapshot.document.entries.first(where: { $0.id == request.entryID })
@@ -2410,7 +2592,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             let finalResult = try await makeSecureInputFinalEntry(
                 request: request,
                 submission: submission,
-                currentEntry: currentEntry
+                currentEntry: currentEntry,
+                operation: operation
             )
             let finalEntry = finalResult.entry
             createdReferences = finalResult.references
@@ -2430,7 +2613,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // the active check above and this assignment: cancellation and
             // expiry either win before this point or are rejected after it.
             try secureInputLifecycle.markCommitting(id: id, request: request, now: now())
-            let updated = try await catalogDocumentStore!.updateEntry(
+            let updated = try await operation.updateEntry(
                 finalEntry,
                 expectedRevision: request.expectedRevision
             )
@@ -2466,7 +2649,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 result = "已过期"
                 auditStatus = .expired
             }
-            _ = await compensateCreatedReferences(createdReferences)
+            _ = await compensateCreatedReferences(createdReferences, operation: operation)
             await finishSecureInputRequest(
                 id: id,
                 status: status,
@@ -2478,7 +2661,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretCatalogAgentError.invalidOperation
         } catch let error as SensitiveCatalogDocumentStoreError {
             let mapped = catalogAgentError(for: error)
-            let finalError = await compensateCreatedReferences(createdReferences) ?? mapped
+            let finalError = await compensateCreatedReferences(createdReferences, operation: operation) ?? mapped
             await finishSecureInputRequest(
                 id: id,
                 status: CatalogSecureInputStatus(requestID: request.id, status: .failed, errorCode: secureInputErrorCode(finalError)),
@@ -2489,7 +2672,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw finalError
         } catch {
-            let finalError = await compensateCreatedReferences(createdReferences) ?? (error as Error)
+            let finalError = await compensateCreatedReferences(createdReferences, operation: operation) ?? (error as Error)
             let code = secureInputErrorCode(finalError)
             await finishSecureInputRequest(
                 id: id,
@@ -2562,11 +2745,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         authorizationOutcome: AuditAuthorizationOutcome,
         auditStatus: AuditStatus
     ) async {
+        let operation = secureInputCatalogOperations.removeValue(forKey: id)
         guard let completion = secureInputLifecycle.finish(
             id: id,
             status: status,
             terminalDate: now()
-        ) else { return }
+        ) else {
+            if let operation { await endCatalogOperation(operation) }
+            return
+        }
+        if let operation { await endCatalogOperation(operation) }
         let request = completion.request
         persistSecureInputReceipts()
         let context = completion.auditContext
@@ -2625,7 +2813,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func makeSecureInputFinalEntry(
         request: CatalogAgentSecureInputRequest,
         submission: CatalogSecureInputSubmission,
-        currentEntry: SecretCatalogEntry
+        currentEntry: SecretCatalogEntry,
+        operation: CatalogDocumentOperation
     ) async throws -> (entry: SecretCatalogEntry, references: [SecretReference]) {
         let targetsByID = Dictionary(uniqueKeysWithValues: request.targets.map { ($0.id, $0) })
         let selectedIDs = Set(submission.selectedTargetIDs)
@@ -2665,7 +2854,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 encryptedReferences[target.fieldKey] = reference.description
             }
         } catch {
-            if let cleanupError = await compensateCreatedReferences(createdReferences) {
+            if let cleanupError = await compensateCreatedReferences(createdReferences, operation: operation) {
                 throw cleanupError
             }
             throw error
@@ -2751,32 +2940,33 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func adoptCatalogExternalV2() async throws -> CatalogValidationResult {
-        let store = try await selectedCatalogStoreForApp()
-        do {
-            let snapshot = try await store.adoptExternalV2()
-            return CatalogValidationResult(status: .found, revision: snapshot.revision)
-        } catch let error as SensitiveCatalogDocumentStoreError {
-            switch error {
-            case .legacyCatalogUnsupported:
-                throw SecretCatalogAgentError.legacyCatalogUnsupported
-            case .integrityMissing:
-                throw SecretCatalogAgentError.integrityMissing
-            case .externalModification:
-                throw SecretCatalogAgentError.externalModification
-            case .pendingExternalChange:
-                throw SecretCatalogAgentError.pendingExternalChange
-            case .revisionConflict:
-                throw SecretCatalogAgentError.revisionConflict
-            default:
-                throw SecretCatalogAgentError.invalidCatalog
+        try await withCatalogOperation { operation in
+            do {
+                let snapshot = try await operation.adoptExternalV2()
+                return CatalogValidationResult(status: .found, revision: snapshot.revision)
+            } catch let error as SensitiveCatalogDocumentStoreError {
+                switch error {
+                case .legacyCatalogUnsupported:
+                    throw SecretCatalogAgentError.legacyCatalogUnsupported
+                case .integrityMissing:
+                    throw SecretCatalogAgentError.integrityMissing
+                case .externalModification:
+                    throw SecretCatalogAgentError.externalModification
+                case .pendingExternalChange:
+                    throw SecretCatalogAgentError.pendingExternalChange
+                case .revisionConflict:
+                    throw SecretCatalogAgentError.revisionConflict
+                default:
+                    throw SecretCatalogAgentError.invalidCatalog
+                }
             }
         }
     }
 
     public func adoptCatalogExternalV3() async throws -> CatalogValidationResult {
-        let store = try await selectedCatalogStoreForApp()
-        do {
-            let candidate = try await store.externalV3AdoptionCandidate()
+        try await withCatalogOperation { operation in
+            do {
+                let candidate = try await operation.externalV3AdoptionCandidate()
             let references = candidate.semanticDiff.referencedSecretRefs
             if !references.isEmpty {
                 guard recordResolver != nil else {
@@ -2798,13 +2988,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     requireAgentSafeWrite: false
                 )
             }
-            let snapshot = try await store.adoptExternalV3(
+            let snapshot = try await operation.adoptExternalV3(
                 expectedRawSHA256: candidate.rawSHA256,
                 expectedSemanticSHA256: candidate.semanticSHA256
             )
             return CatalogValidationResult(status: .found, revision: snapshot.revision)
-        } catch let error as SensitiveCatalogDocumentStoreError {
-            throw catalogAgentError(for: error)
+            } catch let error as SensitiveCatalogDocumentStoreError {
+                throw catalogAgentError(for: error)
+            }
         }
     }
 
@@ -2816,9 +3007,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         expectedRawSHA256: String,
         expectedSemanticSHA256: String
     ) async throws -> CatalogValidationResult {
-        let store = try await selectedCatalogStoreForApp()
-        do {
-            let pending = try await store.pendingExternalChange()
+        try await withCatalogOperation { operation in
+            do {
+                let pending = try await operation.pendingExternalChange()
             guard pending.acceptedRevision == expectedRevision,
                   pending.rawSHA256 == expectedRawSHA256,
                   pending.semanticSHA256 == expectedSemanticSHA256
@@ -2830,14 +3021,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 transport: .directManagedFileWrite,
                 requireAgentSafeWrite: false
             )
-            let accepted = try await store.acceptPendingExternalChange(
+            let accepted = try await operation.acceptPendingExternalChange(
                 expectedRevision: expectedRevision,
                 expectedRawSHA256: expectedRawSHA256,
                 expectedSemanticSHA256: expectedSemanticSHA256
             )
             return CatalogValidationResult(status: .found, revision: accepted.revision)
-        } catch let error as SensitiveCatalogDocumentStoreError {
-            throw catalogAgentError(for: error)
+            } catch let error as SensitiveCatalogDocumentStoreError {
+                throw catalogAgentError(for: error)
+            }
         }
     }
 
@@ -2845,23 +3037,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         mode: CatalogAgentWriteMode,
         duration: TimeInterval?
     ) async throws -> CatalogAgentWriteAuthorizationStatus {
-        if mode == .disabled {
-            await catalogAgentWriteAuthorization.revoke()
-            return await catalogAgentWriteAuthorization.status()
-        }
-        // Retain this wire case for older clients, but never let it create a
-        // global lease. Every non-disabled Agent write must arrive through the
-        // operation-bound request path below.
-        _ = duration
-        throw SecretCatalogAgentError.agentWriteNotAllowed
+        try await catalogWriteAccessCoordinator.setMode(mode, duration: duration)
     }
 
     public func revokeCatalogAgentWrite() async {
-        await catalogAgentWriteAuthorization.revoke()
+        await catalogWriteAccessCoordinator.revoke()
     }
 
     public func catalogAgentWriteStatus() async -> CatalogAgentWriteAuthorizationStatus {
-        await catalogAgentWriteAuthorization.status()
+        await catalogWriteAccessCoordinator.status()
     }
 
     public func requestCatalogWriteAccess(
@@ -2869,10 +3053,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         reasonCategory: CatalogAgentWriteReasonCategory,
         duration: CatalogAgentWriteAccessDuration
     ) async throws {
-        // This is the legacy generic request API. It cannot prove which
-        // mutation the user is approving, so fail closed instead of creating
-        // a reusable permission. Agent mutations call the private method with
-        // an exact intent.
         _ = (source, reasonCategory, duration)
         throw SecretCatalogAgentError.agentWriteNotAllowed
     }
@@ -2881,171 +3061,25 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         _ intent: CatalogAgentWriteIntent,
         reasonCategory: CatalogAgentWriteReasonCategory
     ) async throws -> AuditContext {
-        let requestID = UUID()
-        // IPCRequestHandler installs the trusted Agent context. The explicit
-        // fallback exists only for legacy in-process callers/tests that invoke
-        // this service directly; it is not used by the production transport.
-        let callerContext = AuditContext.current ?? AuditContext(source: .agent)
-        let operationContext = callerContext.withRequestID(requestID)
-        let createdAt = now()
-        let expiry = createdAt.addingTimeInterval(CatalogAgentWriteAuthorization.ticketLifetime)
-        let request = CatalogAgentWriteAccessRequest(
-            id: requestID,
-            source: .mcpClient,
-            reasonCategory: reasonCategory,
-            duration: .singleUse,
-            createdAt: iso8601String(createdAt),
-            intent: intent.bound(to: requestID),
-            expiresAt: iso8601String(expiry),
-            verifiedSource: nil
+        try await catalogWriteAccessCoordinator.requestAuthorization(
+            intent,
+            reasonCategory: reasonCategory
         )
-        let continuationBox = writeAccessLifecycle.insert(
-            request,
-            auditContext: operationContext
-        )
-        await emitAudit(
-            action: "智能体目录写入授权请求",
-            target: "catalog-write",
-            referenceCount: 0,
-            result: "请求中",
-            context: operationContext,
-            operation: .authorization,
-            authorizationOutcome: .requested,
-            status: .requested
-        )
-
-        var timeoutTask: Task<Void, Never>?
-        defer {
-            timeoutTask?.cancel()
-            writeAccessLifecycle.cleanup(id: request.id)
-        }
-        do {
-            try await withTaskCancellationHandler(operation: {
-                try await withCheckedThrowingContinuation { continuation in
-                    continuationBox.store(continuation)
-                    timeoutTask = Task { [weak self] in
-                        try? await Task.sleep(for: .seconds(CatalogAgentWriteAuthorization.ticketLifetime))
-                        guard !Task.isCancelled else { return }
-                        await self?.expireCatalogWriteAccessRequest(id: request.id)
-                    }
-                    writeAccessNotifier.present(request)
-                }
-            }, onCancel: { [weak self] in
-                Task { await self?.cancelCatalogWriteAccessRequest(id: request.id) }
-            })
-            guard let boundIntent = writeAccessLifecycle.intent(for: request.id) else {
-                throw SecretCatalogAgentError.agentWriteNotAllowed
-            }
-            try await catalogAgentWriteAuthorization.consume(
-                requestID: request.id,
-                intent: boundIntent
-            )
-            writeAccessLifecycle.markConsumed(id: request.id)
-        } catch {
-            await catalogAgentWriteAuthorization.revoke(requestID: request.id)
-            if error is CancellationError {
-                writeAccessLifecycle.markCancelled(id: request.id)
-                await emitAudit(action: "智能体目录写入授权取消", target: "catalog-write", referenceCount: 0, result: "已取消", context: operationContext, operation: .authorization, authorizationOutcome: .cancelled, status: .cancelled)
-                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-            }
-            if writeAccessLifecycle.state(for: request.id) == .expired {
-                await emitAudit(action: "智能体目录写入授权超时", target: "catalog-write", referenceCount: 0, result: "已超时", context: operationContext, operation: .authorization, authorizationOutcome: .expired, status: .expired)
-                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-            }
-            if error is VaultAppServicesRevealError || error is OperationAuthorizationError {
-                await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: operationContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-            }
-            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: operationContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-            throw error
-        }
-        return operationContext
     }
 
     public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {
-        guard let request = writeAccessLifecycle.pendingRequest(id: id) else {
-            throw SecretCatalogAgentError.invalidOperation
-        }
-        return request
+        try await catalogWriteAccessCoordinator.pendingRequest(id: id)
     }
 
     /// App cold-start/foreground discovery. The DistributedNotification path
     /// is only a live accelerator; pending requests remain authoritative in
     /// the Agent until they expire, are denied, or are consumed.
     public func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
-        writeAccessLifecycle.pendingRequestIDs
+        await catalogWriteAccessCoordinator.pendingRequestIDs()
     }
 
     public func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async throws {
-        guard let snapshot = writeAccessLifecycle.responseSnapshot(id: id) else {
-            throw SecretCatalogAgentError.invalidOperation
-        }
-        let request = snapshot.request
-        let continuation = snapshot.continuation
-        let originalContext = snapshot.auditContext
-        let approvalContext = AuditContext(
-            source: .app,
-            correlationID: originalContext?.correlationID ?? AuditContext.current?.correlationID ?? UUID(),
-            requestID: id
-        )
-        guard approved else {
-            writeAccessLifecycle.markDenied(id: id)
-            continuation.resume(throwing: SecretCatalogAgentError.agentWriteNotAllowed)
-            await emitAudit(action: "智能体目录写入授权拒绝", target: "catalog-write", referenceCount: 0, result: "已拒绝", context: approvalContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-            return
-        }
-
-        _ = writeAccessLifecycle.markAuthenticating(id: id)
-        do {
-            _ = try await approveWithTimeout(summary: catalogWriteApprovalSummary(request))
-            guard writeAccessLifecycle.state(for: id) == .authenticating,
-                  let intent = request.intent
-            else {
-                throw OperationAuthorizationError.cancelled
-            }
-            _ = await catalogAgentWriteAuthorization.approve(requestID: id, intent: intent)
-            writeAccessLifecycle.markApproved(id: id)
-            continuation.resume()
-            await emitAudit(action: "智能体目录写入授权完成", target: "catalog-write", referenceCount: 0, result: "成功", context: approvalContext, operation: .authorization, authorizationOutcome: .approved)
-        } catch let error as OperationAuthorizationError {
-            writeAccessLifecycle.markDenied(id: id)
-            await catalogAgentWriteAuthorization.revoke(requestID: id)
-            continuation.resume(throwing: error)
-            let outcome: AuditAuthorizationOutcome = error == .cancelled ? .cancelled : (error == .timeout ? .expired : .denied)
-            let result = error == .cancelled ? "已取消" : (error == .timeout ? "已超时" : "已拒绝")
-            let auditStatus: AuditStatus = error == .cancelled ? .cancelled : (error == .timeout ? .expired : .failure)
-            await emitAudit(action: "智能体目录写入授权结束", target: "catalog-write", referenceCount: 0, result: result, context: approvalContext, operation: .authorization, authorizationOutcome: outcome, status: auditStatus)
-            throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-        } catch {
-            writeAccessLifecycle.markDenied(id: id)
-            await catalogAgentWriteAuthorization.revoke(requestID: id)
-            continuation.resume(throwing: SecretCatalogAgentError.agentWriteApprovalUnavailable)
-            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: approvalContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-            throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-        }
-    }
-
-    private func catalogWriteApprovalSummary(_ request: CatalogAgentWriteAccessRequest) -> String {
-        let operation = request.intent?.operation.rawValue ?? "unknown-operation"
-        return "SVLT 需要本机身份认证来完成一次目录操作：\(operation)"
-    }
-
-    private func iso8601String(_ date: Date) -> String {
-        ISO8601DateFormatter().string(from: date)
-    }
-
-    private func expireCatalogWriteAccessRequest(id: UUID) {
-        guard let continuation = writeAccessLifecycle.markExpiredIfActive(id: id) else { return }
-        Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }
-        writeAccessNotifier.notifyQueueChanged(requestID: id)
-        continuation.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
-    }
-
-    private func cancelCatalogWriteAccessRequest(id: UUID) {
-        guard let continuation = writeAccessLifecycle.markCancelledIfActive(id: id) else { return }
-        Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }
-        writeAccessNotifier.notifyQueueChanged(requestID: id)
-        continuation.resume(throwing: CancellationError())
+        try await catalogWriteAccessCoordinator.respond(id: id, approved: approved)
     }
 
     public func catalogCreateIndex(
@@ -3054,9 +3088,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         tags: [String],
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
-        let store = try await selectedCatalogStoreForApp()
-        do {
-            let snapshot = try await store.createIndex(
+        try await withCatalogOperation { operation in
+            do {
+            let snapshot = try await operation.createIndex(
                 title: title,
                 aliases: aliases,
                 tags: tags,
@@ -3070,8 +3104,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw catalogAgentError(for: error)
             }
             do {
-                let current = try await store.snapshot()
-                let snapshot = try await store.createIndex(
+                let current = try await operation.snapshot()
+                let snapshot = try await operation.createIndex(
                     title: title,
                     aliases: aliases,
                     tags: tags,
@@ -3083,6 +3117,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             } catch let retryError as SensitiveCatalogDocumentStoreError {
                 throw catalogAgentError(for: retryError)
             }
+            }
         }
     }
 
@@ -3090,7 +3125,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         _ request: CatalogDraftRequest,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
-        let store = try await selectedCatalogStoreForApp()
+        try await withCatalogOperation { operation in
         if request.fields.contains(where: { $0.type.isSecret && $0.value != nil }) {
             try catalogMutationPolicyEngine.requireSilent(
                 CatalogMutationDescriptor(kind: .plaintextSecretInCatalog)
@@ -3118,7 +3153,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             tags: request.tags
         )
         do {
-            let snapshot = try await store.createEntry(entry, expectedRevision: expectedRevision)
+            let snapshot = try await operation.createEntry(entry, expectedRevision: expectedRevision)
             let result = CatalogWriteResult(
                 revision: snapshot.revision,
                 entry: catalogSearchService.get(entryID: entry.id, document: snapshot.document).matches.first?.entry
@@ -3130,8 +3165,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw catalogAgentError(for: error)
             }
             do {
-                let current = try await store.snapshot()
-                let snapshot = try await store.createEntry(entry, expectedRevision: current.revision)
+                let current = try await operation.snapshot()
+                let snapshot = try await operation.createEntry(entry, expectedRevision: current.revision)
                 let result = CatalogWriteResult(
                     revision: snapshot.revision,
                     entry: catalogSearchService.get(entryID: entry.id, document: snapshot.document).matches.first?.entry
@@ -3142,13 +3177,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw catalogAgentError(for: retryError)
             }
         }
+        }
     }
 
     public func catalogUpdateEntry(
         _ entry: SecretCatalogEntry,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
-        let snapshot = try await catalogSnapshotForAgent()
+        try await withCatalogOperation { operation in
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard snapshot.document.entries.contains(where: { $0.id == entry.id }) else {
             throw SecretCatalogAgentError.invalidOperation
         }
@@ -3176,7 +3213,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
 
         do {
-            let updated = try await catalogDocumentStore!.updateEntry(entry, expectedRevision: expectedRevision)
+            let updated = try await operation.updateEntry(entry, expectedRevision: expectedRevision)
             let result = CatalogWriteResult(
                 revision: updated.revision,
                 entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
@@ -3185,6 +3222,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return result
         } catch let error as SensitiveCatalogDocumentStoreError {
             throw catalogAgentError(for: error)
+        }
         }
     }
 
@@ -3196,13 +3234,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         secretInputs: [CatalogSecretInput],
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
+        try await withCatalogOperation { operation in
         // A request-owned Secure Input transaction is the only path allowed
         // to consume plaintext for its Entry. Blocking the generic editor for
         // the lifetime of the request closes the stale-Sheet race.
         guard !secureInputLifecycle.hasRequest(forEntryID: entry.id) else {
             throw SecretCatalogAgentError.invalidOperation
         }
-        let snapshot = try await catalogSnapshotForAgent()
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard expectedRevision == snapshot.revision else {
             throw SecretCatalogAgentError.revisionConflict
         }
@@ -3302,7 +3341,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw SecretCatalogAgentError.invalidOperation
             }
             do {
-                let updated = try await catalogDocumentStore!.updateEntry(entry, expectedRevision: expectedRevision)
+                let updated = try await operation.updateEntry(entry, expectedRevision: expectedRevision)
                 let result = CatalogWriteResult(
                     revision: updated.revision,
                     entry: catalogSearchService.get(entryID: entry.id, document: updated.document).matches.first?.entry
@@ -3367,7 +3406,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             guard !secureInputLifecycle.hasRequest(forEntryID: entry.id) else {
                 throw SecretCatalogAgentError.invalidOperation
             }
-            let updated = try await catalogDocumentStore!.updateEntry(finalEntry, expectedRevision: expectedRevision)
+            let updated = try await operation.updateEntry(finalEntry, expectedRevision: expectedRevision)
             await notifySavedReferencesChanged()
             let result = CatalogWriteResult(
                 revision: updated.revision,
@@ -3383,15 +3422,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             return result
         } catch let error as SensitiveCatalogDocumentStoreError {
-            if let cleanupError = await compensateCreatedReferences(createdReferences) {
+            if let cleanupError = await compensateCreatedReferences(createdReferences, operation: operation) {
                 throw cleanupError
             }
             throw catalogAgentError(for: error)
         } catch {
-            if let cleanupError = await compensateCreatedReferences(createdReferences) {
+            if let cleanupError = await compensateCreatedReferences(createdReferences, operation: operation) {
                 throw cleanupError
             }
             throw error
+        }
         }
     }
 
@@ -3412,6 +3452,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         secretRef: String,
         expectedRevision: UInt64
     ) async throws -> CatalogWriteResult {
+        try await withCatalogOperation { operation in
         let parsed: SecretReference
         do {
             parsed = try SecretReference(secretRef)
@@ -3433,12 +3474,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
 
-        let snapshot = try await catalogSnapshotForAgent()
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard expectedRevision == snapshot.revision else {
             throw SecretCatalogAgentError.revisionConflict
         }
         do {
-            let updated = try await catalogDocumentStore!.bindSecret(
+            let updated = try await operation.bindSecret(
                 parsed.description,
                 toFieldKey: key,
                 entryID: entryID,
@@ -3462,6 +3503,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw SecretCatalogAgentError.invalidCatalog
             }
         }
+        }
     }
 
     public func catalogSecureInput(
@@ -3471,10 +3513,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         plaintext: String,
         policy: SecretPolicy
     ) async throws -> (reference: String, revision: UInt64) {
+        try await withCatalogOperation { operation in
         guard !plaintext.isEmpty else {
             throw SecretCatalogAgentError.invalidOperation
         }
-        let snapshot = try await catalogSnapshotForAgent()
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard let entry = snapshot.document.entries.first(where: { $0.id == entryID }),
               let field = entry.fields.first(where: { $0.key == key }),
               field.type.isSecret
@@ -3536,7 +3579,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 )
             }
 
-            let updated = try await catalogDocumentStore!.bindSecret(
+            let updated = try await operation.bindSecret(
                 secret.description,
                 toFieldKey: key,
                 entryID: entryID,
@@ -3546,7 +3589,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return (secret.description, updated.revision)
         } catch let error as SensitiveCatalogDocumentStoreError {
             guard error == .revisionConflict else {
-                if let cleanupError = await compensateCreatedReferences([secret]) {
+                if let cleanupError = await compensateCreatedReferences([secret], operation: operation) {
                     throw cleanupError
                 }
                 throw catalogAgentError(for: error)
@@ -3556,9 +3599,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // already-encrypted reference. Never overwrite a concurrent bind.
             let current: SensitiveCatalogSnapshot
             do {
-                current = try await catalogSnapshotForAgent()
+                current = try await catalogSnapshotForAgent(using: operation)
             } catch {
-                if let cleanupError = await compensateCreatedReferences([secret]) {
+                if let cleanupError = await compensateCreatedReferences([secret], operation: operation) {
                     throw cleanupError
                 }
                 throw error
@@ -3568,13 +3611,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                   currentField.type.isSecret,
                   currentField.secretRef == nil
             else {
-                if let cleanupError = await compensateCreatedReferences([secret]) {
+                if let cleanupError = await compensateCreatedReferences([secret], operation: operation) {
                     throw cleanupError
                 }
                 throw SecretCatalogAgentError.revisionConflict
             }
             do {
-                let updated = try await catalogDocumentStore!.bindSecret(
+                let updated = try await operation.bindSecret(
                     secret.description,
                     toFieldKey: key,
                     entryID: entryID,
@@ -3583,16 +3626,17 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 await emitAudit(action: "写入目录凭据", target: "catalog", referenceCount: 1, result: "成功", operation: .catalogMutation)
                 return (secret.description, updated.revision)
             } catch let retryError as SensitiveCatalogDocumentStoreError {
-                if let cleanupError = await compensateCreatedReferences([secret]) {
+                if let cleanupError = await compensateCreatedReferences([secret], operation: operation) {
                     throw cleanupError
                 }
                 throw catalogAgentError(for: retryError)
             }
         } catch {
-            if let cleanupError = await compensateCreatedReferences([secret]) {
+            if let cleanupError = await compensateCreatedReferences([secret], operation: operation) {
                 throw cleanupError
             }
             throw error
+        }
         }
     }
 
@@ -3603,7 +3647,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// resolves the record with fresh key material when the production key
     /// provider is in use.
     public func catalogRevealField(entryID: String, key: String) async throws -> String {
-        let snapshot = try await catalogSnapshotForAgent()
+        try await withCatalogOperation { operation in
+        let snapshot = try await catalogSnapshotForAgent(using: operation)
         guard let entry = snapshot.document.entries.first(where: { $0.id == entryID }),
               let field = entry.fields.first(where: { $0.key == key }),
               field.type.isSecret,
@@ -3650,6 +3695,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             status: .displayedToUser
         )
         return plaintext
+        }
     }
 
     public func openRevealSession(references: [String], context: RevealContext) async throws -> String {
@@ -5310,10 +5356,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// unresolved and remain persisted for a later run; no secret value is
     /// loaded or included in the result.
     public func reconcilePendingCatalogSecretCleanup() async throws -> [String] {
-        guard let catalogDocumentStore else {
-            throw SecretCatalogAgentError.unavailable
-        }
-        let pending = try await catalogDocumentStore.pendingSecretCleanupReferenceIDs()
+        try await withCatalogOperation { operation in
+        let pending = try await operation.pendingSecretCleanupReferenceIDs()
         guard !pending.isEmpty else { return [] }
 
         // Cleanup metadata is authenticated, but it is still only a recovery
@@ -5321,7 +5365,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // pass and refuse to delete a record that has since become referenced.
         // A pending external change makes the accepted state unavailable, so
         // snapshot() fails closed and no deletion is attempted.
-        let current = try await catalogDocumentStore.snapshot()
+        let current = try await operation.snapshot()
         let referencedIDs = Set(current.document.entries.flatMap { entry in
             entry.fields.compactMap { field in
                 field.secretRef.flatMap { try? SecretReference($0).id }
@@ -5333,7 +5377,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         guard let recordDeleter else {
             if !resolved.isEmpty {
-                try await catalogDocumentStore.clearPendingSecretCleanup(referenceIDs: resolved)
+                try await operation.clearPendingSecretCleanup(referenceIDs: resolved)
             }
             return orphanPending
         }
@@ -5348,11 +5392,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
         }
         if !resolved.isEmpty {
-            try await catalogDocumentStore.clearPendingSecretCleanup(referenceIDs: resolved)
+            try await operation.clearPendingSecretCleanup(referenceIDs: resolved)
         }
         await notifySavedReferencesChanged()
         orphanPending = remaining
         return orphanPending
+        }
     }
 
     private static func canonicalReference(_ reference: String) -> String? {
@@ -5391,6 +5436,19 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             authorizationOutcome: authorizationOutcome,
             authorizationMode: authorizationMode,
             status: status
+        )
+    }
+
+    private func emitCatalogWriteAccessAudit(_ event: CatalogWriteAccessAuditEvent) async {
+        await emitAudit(
+            action: event.action,
+            target: "catalog-write",
+            referenceCount: 0,
+            result: event.result,
+            context: event.context,
+            operation: .authorization,
+            authorizationOutcome: event.authorizationOutcome,
+            status: event.status
         )
     }
 
@@ -5447,35 +5505,29 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
     }
 
-    private func selectedCatalogStoreForApp() async throws -> SensitiveCatalogDocumentStore {
+    private func withCatalogOperation<T>(
+        _ body: (CatalogDocumentOperation) async throws -> T
+    ) async throws -> T {
+        let operation = try await beginCatalogOperation()
+        do {
+            let result = try await body(operation)
+            await endCatalogOperation(operation)
+            return result
+        } catch {
+            await endCatalogOperation(operation)
+            throw error
+        }
+    }
+
+    private func beginCatalogOperation() async throws -> CatalogDocumentOperation {
         guard let catalogDocumentOwner else {
             throw SecretCatalogAgentError.unavailable
         }
-        do {
-            return try await catalogDocumentOwner.selectedStore()
-        } catch let error as SecretCatalogAgentError {
-            throw error
-        } catch let error as SensitiveCatalogDocumentStoreError {
-            Self.logCatalogMutationFailure(operation: "catalog-snapshot", phase: .snapshot, error: error)
-            switch error {
-            case .legacyCatalogUnsupported:
-                throw SecretCatalogAgentError.legacyCatalogUnsupported
-            case .integrityMissing:
-                throw SecretCatalogAgentError.integrityMissing
-            case .externalModification:
-                throw SecretCatalogAgentError.externalModification
-            case .pendingExternalChange:
-                throw SecretCatalogAgentError.pendingExternalChange
-            case .revisionConflict:
-                throw SecretCatalogAgentError.revisionConflict
-            case .invalidOperation:
-                throw SecretCatalogAgentError.invalidOperation
-            default:
-                throw SecretCatalogAgentError.invalidCatalog
-            }
-        } catch {
-            throw SecretCatalogAgentError.unavailable
-        }
+        return try await catalogDocumentOwner.beginOperation()
+    }
+
+    private func endCatalogOperation(_ operation: CatalogDocumentOperation) async {
+        await operation.end()
     }
 
     /// Keep App-control errors stable so the UI can distinguish a stale
@@ -5513,15 +5565,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// the remaining records after the first failure. Any failure is made
     /// explicit to the caller and persisted as opaque cleanup metadata.
     private func compensateCreatedReferences(
-        _ references: [SecretReference]
+        _ references: [SecretReference],
+        operation: CatalogDocumentOperation? = nil
     ) async -> SecretCatalogAgentError? {
         guard !references.isEmpty else { return nil }
         guard let recordDeleter else {
-            guard let catalogDocumentStore else {
-                return .cleanupRequired
-            }
+            guard let operation else { return .cleanupRequired }
             do {
-                try await catalogDocumentStore.recordPendingSecretCleanup(
+                try await operation.recordPendingSecretCleanup(
                     referenceIDs: references.map(\.id)
                 )
             } catch {
@@ -5546,11 +5597,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // The cleanup record contains only opaque IDs. If its write itself
         // fails, the operation still reports cleanupRequired; the caller must
         // not mistake a best-effort compensation failure for a clean rollback.
-        guard let catalogDocumentStore else {
-            return .cleanupRequired
-        }
+        guard let operation else { return .cleanupRequired }
         do {
-            try await catalogDocumentStore.recordPendingSecretCleanup(referenceIDs: failedIDs)
+            try await operation.recordPendingSecretCleanup(referenceIDs: failedIDs)
         } catch {
             return .cleanupRequired
         }
@@ -5559,9 +5608,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func catalogSnapshotForAgent() async throws -> SensitiveCatalogSnapshot {
-        let catalogDocumentStore = try await selectedCatalogStoreForApp()
+        try await withCatalogOperation { operation in
+            try await catalogSnapshotForAgent(using: operation)
+        }
+    }
+
+    private func catalogSnapshotForAgent(
+        using operation: CatalogDocumentOperation
+    ) async throws -> SensitiveCatalogSnapshot {
         do {
-            let snapshot = try await catalogDocumentStore.snapshot()
+            let snapshot = try await operation.snapshot()
             guard snapshot.integrity == .verified else {
                 throw SecretCatalogAgentError.unavailable
             }
@@ -5600,8 +5656,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// access probe. This deliberately does not use the App process or a test
     /// temporary directory as a permission substitute.
     private func catalogFilePreflightForAgent() async throws -> CatalogFilePreflight {
-        let catalogDocumentStore = try await selectedCatalogStoreForApp()
-        return try await catalogDocumentStore.preflightFileAccess()
+        try await withCatalogOperation { operation in
+            try await operation.preflightFileAccess()
+        }
     }
 
     private func validateSafeCatalogMutation(_ kind: CatalogMutationKind) async throws {
