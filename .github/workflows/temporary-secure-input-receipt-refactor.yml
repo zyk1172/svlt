@@ -46,14 +46,13 @@ jobs:
           assert app.count(old_init_assignment) == 1
           app = app.replace(old_init_assignment, new_init_assignment, 1)
 
-          old_load = """        let persistedSecureInputReceipts = Self.loadSecureInputReceipts(
-              from: resolvedSecureInputReceiptURL,
-              now: now()
+          load_start = app.index("        let persistedSecureInputReceipts = Self.loadSecureInputReceipts(")
+          load_end = app.index("        self.secureInputTransactions = CatalogSecureInputTransaction", load_start)
+          app = (
+              app[:load_start]
+              + "        let persistedSecureInputReceipts = secureInputReceiptStore.load(now: now())\n"
+              + app[load_end:]
           )
-          """
-          new_load = "        let persistedSecureInputReceipts = secureInputReceiptStore.load(now: now())\n"
-          assert app.count(old_load) == 1
-          app = app.replace(old_load, new_load, 1)
 
           persist_start = app.index("    private func persistSecureInputReceipts() {")
           audit_load_start = app.index("    private static func loadAuditHealth", persist_start)
