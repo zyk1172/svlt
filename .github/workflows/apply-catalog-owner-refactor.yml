@@ -1,0 +1,54 @@
+name: Apply Catalog owner refactor
+
+on:
+  push:
+    branches: [codex/daemon-owned-catalog-state]
+    paths:
+      - scripts/apply-catalog-owner-refactor.py
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/daemon-owned-catalog-state
+          fetch-depth: 0
+      - name: Apply deterministic refactor
+        run: python3 scripts/apply-catalog-owner-refactor.py
+      - name: Install XcodeGen when unavailable
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+      - name: Regenerate Xcode project
+        run: xcodegen generate --quiet --spec project.yml
+      - name: Verify architecture checks
+        run: |
+          bash scripts/check-architecture-budgets.sh
+          bash scripts/check-catalog-owner-boundary.sh
+          bash scripts/check-runtime-mutation-boundary.sh
+          bash scripts/check-xcodegen-parity.sh
+      - name: Run macOS test suite
+        run: |
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/svlt-derived" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Commit generated refactor
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .
+          git diff --cached --check
+          git commit -m 'refactor: make daemon own mutable catalog state'
+          git push origin HEAD:codex/daemon-owned-catalog-state
