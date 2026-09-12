@@ -33,13 +33,16 @@ jobs:
           transaction = transaction_path.read_text()
           tests = tests_path.read_text()
 
-          old_properties = """    private var secureInputTransactions = CatalogSecureInputTransaction()
-          private var secureInputExpiryTasks: [UUID: Task<Void, Never>] = [:]
-          private var secureInputAuditContexts: [UUID: AuditContext] = [:]
-          """
-          new_properties = "    private var secureInputLifecycle = CatalogSecureInputLifecycle()\n"
-          assert app.count(old_properties) == 1
-          app = app.replace(old_properties, new_properties, 1)
+          old_transaction_property = "    private var secureInputTransactions = CatalogSecureInputTransaction()\n"
+          old_expiry_property = "    private var secureInputExpiryTasks: [UUID: Task<Void, Never>] = [:]\n"
+          old_audit_property = "    private var secureInputAuditContexts: [UUID: AuditContext] = [:]\n"
+          new_property = "    private var secureInputLifecycle = CatalogSecureInputLifecycle()\n"
+          assert app.count(old_transaction_property) == 1
+          assert app.count(old_expiry_property) == 1
+          assert app.count(old_audit_property) == 1
+          app = app.replace(old_transaction_property, new_property, 1)
+          app = app.replace(old_expiry_property, "", 1)
+          app = app.replace(old_audit_property, "", 1)
 
           old_init = "        self.secureInputTransactions = CatalogSecureInputTransaction(receipts: persistedSecureInputReceipts)\n"
           new_init = "        self.secureInputLifecycle = CatalogSecureInputLifecycle(receipts: persistedSecureInputReceipts)\n"
