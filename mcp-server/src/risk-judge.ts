@@ -216,8 +216,8 @@ async function judgeOperation(
 
 function canonicalOperation(descriptor: SecretOperationDescriptor): Record<string, unknown> {
   const batch = descriptor.sshCommandBatch?.commands.map((command) => ({
-    executable: boundedText(command.executable, 512),
-    arguments: command.arguments.map((argument) => boundedText(argument, 2_048))
+    executable: operationText(command.executable, 512),
+    arguments: command.arguments.map((argument) => operationText(argument, 2_048))
   }));
 
   const operation: Record<string, unknown> = {
@@ -228,26 +228,27 @@ function canonicalOperation(descriptor: SecretOperationDescriptor): Record<strin
     protocol: descriptor.protocolType ?? undefined,
     command: descriptor.command === undefined || descriptor.command === null
       ? undefined
-      : boundedText(descriptor.command, MAX_OPERATION_CHARS),
+      : operationText(descriptor.command, MAX_OPERATION_CHARS),
     sshBatch: batch,
     httpMethod: descriptor.httpMethod ?? undefined,
     url: descriptor.url === undefined || descriptor.url === null
       ? undefined
-      : boundedText(descriptor.url, 2_048),
+      : operationText(descriptor.url, 2_048),
     databaseStatement: descriptor.databaseStatement === undefined || descriptor.databaseStatement === null
       ? undefined
-      : boundedText(descriptor.databaseStatement, MAX_OPERATION_CHARS),
+      : operationText(descriptor.databaseStatement, MAX_OPERATION_CHARS),
     fileOperation: descriptor.fileOperation ?? undefined,
     fileTarget: descriptor.fileTarget === undefined || descriptor.fileTarget === null
       ? undefined
-      : boundedText(descriptor.fileTarget, 2_048),
-    requestedEffects: descriptor.requestedEffects.slice(0, 16).map((effect) => boundedText(effect, 256))
+      : operationText(descriptor.fileTarget, 2_048),
+    requestedEffects: descriptor.requestedEffects.slice(0, 16).map((effect) => operationText(effect, 256))
   };
 
   // JSON.stringify omits undefined values. Deliberately omit `parameters`,
   // agent risk reason, chat history, and secret:// IDs: they are unnecessary
   // for semantic risk classification and would increase prompt-injection and
-  // latency surface.
+  // latency surface. Opaque references embedded in command text are replaced
+  // locally before any remote judge request.
   return operation;
 }
 
@@ -298,6 +299,13 @@ function encodeJudgeResult(result: RiskJudgeResult): string {
     `confidence=${result.confidence.toFixed(2)}`,
     `reason=${reason}`
   ].join("|");
+}
+
+function operationText(value: string, maxCharacters: number): string {
+  return boundedText(
+    value.replace(/secret:\/\/[A-Za-z0-9._~-]+/gu, "<secret-reference>"),
+    maxCharacters
+  );
 }
 
 function boundedText(value: string, maxCharacters: number): string {
