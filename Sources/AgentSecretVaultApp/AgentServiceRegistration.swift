@@ -1,5 +1,7 @@
 import Foundation
 import ServiceManagement
+import UserNotifications
+import VaultService
 
 public enum AgentServiceStatus: String, Equatable, Sendable {
     case registered
@@ -27,6 +29,118 @@ public enum AgentServiceStatus: String, Equatable, Sendable {
     }
 }
 
+struct ApprovalNotificationOnceGate: Sendable {
+    private static let retainedIDLimit = 256
+    private var notifiedIDs: Set<UUID> = []
+    private var insertionOrder: [UUID] = []
+
+    mutating func shouldNotify(approvalID: UUID) -> Bool {
+        guard notifiedIDs.insert(approvalID).inserted else {
+            return false
+        }
+        insertionOrder.append(approvalID)
+        if insertionOrder.count > Self.retainedIDLimit {
+            let expiredID = insertionOrder.removeFirst()
+            notifiedIDs.remove(expiredID)
+        }
+        return true
+    }
+}
+
+enum ApprovalNotificationCopy {
+    static let title = "SVLT 需要审批"
+    static let body = "有一项操作正在等待你的确认"
+}
+
+@MainActor
+final class ApprovalNotificationService {
+    static let shared = ApprovalNotificationService()
+
+    private var onceGate = ApprovalNotificationOnceGate()
+
+    func notifyOnce(approvalID: UUID) {
+        guard onceGate.shouldNotify(approvalID: approvalID) else {
+            return
+        }
+        Self.deliverSystemNotification(approvalID: approvalID)
+    }
+
+    /// Notification delivery is deliberately fire-and-forget. Authorization
+    /// denial, unavailable notification settings, or add-request failures can
+    /// never propagate back into the operation-approval flow.
+    private nonisolated static func deliverSystemNotification(approvalID: UUID) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                addNotification(approvalID: approvalID, center: center)
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    guard granted else { return }
+                    addNotification(approvalID: approvalID, center: center)
+                }
+            case .denied:
+                return
+            @unknown default:
+                return
+            }
+        }
+    }
+
+    private nonisolated static func addNotification(
+        approvalID: UUID,
+        center: UNUserNotificationCenter
+    ) {
+        let content = UNMutableNotificationContent()
+        content.title = ApprovalNotificationCopy.title
+        content.body = ApprovalNotificationCopy.body
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "svlt-approval-\(approvalID.uuidString)",
+            content: content,
+            trigger: nil
+        )
+        center.add(request) { _ in
+            // Best effort by design. Approval must remain independent from
+            // notification permission and delivery failures.
+        }
+    }
+}
+
+@MainActor
+private final class ApprovalNotificationBridge: NSObject, UNUserNotificationCenterDelegate {
+    private let center = UNUserNotificationCenter.current()
+    private var observer: NSObjectProtocol?
+
+    func start() {
+        guard observer == nil else { return }
+        center.delegate = self
+        observer = DistributedNotificationCenter.default().addObserver(
+            forName: AgentApprovalPresentationNotifier.notificationName,
+            object: nil,
+            queue: .main
+        ) { notification in
+            guard let rawID = notification.userInfo?["approvalID"] as? String,
+                  let approvalID = UUID(uuidString: rawID)
+            else {
+                return
+            }
+            Task { @MainActor in
+                ApprovalNotificationService.shared.notifyOnce(approvalID: approvalID)
+            }
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+}
+
 /// UI-only control plane for the launchd-managed Agent. It never starts a
 /// second in-process server and it never stops the Agent when the App exits.
 @MainActor
@@ -36,6 +150,7 @@ public final class AgentServiceRegistration {
 
     private let service: SMAppService
     private let defaults: UserDefaults
+    private let approvalNotificationBridge: ApprovalNotificationBridge?
     private let disabledKey = "agentServiceExplicitlyDisabled"
     private let registeredVersionKey = "agentServiceRegisteredBundleVersion"
     private let registeredAgentFingerprintKey = "agentServiceRegisteredAgentFingerprint"
@@ -44,8 +159,17 @@ public final class AgentServiceRegistration {
         service: SMAppService? = nil,
         defaults: UserDefaults = .standard
     ) {
+        let usesProductionService = service == nil
         self.service = service ?? SMAppService.agent(plistName: Self.plistName)
         self.defaults = defaults
+
+        if usesProductionService {
+            let bridge = ApprovalNotificationBridge()
+            self.approvalNotificationBridge = bridge
+            bridge.start()
+        } else {
+            self.approvalNotificationBridge = nil
+        }
     }
 
     public var status: AgentServiceStatus {
