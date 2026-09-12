@@ -365,16 +365,14 @@ struct CatalogSecureInputLifecycle: Sendable {
     }
 
     mutating func insert(
-        _ request: CatalogAgentSecureInputRequest,
-        auditContext: AuditContext
-    ) {
-        transaction.insert(request)
-        auditContexts[request.id] = auditContext
-    }
-
-    mutating func setExpiryTask(_ task: Task<Void, Never>, for id: UUID) {
-        expiryTasks[id] = task
-    }
+    _ request: CatalogAgentSecureInputRequest,
+    auditContext: AuditContext,
+    expiryTask: Task<Void, Never>
+) {
+    transaction.insert(request)
+    auditContexts[request.id] = auditContext
+    expiryTasks[request.id] = expiryTask
+}
 
     mutating func beginSubmission(
         id: UUID,

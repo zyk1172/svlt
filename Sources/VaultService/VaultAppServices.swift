@@ -2424,13 +2424,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             expiresAt: createdAt.addingTimeInterval(180),
             targets: resolvedTargets
         )
-        secureInputLifecycle.insert(request, auditContext: operationContext)
-let expiryTask = Task { [weak self] in
+        let expiryTask = Task { [weak self] in
     try? await Task.sleep(for: .seconds(180))
     guard !Task.isCancelled else { return }
     await self?.expireCatalogSecureInputRequest(id: request.id)
 }
-secureInputLifecycle.setExpiryTask(expiryTask, for: request.id)
+secureInputLifecycle.insert(
+    request,
+    auditContext: operationContext,
+    expiryTask: expiryTask
+)
         await emitAudit(
             action: "智能体安全输入请求",
             target: "catalog-field",

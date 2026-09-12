@@ -191,8 +191,11 @@ private let transactionFieldKey = "password"
         try? await Task.sleep(for: .seconds(60))
     }
 
-    lifecycle.insert(request, auditContext: auditContext)
-    lifecycle.setExpiryTask(expiryTask, for: requestID)
+    lifecycle.insert(
+    request,
+    auditContext: auditContext,
+    expiryTask: expiryTask
+)
 
     #expect(lifecycle.request(id: requestID) == request)
     #expect(lifecycle.auditContext(for: requestID)?.requestID == requestID)
