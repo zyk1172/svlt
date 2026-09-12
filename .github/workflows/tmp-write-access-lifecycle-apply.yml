@@ -30,7 +30,14 @@ jobs:
           path = Path('Sources/VaultService/VaultAppServices.swift')
           text = path.read_text()
 
-          enum_block = (
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
               'private enum CatalogWriteAccessState: Sendable {\n'
               '    case pending\n'
               '    case authenticating\n'
@@ -39,204 +46,175 @@ jobs:
               '    case denied\n'
               '    case expired\n'
               '    case cancelled\n'
-              '}\n\n'
+              '}\n\n',
+              '',
+              'state enum'
           )
-          if text.count(enum_block) != 1:
-              raise SystemExit('expected CatalogWriteAccessState exactly once')
-          text = text.replace(enum_block, '', 1)
 
           box_start = text.index('private final class CatalogWriteAccessContinuationBox: @unchecked Sendable {')
           box_end_marker = '\n}\n\npublic actor VaultAppServices:'
           box_end = text.index(box_end_marker, box_start)
           text = text[:box_start] + 'public actor VaultAppServices:' + text[box_end + len(box_end_marker):]
 
-          fields = (
+          replace_once(
               '    private var pendingWriteAccessRequests: [UUID: CatalogAgentWriteAccessRequest] = [:]\n'
               '    private var writeAccessContinuations: [UUID: CatalogWriteAccessContinuationBox] = [:]\n'
               '    private var writeAccessStates: [UUID: CatalogWriteAccessState] = [:]\n'
               '    /// The Agent creates the request context; the App later uses the same\n'
               '    /// correlation/request IDs when it records the device-owner decision.\n'
-              '    private var pendingWriteAuditContexts: [UUID: AuditContext] = [:]\n'
-          )
-          if text.count(fields) != 1:
-              raise SystemExit('expected write access state fields exactly once')
-          text = text.replace(
-              fields,
+              '    private var pendingWriteAuditContexts: [UUID: AuditContext] = [:]\n',
               '    private var writeAccessLifecycle = CatalogWriteAccessLifecycle()\n',
-              1
+              'state fields'
           )
 
-          lifecycle_start = text.index('    private func requestAgentCatalogAuthorization(')
-          lifecycle_end = text.index('    private func catalogWriteApprovalSummary(', lifecycle_start)
-          new_lifecycle_block = '''    private func requestAgentCatalogAuthorization(
-        _ intent: CatalogAgentWriteIntent,
-        reasonCategory: CatalogAgentWriteReasonCategory
-    ) async throws -> AuditContext {
-        let requestID = UUID()
-        // IPCRequestHandler installs the trusted Agent context. The explicit
-        // fallback exists only for legacy in-process callers/tests that invoke
-        // this service directly; it is not used by the production transport.
-        let callerContext = AuditContext.current ?? AuditContext(source: .agent)
-        let operationContext = callerContext.withRequestID(requestID)
-        let createdAt = now()
-        let expiry = createdAt.addingTimeInterval(CatalogAgentWriteAuthorization.ticketLifetime)
-        let request = CatalogAgentWriteAccessRequest(
-            id: requestID,
-            source: .mcpClient,
-            reasonCategory: reasonCategory,
-            duration: .singleUse,
-            createdAt: iso8601String(createdAt),
-            intent: intent.bound(to: requestID),
-            expiresAt: iso8601String(expiry),
-            verifiedSource: nil
-        )
-        let continuationBox = writeAccessLifecycle.insert(
-            request,
-            auditContext: operationContext
-        )
-        await emitAudit(
-            action: "智能体目录写入授权请求",
-            target: "catalog-write",
-            referenceCount: 0,
-            result: "请求中",
-            context: operationContext,
-            operation: .authorization,
-            authorizationOutcome: .requested,
-            status: .requested
-        )
+          replace_once(
+              '        pendingWriteAccessRequests[request.id] = request\n'
+              '        writeAccessStates[request.id] = .pending\n'
+              '        pendingWriteAuditContexts[request.id] = operationContext\n'
+              '        let continuationBox = CatalogWriteAccessContinuationBox()\n'
+              '        writeAccessContinuations[request.id] = continuationBox\n',
+              '        let continuationBox = writeAccessLifecycle.insert(\n'
+              '            request,\n'
+              '            auditContext: operationContext\n'
+              '        )\n',
+              'request insertion'
+          )
 
-        var timeoutTask: Task<Void, Never>?
-        defer {
-            timeoutTask?.cancel()
-            writeAccessLifecycle.cleanup(id: request.id)
-        }
-        do {
-            try await withTaskCancellationHandler(operation: {
-                try await withCheckedThrowingContinuation { continuation in
-                    continuationBox.store(continuation)
-                    timeoutTask = Task { [weak self] in
-                        try? await Task.sleep(for: .seconds(CatalogAgentWriteAuthorization.ticketLifetime))
-                        guard !Task.isCancelled else { return }
-                        await self?.expireCatalogWriteAccessRequest(id: request.id)
-                    }
-                    writeAccessNotifier.present(request)
-                }
-            }, onCancel: { [weak self] in
-                Task { await self?.cancelCatalogWriteAccessRequest(id: request.id) }
-            })
-            guard let boundIntent = writeAccessLifecycle.intent(for: request.id) else {
-                throw SecretCatalogAgentError.agentWriteNotAllowed
-            }
-            try await catalogAgentWriteAuthorization.consume(
-                requestID: request.id,
-                intent: boundIntent
-            )
-            writeAccessLifecycle.markConsumed(id: request.id)
-        } catch {
-            await catalogAgentWriteAuthorization.revoke(requestID: request.id)
-            if error is CancellationError {
-                writeAccessLifecycle.markCancelled(id: request.id)
-                await emitAudit(action: "智能体目录写入授权取消", target: "catalog-write", referenceCount: 0, result: "已取消", context: operationContext, operation: .authorization, authorizationOutcome: .cancelled, status: .cancelled)
-                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-            }
-            if writeAccessLifecycle.state(for: request.id) == .expired {
-                await emitAudit(action: "智能体目录写入授权超时", target: "catalog-write", referenceCount: 0, result: "已超时", context: operationContext, operation: .authorization, authorizationOutcome: .expired, status: .expired)
-                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-            }
-            if error is VaultAppServicesRevealError || error is OperationAuthorizationError {
-                await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: operationContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-                throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-            }
-            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: operationContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-            throw error
-        }
-        return operationContext
-    }
+          replace_once(
+              '        defer {\n'
+              '            timeoutTask?.cancel()\n'
+              '            pendingWriteAccessRequests.removeValue(forKey: request.id)\n'
+              '            writeAccessContinuations.removeValue(forKey: request.id)\n'
+              '            pendingWriteAuditContexts.removeValue(forKey: request.id)\n'
+              '            pruneWriteAccessStates()\n'
+              '        }\n',
+              '        defer {\n'
+              '            timeoutTask?.cancel()\n'
+              '            writeAccessLifecycle.cleanup(id: request.id)\n'
+              '        }\n',
+              'request cleanup'
+          )
 
-    public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {
-        guard let request = writeAccessLifecycle.pendingRequest(id: id) else {
-            throw SecretCatalogAgentError.invalidOperation
-        }
-        return request
-    }
+          replace_once(
+              '            guard let boundIntent = pendingWriteAccessRequests[request.id]?.intent else {\n',
+              '            guard let boundIntent = writeAccessLifecycle.intent(for: request.id) else {\n',
+              'bound intent'
+          )
+          replace_once(
+              '            writeAccessStates[request.id] = .consumed\n',
+              '            writeAccessLifecycle.markConsumed(id: request.id)\n',
+              'consumed state'
+          )
+          replace_once(
+              '                writeAccessStates[request.id] = .cancelled\n',
+              '                writeAccessLifecycle.markCancelled(id: request.id)\n',
+              'cancelled catch state'
+          )
+          replace_once(
+              '            if writeAccessStates[request.id] == .expired {\n',
+              '            if writeAccessLifecycle.state(for: request.id) == .expired {\n',
+              'expired catch check'
+          )
 
-    /// App cold-start/foreground discovery. The DistributedNotification path
-    /// is only a live accelerator; pending requests remain authoritative in
-    /// the Agent until they expire, are denied, or are consumed.
-    public func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {
-        writeAccessLifecycle.pendingRequestIDs
-    }
+          replace_once(
+              '    public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {\n'
+              '        guard let request = pendingWriteAccessRequests[id],\n'
+              '              writeAccessStates[id] == .pending || writeAccessStates[id] == .authenticating\n'
+              '        else {\n'
+              '            throw SecretCatalogAgentError.invalidOperation\n'
+              '        }\n'
+              '        return request\n'
+              '    }\n',
+              '    public func pendingCatalogWriteAccessRequest(id: UUID) async throws -> CatalogAgentWriteAccessRequest {\n'
+              '        guard let request = writeAccessLifecycle.pendingRequest(id: id) else {\n'
+              '            throw SecretCatalogAgentError.invalidOperation\n'
+              '        }\n'
+              '        return request\n'
+              '    }\n',
+              'pending request lookup'
+          )
 
-    public func respondToCatalogWriteAccessRequest(id: UUID, approved: Bool) async throws {
-        guard let snapshot = writeAccessLifecycle.responseSnapshot(id: id) else {
-            throw SecretCatalogAgentError.invalidOperation
-        }
-        let request = snapshot.request
-        let continuation = snapshot.continuation
-        let originalContext = snapshot.auditContext
-        let approvalContext = AuditContext(
-            source: .app,
-            correlationID: originalContext?.correlationID ?? AuditContext.current?.correlationID ?? UUID(),
-            requestID: id
-        )
-        guard approved else {
-            writeAccessLifecycle.markDenied(id: id)
-            continuation.resume(throwing: SecretCatalogAgentError.agentWriteNotAllowed)
-            await emitAudit(action: "智能体目录写入授权拒绝", target: "catalog-write", referenceCount: 0, result: "已拒绝", context: approvalContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-            return
-        }
+          replace_once(
+              '    public func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {\n'
+              '        pendingWriteAccessRequests.keys\n'
+              '            .filter { writeAccessStates[$0] == .pending || writeAccessStates[$0] == .authenticating }\n'
+              '            .sorted { lhs, rhs in\n'
+              '                (pendingWriteAccessRequests[lhs]?.createdAt ?? "") <\n'
+              '                    (pendingWriteAccessRequests[rhs]?.createdAt ?? "")\n'
+              '            }\n'
+              '    }\n',
+              '    public func pendingCatalogWriteAccessRequestIDs() async throws -> [UUID] {\n'
+              '        writeAccessLifecycle.pendingRequestIDs\n'
+              '    }\n',
+              'pending request ids'
+          )
 
-        _ = writeAccessLifecycle.markAuthenticating(id: id)
-        do {
-            _ = try await approveWithTimeout(summary: catalogWriteApprovalSummary(request))
-            guard writeAccessLifecycle.state(for: id) == .authenticating,
-                  let intent = request.intent
-            else {
-                throw OperationAuthorizationError.cancelled
-            }
-            _ = await catalogAgentWriteAuthorization.approve(requestID: id, intent: intent)
-            writeAccessLifecycle.markApproved(id: id)
-            continuation.resume()
-            await emitAudit(action: "智能体目录写入授权完成", target: "catalog-write", referenceCount: 0, result: "成功", context: approvalContext, operation: .authorization, authorizationOutcome: .approved)
-        } catch let error as OperationAuthorizationError {
-            writeAccessLifecycle.markDenied(id: id)
-            await catalogAgentWriteAuthorization.revoke(requestID: id)
-            continuation.resume(throwing: error)
-            let outcome: AuditAuthorizationOutcome = error == .cancelled ? .cancelled : (error == .timeout ? .expired : .denied)
-            let result = error == .cancelled ? "已取消" : (error == .timeout ? "已超时" : "已拒绝")
-            let auditStatus: AuditStatus = error == .cancelled ? .cancelled : (error == .timeout ? .expired : .failure)
-            await emitAudit(action: "智能体目录写入授权结束", target: "catalog-write", referenceCount: 0, result: result, context: approvalContext, operation: .authorization, authorizationOutcome: outcome, status: auditStatus)
-            throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-        } catch {
-            writeAccessLifecycle.markDenied(id: id)
-            await catalogAgentWriteAuthorization.revoke(requestID: id)
-            continuation.resume(throwing: SecretCatalogAgentError.agentWriteApprovalUnavailable)
-            await emitAudit(action: "智能体目录写入授权失败", target: "catalog-write", referenceCount: 0, result: "失败", context: approvalContext, operation: .authorization, authorizationOutcome: .denied, status: .failure)
-            throw SecretCatalogAgentError.agentWriteApprovalUnavailable
-        }
-    }
+          replace_once(
+              '        guard let request = pendingWriteAccessRequests[id],\n'
+              '              writeAccessStates[id] == .pending,\n'
+              '              let continuation = writeAccessContinuations[id]\n'
+              '        else {\n'
+              '            throw SecretCatalogAgentError.invalidOperation\n'
+              '        }\n'
+              '        let originalContext = pendingWriteAuditContexts[id]\n',
+              '        guard let snapshot = writeAccessLifecycle.responseSnapshot(id: id) else {\n'
+              '            throw SecretCatalogAgentError.invalidOperation\n'
+              '        }\n'
+              '        let request = snapshot.request\n'
+              '        let continuation = snapshot.continuation\n'
+              '        let originalContext = snapshot.auditContext\n',
+              'response snapshot'
+          )
 
-'''
-          text = text[:lifecycle_start] + new_lifecycle_block + text[lifecycle_end:]
+          replace_once(
+              '            writeAccessStates[id] = .denied\n'
+              '            continuation.resume(throwing: SecretCatalogAgentError.agentWriteNotAllowed)\n',
+              '            writeAccessLifecycle.markDenied(id: id)\n'
+              '            continuation.resume(throwing: SecretCatalogAgentError.agentWriteNotAllowed)\n',
+              'explicit denial'
+          )
+          replace_once(
+              '        writeAccessStates[id] = .authenticating\n',
+              '        _ = writeAccessLifecycle.markAuthenticating(id: id)\n',
+              'authenticating state'
+          )
+          replace_once(
+              '            guard writeAccessStates[id] == .authenticating,\n',
+              '            guard writeAccessLifecycle.state(for: id) == .authenticating,\n',
+              'authenticating check'
+          )
+          replace_once(
+              '            writeAccessStates[id] = .approved\n',
+              '            writeAccessLifecycle.markApproved(id: id)\n',
+              'approved state'
+          )
 
-          terminal_start = text.index('    private func expireCatalogWriteAccessRequest(id: UUID) {')
-          terminal_end = text.index('    public func catalogCreateIndex(', terminal_start)
-          new_terminal_block = '''    private func expireCatalogWriteAccessRequest(id: UUID) {
-        guard let continuation = writeAccessLifecycle.markExpiredIfActive(id: id) else { return }
-        Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }
-        writeAccessNotifier.notifyQueueChanged(requestID: id)
-        continuation.resume(throwing: VaultAppServicesRevealError.revealUnavailable)
-    }
+          denied_assignment = '            writeAccessStates[id] = .denied\n'
+          if text.count(denied_assignment) != 2:
+              raise SystemExit(f'catch denied states: expected 2 matches, got {text.count(denied_assignment)}')
+          text = text.replace(
+              denied_assignment,
+              '            writeAccessLifecycle.markDenied(id: id)\n'
+          )
 
-    private func cancelCatalogWriteAccessRequest(id: UUID) {
-        guard let continuation = writeAccessLifecycle.markCancelledIfActive(id: id) else { return }
-        Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }
-        writeAccessNotifier.notifyQueueChanged(requestID: id)
-        continuation.resume(throwing: CancellationError())
-    }
-
-'''
-          text = text[:terminal_start] + new_terminal_block + text[terminal_end:]
+          expire_start = text.index('    private func expireCatalogWriteAccessRequest(id: UUID) {')
+          prune_end = text.index('    public func catalogCreateIndex(', expire_start)
+          old_terminal = text[expire_start:prune_end]
+          new_terminal = (
+              '    private func expireCatalogWriteAccessRequest(id: UUID) {\n'
+              '        guard let continuation = writeAccessLifecycle.markExpiredIfActive(id: id) else { return }\n'
+              '        Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }\n'
+              '        writeAccessNotifier.notifyQueueChanged(requestID: id)\n'
+              '        continuation.resume(throwing: VaultAppServicesRevealError.revealUnavailable)\n'
+              '    }\n\n'
+              '    private func cancelCatalogWriteAccessRequest(id: UUID) {\n'
+              '        guard let continuation = writeAccessLifecycle.markCancelledIfActive(id: id) else { return }\n'
+              '        Task { await catalogAgentWriteAuthorization.revoke(requestID: id) }\n'
+              '        writeAccessNotifier.notifyQueueChanged(requestID: id)\n'
+              '        continuation.resume(throwing: CancellationError())\n'
+              '    }\n\n'
+          )
+          text = text[:expire_start] + new_terminal + text[prune_end:]
 
           forbidden = [
               'pendingWriteAccessRequests',
