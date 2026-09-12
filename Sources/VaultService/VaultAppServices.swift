@@ -2425,15 +2425,15 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             targets: resolvedTargets
         )
         let expiryTask = Task { [weak self] in
-    try? await Task.sleep(for: .seconds(180))
-    guard !Task.isCancelled else { return }
-    await self?.expireCatalogSecureInputRequest(id: request.id)
-}
-secureInputLifecycle.insert(
-    request,
-    auditContext: operationContext,
-    expiryTask: expiryTask
-)
+            try? await Task.sleep(for: .seconds(180))
+            guard !Task.isCancelled else { return }
+            await self?.expireCatalogSecureInputRequest(id: request.id)
+        }
+        secureInputLifecycle.insert(
+            request,
+            auditContext: operationContext,
+            expiryTask: expiryTask
+        )
         await emitAudit(
             action: "智能体安全输入请求",
             target: "catalog-field",
@@ -2649,13 +2649,13 @@ secureInputLifecycle.insert(
         auditStatus: AuditStatus
     ) async {
         guard let completion = secureInputLifecycle.finish(
-    id: id,
-    status: status,
-    terminalDate: now()
-) else { return }
-let request = completion.request
-persistSecureInputReceipts()
-let context = completion.auditContext
+            id: id,
+            status: status,
+            terminalDate: now()
+        ) else { return }
+        let request = completion.request
+        persistSecureInputReceipts()
+        let context = completion.auditContext
         secureInputNotifier.notifyQueueChanged(requestID: id)
         await emitAudit(
             action: action,
