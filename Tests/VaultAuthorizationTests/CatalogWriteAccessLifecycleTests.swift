@@ -59,7 +59,8 @@ import VaultCore
     )
 
     #expect(lifecycle.pendingRequestIDs == [earlierID, laterID])
-    #expect(lifecycle.markAuthenticating(id: earlierID))
+    let markedAuthenticating = lifecycle.markAuthenticating(id: earlierID)
+    #expect(markedAuthenticating)
     #expect(lifecycle.pendingRequest(id: earlierID)?.id == earlierID)
     #expect(lifecycle.pendingRequestIDs == [earlierID, laterID])
     #expect(lifecycle.responseSnapshot(id: earlierID) == nil)
@@ -88,8 +89,10 @@ import VaultCore
         auditContext: context
     )
 
-    #expect(lifecycle.markExpiredIfActive(id: expiredID) === expiredContinuation)
-    #expect(lifecycle.markCancelledIfActive(id: cancelledID) === cancelledContinuation)
+    let expiredContinuationFromLifecycle = lifecycle.markExpiredIfActive(id: expiredID)
+    let cancelledContinuationFromLifecycle = lifecycle.markCancelledIfActive(id: cancelledID)
+    #expect(expiredContinuationFromLifecycle === expiredContinuation)
+    #expect(cancelledContinuationFromLifecycle === cancelledContinuation)
     #expect(lifecycle.pendingRequest(id: expiredID) == nil)
     #expect(lifecycle.pendingRequest(id: cancelledID) == nil)
 
