@@ -209,6 +209,7 @@
 		B9D689B77581C5777429CE9A /* LegacyVaultMigrationVerifierTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B01ED586DF7019BEFA05F54 /* LegacyVaultMigrationVerifierTests.swift */; };
 		B9F0F7D898374E5081339663 /* SecretOperationPolicyEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 216D03FD2BFDAC8E0DF05A29 /* SecretOperationPolicyEngine.swift */; };
 		BC5A8745A76054E32C98D5AB /* AppIPCController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F40ADD14D91E33C603258CD /* AppIPCController.swift */; };
+		BC9404C4AF3EAE4F75BC2D0D /* RevealSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF5BE19D0003BD59C7B5020 /* RevealSessionCoordinator.swift */; };
 		BD13216DB8219E94BBA49662 /* CatalogExportCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1ED605ABF54ED4FF82A64FCB /* CatalogExportCoordinator.swift */; };
 		BDA0C8CB3215A295FE6B9F6C /* VaultExecution.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3344061D1CB333FC44C63D40 /* VaultExecution.framework */; };
 		BF4ECCD5DD42D59FD701056E /* SensitiveInformationScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAD73FFDABD6B405BB48E189 /* SensitiveInformationScannerTests.swift */; };
@@ -260,6 +261,7 @@
 		F15A3DAEFD6C15523C8A2F01 /* CatalogDocumentationTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6148356160B03468B3562ECA /* CatalogDocumentationTemplateTests.swift */; };
 		F4D7F1A1EE37566C9C76673D /* SecretOperationAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA622BC771396AC2769EF019 /* SecretOperationAdapter.swift */; };
 		F512D428D8F63A95BF173FF9 /* VaultAuthorization.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7EBECD686FBE1AC20E7DDE73 /* VaultAuthorization.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		F57D408ACF91E7BE262E5CA2 /* RevealSessionCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3886CF5010A7E0B58D1110D8 /* RevealSessionCoordinatorTests.swift */; };
 		FB8E3AB8F2EFC2138579E2B8 /* VaultRecordResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23022B5D615A0EC150331764 /* VaultRecordResolverTests.swift */; };
 		FC1E948960779B78E1D1A86C /* SmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB39665E9CAE6268579AD047 /* SmokeTests.swift */; };
 		FED7F608F0C11A67C05C6ED0 /* SVLTPosixFileReader.c in Sources */ = {isa = PBXBuildFile; fileRef = 0D6F389D72B025EC38DA3F70 /* SVLTPosixFileReader.c */; };
@@ -706,6 +708,7 @@
 		342993AB4989000F0487F32B /* RevealSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealSessionStore.swift; sourceTree = "<group>"; };
 		34A5B63ACB0AA03803FDA941 /* SensitiveIndexSelectionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveIndexSelectionStore.swift; sourceTree = "<group>"; };
 		3599EB5CE22C1C3C45C78545 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
+		3886CF5010A7E0B58D1110D8 /* RevealSessionCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealSessionCoordinatorTests.swift; sourceTree = "<group>"; };
 		3897F39305FB394E3A24FC2E /* CatalogAgentWriteAccessNotifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogAgentWriteAccessNotifier.swift; sourceTree = "<group>"; };
 		38D56B5E2BA975073A96C32A /* VaultCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VaultCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3A6300F93F6DE1FCF5878A1B /* SecretCatalogEntrySearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretCatalogEntrySearchService.swift; sourceTree = "<group>"; };
@@ -849,6 +852,7 @@
 		E42239489687725E5D641536 /* InstructionStepCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstructionStepCard.swift; sourceTree = "<group>"; };
 		E462546702466271D1A2EF45 /* SecretOperationPolicyEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationPolicyEngineTests.swift; sourceTree = "<group>"; };
 		E9F2049C30DB8CA3DCBA2C1B /* FTPSecretOperationAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPSecretOperationAdapter.swift; sourceTree = "<group>"; };
+		ECF5BE19D0003BD59C7B5020 /* RevealSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RevealSessionCoordinator.swift; sourceTree = "<group>"; };
 		F0895005DE062C10330F3317 /* SensitiveInformationDocumentStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveInformationDocumentStoreTests.swift; sourceTree = "<group>"; };
 		F0CD9CD0D746BB09E12772BA /* AppControlIPCClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppControlIPCClient.swift; sourceTree = "<group>"; };
 		F16B0A1A400D5766FF2C7DB5 /* SecureViewerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureViewerModel.swift; sourceTree = "<group>"; };
@@ -1104,6 +1108,7 @@
 				02B1FE885879A5387F50C486 /* CatalogSecurityAuditNotifier.swift */,
 				A0A6EB02EBDB05DDB71F9AE4 /* EncryptSelectionCoordinator.swift */,
 				F983F4BCE179FAB07BE88B70 /* LegacyVaultMigrationVerifier.swift */,
+				ECF5BE19D0003BD59C7B5020 /* RevealSessionCoordinator.swift */,
 				342993AB4989000F0487F32B /* RevealSessionStore.swift */,
 				E11BCA848A8DC9F55C6927BB /* ScopedMasterKeyCoordinator.swift */,
 				3A6300F93F6DE1FCF5878A1B /* SecretCatalogEntrySearchService.swift */,
@@ -1250,6 +1255,7 @@
 				C9FD3186AB5A46DC15F319FF /* MenuBarLifecycleTests.swift */,
 				83515BB865B0C48959133C6D /* MenuBarPanelTests.swift */,
 				070FB29CEF8A483506131C94 /* MenuBarPresentationTests.swift */,
+				3886CF5010A7E0B58D1110D8 /* RevealSessionCoordinatorTests.swift */,
 				9CC82CB2609D1739DBF80053 /* RevealSessionStoreTests.swift */,
 				1C70475F3C768E420438AC57 /* RevealSessionWindowLayoutTests.swift */,
 				1C7F163B818A6BC5C68AACD0 /* ScopedMasterKeyCoordinatorTests.swift */,
@@ -2095,6 +2101,7 @@
 				E1E78AC9FBF53A896FAE416C /* CatalogSecurityAuditNotifier.swift in Sources */,
 				307FF8408D14E63800E91E7D /* EncryptSelectionCoordinator.swift in Sources */,
 				D2BA92B9789C4E2C19007B14 /* LegacyVaultMigrationVerifier.swift in Sources */,
+				BC9404C4AF3EAE4F75BC2D0D /* RevealSessionCoordinator.swift in Sources */,
 				795FA6D1A459183A229925D3 /* RevealSessionStore.swift in Sources */,
 				FED7F608F0C11A67C05C6ED0 /* SVLTPosixFileReader.c in Sources */,
 				4D92ABAD9A4BD9B43270811B /* ScopedMasterKeyCoordinator.swift in Sources */,
@@ -2134,6 +2141,7 @@
 				9D2C9AB96DDAAD620B447823 /* MenuBarLifecycleTests.swift in Sources */,
 				567FEC59BBA95DF764D102CD /* MenuBarPanelTests.swift in Sources */,
 				86AB4D20012933D4559B856F /* MenuBarPresentationTests.swift in Sources */,
+				F57D408ACF91E7BE262E5CA2 /* RevealSessionCoordinatorTests.swift in Sources */,
 				48F05A8167AB1F79EDA0CF82 /* RevealSessionStoreTests.swift in Sources */,
 				AFD2BA99ACDA541FB34575F3 /* RevealSessionWindowLayoutTests.swift in Sources */,
 				C33956EA88A832DB6887C9B1 /* ScopedMasterKeyCoordinatorTests.swift in Sources */,

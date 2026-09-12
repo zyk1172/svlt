@@ -6,16 +6,6 @@ import VaultCore
 import VaultExecution
 import VaultIPC
 
-public protocol RevealSessionPresenting: Sendable {
-    func present(sessionID: String, store: RevealSessionStore) async
-}
-
-public struct NoopRevealSessionPresenter: RevealSessionPresenting {
-    public init() {}
-
-    public func present(sessionID: String, store: RevealSessionStore) async {}
-}
-
 public protocol TextEncrypting: Sendable {
     func encryptText(_ plaintext: String, label: String?, policy: SecretPolicy) async throws -> SecretReference
 }
@@ -204,8 +194,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let freshMasterKeyProviderWithAuthenticationContext: (@Sendable (SecretPolicy, String, LocalAuthenticationContext?) async throws -> SymmetricKey)?
     private let clearProtectedKeyState: (@Sendable () async -> Void)?
     private let isUnlockedProvider: (@Sendable () async -> Bool)
-    private let revealSessionStore: RevealSessionStore
-    private let revealSessionPresenter: any RevealSessionPresenting
+    private let revealSessionCoordinator: RevealSessionCoordinator
     private let authorizationSession: AuthorizationSession
     private let scopedMasterKeyCoordinator: ScopedMasterKeyCoordinator
     private let operationPolicyEngine: SecretOperationPolicyEngine
@@ -303,8 +292,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.freshMasterKeyProviderWithAuthenticationContext = freshMasterKeyProviderWithAuthenticationContext
         self.clearProtectedKeyState = clearProtectedKeyState
         self.isUnlockedProvider = isUnlockedProvider
-        self.revealSessionStore = revealSessionStore
-        self.revealSessionPresenter = revealSessionPresenter
+        self.revealSessionCoordinator = RevealSessionCoordinator(
+            store: revealSessionStore,
+            presenter: revealSessionPresenter
+        )
         self.authorizationSession = authorizationSession
         self.scopedMasterKeyCoordinator = ScopedMasterKeyCoordinator(
             invalidateExecutionAuthorization: { scope in
@@ -439,7 +430,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func clearRevealSessions() async {
-        await revealSessionStore.clearAll()
+        await revealSessionCoordinator.clearAll()
     }
 
     public func invalidateSecurityState() async {
@@ -3733,8 +3724,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         try await authorizeIfNeeded(descriptor, metadata: metadata, decision: decision)
         let resolvedParagraph = try await resolveReferencesWithValues(references: references, context: context)
-        let sessionID = await revealSessionStore.create(resolvedParagraph: resolvedParagraph)
-        await revealSessionPresenter.present(sessionID: sessionID, store: revealSessionStore)
+        let sessionID = await revealSessionCoordinator.createAndPresent(resolvedParagraph)
         await emitAudit(
             action: "本机显示明文",
             target: sanitizedReason(context.reason),
@@ -3745,14 +3735,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func pendingRevealSessionIDs() async throws -> [String] {
-        await revealSessionStore.sessionIDs()
+        await revealSessionCoordinator.sessionIDs()
     }
 
     public func revealSessionData(sessionID: String) async throws -> RestoredParagraph {
-        guard let restoredParagraph = await revealSessionStore.restoredParagraph(id: sessionID) else {
-            throw VaultAppServicesRevealError.sessionNotFound
-        }
-        return restoredParagraph
+        try await revealSessionCoordinator.data(sessionID: sessionID)
     }
 
     public func restoreReferences(references: [String], context: RevealContext) async throws -> String {
