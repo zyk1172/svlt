@@ -11,6 +11,10 @@ public enum EncryptedAuditLogError: Error, Equatable, Sendable {
 public struct EncryptedAuditLog: Sendable {
     private static let legacyAuditEventAssociatedData = Data("AgentSecretVault.AuditEvent.v1".utf8)
     private static let authenticatedAuditEventMetadataVersion = 2
+    private static let recentIndexMetadataVersion = 1
+    private static let recentIndexCapacity = 128
+    private static let recentIndexFileName = "recent-index.json"
+    private static let recentIndexAssociatedData = Data("AgentSecretVault.AuditRecentIndex.v1".utf8)
 
     private let directoryURL: URL
     private let auditKeyProvider: (@Sendable () async throws -> SymmetricKey)?
@@ -72,10 +76,9 @@ public struct EncryptedAuditLog: Sendable {
         try await recentWithDiagnostics(limit: limit).events
     }
 
-    /// Returns the bounded recent window together with safe diagnostics for
-    /// records that could not be read or authenticated. The legacy `recent`
-    /// overload above keeps its array-shaped source compatibility for callers
-    /// that do not need diagnostics.
+    /// Returns the bounded recent window together with diagnostics captured by
+    /// the last full integrity scan plus failures encountered in the indexed
+    /// window. Historical records are not re-read on every recent query.
     public func recentWithDiagnostics(limit: Int = 100) async throws -> AuditReadResult {
         guard let auditKeyProvider else {
             throw EncryptedAuditLogError.auditKeyUnavailable
@@ -95,17 +98,37 @@ public struct EncryptedAuditLog: Sendable {
         return try recent(limit: limit, auditKey: auditKey)
     }
 
+    /// Performs the intentionally expensive full-history integrity pass and
+    /// refreshes the authenticated recent index used by bounded App reads.
+    public func integrityDiagnostics() async throws -> AuditReadDiagnostics {
+        guard let auditKeyProvider else {
+            throw EncryptedAuditLogError.auditKeyUnavailable
+        }
+        try prepareDirectory()
+        let key = try await auditKeyProvider()
+        return try integrityDiagnostics(auditKey: key)
+    }
+
+    public func integrityDiagnostics(masterKey: SymmetricKey) async throws -> AuditReadDiagnostics {
+        try prepareDirectory()
+        let auditKey = try auditDataKey(masterKey: masterKey)
+        return try integrityDiagnostics(auditKey: auditKey)
+    }
+
+    /// Production retention path using the independent audit key.
+    public func prune(retentionDays: Int) async throws {
+        guard let auditKeyProvider else {
+            throw EncryptedAuditLogError.auditKeyUnavailable
+        }
+        try prepareDirectory()
+        let key = try await auditKeyProvider()
+        try prune(retentionDays: retentionDays, auditKey: key)
+    }
+
     public func prune(retentionDays: Int, masterKey: SymmetricKey) async throws {
         try prepareDirectory()
-        let cutoff = now().addingTimeInterval(-Double(retentionDays) * 24 * 60 * 60)
         let auditKey = try auditDataKey(masterKey: masterKey)
-
-        for (url, record) in try eventRecords() {
-            let event = try open(record, using: auditKey)
-            if event.timestamp < cutoff {
-                try FileManager.default.removeItem(at: url)
-            }
-        }
+        try prune(retentionDays: retentionDays, auditKey: auditKey)
     }
 
     private func append(_ event: AuditEvent, auditKey: SymmetricKey) async throws {
@@ -135,6 +158,15 @@ public struct EncryptedAuditLog: Sendable {
             [.posixPermissions: 0o600],
             ofItemAtPath: url.path
         )
+
+        // The index is derivative. A failed index update must never turn a
+        // successfully persisted audit event into an append failure. A later
+        // recent read detects a stale record count and rebuilds it safely.
+        try? updateRecentIndexAfterAppend(
+            fileName: url.lastPathComponent,
+            event: event,
+            auditKey: auditKey
+        )
     }
 
     private func export(auditKey: SymmetricKey) throws -> [AuditEvent] {
@@ -148,48 +180,228 @@ public struct EncryptedAuditLog: Sendable {
 
     private func recent(limit: Int, auditKey: SymmetricKey) throws -> AuditReadResult {
         let boundedLimit = min(max(limit, 1), 100)
-        let recordResult = try readEventRecords()
-        var events: [AuditEvent] = []
-        var authenticationFailureCount = recordResult.diagnostics.authenticationFailureCount
-        var eventDecodeFailureCount = recordResult.diagnostics.eventDecodeFailureCount
-        var unsupportedMetadataVersionCount = recordResult.diagnostics.unsupportedMetadataVersionCount
-        var legacyCompatibilityFailureCount = recordResult.diagnostics.legacyCompatibilityFailureCount
+        let urls = try auditEventURLs()
 
-        // Authenticate and decode every structurally readable record before
-        // sorting or applying the top-N bound. In v2, the outer createdAt is
-        // authenticated metadata; it must never decide which records receive
-        // integrity verification.
-        for (_, record) in recordResult.records {
-            do {
-                events.append(try open(record, using: auditKey))
-            } catch let error as AuditRecordOpenFailure {
-                switch error {
-                case .authenticationFailure:
-                    authenticationFailureCount += 1
-                case .eventDecodeFailure:
-                    eventDecodeFailureCount += 1
-                case .unsupportedMetadataVersion:
-                    unsupportedMetadataVersionCount += 1
-                case .legacyCompatibilityFailure:
-                    legacyCompatibilityFailureCount += 1
-                }
-            } catch {
-                // Keep a defensive bucket for future open-path failures. A
-                // new failure must never turn a partial read into all-or-
-                // nothing behavior or silently appear as a healthy event.
-                authenticationFailureCount += 1
+        if let index = try? readRecentIndex(using: auditKey),
+           index.totalRecordCount == urls.count {
+            let result = readRecentWindow(
+                from: index,
+                limit: boundedLimit,
+                auditKey: auditKey
+            )
+            let expectedCount = min(boundedLimit, index.healthyRecordCount)
+            if result.events.count == expectedCount {
+                return result
             }
         }
 
+        return try rebuildRecentIndex(
+            limit: boundedLimit,
+            auditKey: auditKey,
+            urls: urls
+        )
+    }
+
+    private func integrityDiagnostics(auditKey: SymmetricKey) throws -> AuditReadDiagnostics {
+        let urls = try auditEventURLs()
+        return try rebuildRecentIndex(
+            limit: 100,
+            auditKey: auditKey,
+            urls: urls
+        ).diagnostics
+    }
+
+    private func prune(retentionDays: Int, auditKey: SymmetricKey) throws {
+        let cutoff = now().addingTimeInterval(-Double(retentionDays) * 24 * 60 * 60)
+
+        for (url, record) in try eventRecords() {
+            let event = try open(record, using: auditKey)
+            if event.timestamp < cutoff {
+                try FileManager.default.removeItem(at: url)
+            }
+        }
+
+        let urls = try auditEventURLs()
+        _ = try rebuildRecentIndex(limit: 100, auditKey: auditKey, urls: urls)
+    }
+
+    private func rebuildRecentIndex(
+        limit: Int,
+        auditKey: SymmetricKey,
+        urls: [URL]
+    ) throws -> AuditReadResult {
+        let scan = try scanAllAuditEvents(auditKey: auditKey, urls: urls)
+        let sorted = scan.events.sorted(by: Self.isNewerAuditEvent)
+        let index = AuditRecentIndex(
+            metadataVersion: Self.recentIndexMetadataVersion,
+            totalRecordCount: urls.count,
+            healthyRecordCount: sorted.count,
+            diagnostics: scan.diagnostics,
+            entries: sorted.prefix(Self.recentIndexCapacity).map {
+                AuditRecentIndexEntry(
+                    fileName: $0.fileName,
+                    eventTimestamp: $0.event.timestamp
+                )
+            }
+        )
+        try? writeRecentIndex(index, using: auditKey)
+
         return AuditReadResult(
-            events: Array(events.sorted { $0.timestamp > $1.timestamp }.prefix(boundedLimit)),
-            diagnostics: AuditReadDiagnostics(
-                recordDecodeFailureCount: recordResult.diagnostics.recordDecodeFailureCount,
-                authenticationFailureCount: authenticationFailureCount,
-                eventDecodeFailureCount: eventDecodeFailureCount,
-                unsupportedMetadataVersionCount: unsupportedMetadataVersionCount,
-                legacyCompatibilityFailureCount: legacyCompatibilityFailureCount
+            events: Array(sorted.prefix(limit).map(\.event)),
+            diagnostics: scan.diagnostics
+        )
+    }
+
+    private func scanAllAuditEvents(
+        auditKey: SymmetricKey,
+        urls: [URL]
+    ) throws -> AuditScanResult {
+        let recordResult = try readEventRecords(urls: urls)
+        var accumulator = AuditDiagnosticAccumulator(recordResult.diagnostics)
+        var events: [ScannedAuditEvent] = []
+
+        for (url, record) in recordResult.records {
+            do {
+                events.append(ScannedAuditEvent(
+                    fileName: url.lastPathComponent,
+                    event: try open(record, using: auditKey)
+                ))
+            } catch let error as AuditRecordOpenFailure {
+                accumulator.record(error)
+            } catch {
+                accumulator.recordUnknownFailure()
+            }
+        }
+
+        return AuditScanResult(events: events, diagnostics: accumulator.value)
+    }
+
+    private func readRecentWindow(
+        from index: AuditRecentIndex,
+        limit: Int,
+        auditKey: SymmetricKey
+    ) -> AuditReadResult {
+        let targetCount = min(limit, index.healthyRecordCount)
+        var events: [AuditEvent] = []
+        var accumulator = AuditDiagnosticAccumulator(index.diagnostics)
+
+        for entry in index.entries {
+            guard events.count < targetCount else { break }
+            guard Self.isValidAuditFileName(entry.fileName) else {
+                accumulator.recordUnknownFailure()
+                continue
+            }
+
+            let url = directoryURL.appending(path: entry.fileName)
+            let record: EncryptedAuditEventRecord
+            do {
+                record = try decoder.decode(
+                    EncryptedAuditEventRecord.self,
+                    from: Data(contentsOf: url)
+                )
+            } catch {
+                accumulator.recordDecodeFailure()
+                continue
+            }
+
+            guard Self.isSupportedMetadataVersion(record.metadataVersion) else {
+                accumulator.recordUnsupportedMetadataVersion()
+                continue
+            }
+
+            do {
+                let event = try open(record, using: auditKey)
+                guard event.timestamp == entry.eventTimestamp else {
+                    accumulator.recordUnknownFailure()
+                    continue
+                }
+                events.append(event)
+            } catch let error as AuditRecordOpenFailure {
+                accumulator.record(error)
+            } catch {
+                accumulator.recordUnknownFailure()
+            }
+        }
+
+        return AuditReadResult(events: events, diagnostics: accumulator.value)
+    }
+
+    private func updateRecentIndexAfterAppend(
+        fileName: String,
+        event: AuditEvent,
+        auditKey: SymmetricKey
+    ) throws {
+        guard var index = try? readRecentIndex(using: auditKey) else {
+            return
+        }
+
+        index = AuditRecentIndex(
+            metadataVersion: index.metadataVersion,
+            totalRecordCount: index.totalRecordCount + 1,
+            healthyRecordCount: index.healthyRecordCount + 1,
+            diagnostics: index.diagnostics,
+            entries: Array(
+                (index.entries + [AuditRecentIndexEntry(
+                    fileName: fileName,
+                    eventTimestamp: event.timestamp
+                )])
+                .sorted(by: Self.isNewerIndexEntry)
+                .prefix(Self.recentIndexCapacity)
             )
+        )
+        try writeRecentIndex(index, using: auditKey)
+    }
+
+    private func readRecentIndex(using auditKey: SymmetricKey) throws -> AuditRecentIndex {
+        let url = directoryURL.appending(path: Self.recentIndexFileName)
+        let envelope = try decoder.decode(
+            AuditRecentIndexEnvelope.self,
+            from: Data(contentsOf: url)
+        )
+        let box = try AES.GCM.SealedBox(
+            nonce: AES.GCM.Nonce(data: envelope.nonce),
+            ciphertext: envelope.ciphertext,
+            tag: envelope.tag
+        )
+        let plaintext = try AES.GCM.open(
+            box,
+            using: auditKey,
+            authenticating: Self.recentIndexAssociatedData
+        )
+        let index = try decoder.decode(AuditRecentIndex.self, from: plaintext)
+
+        guard index.metadataVersion == Self.recentIndexMetadataVersion,
+              index.totalRecordCount >= 0,
+              index.healthyRecordCount >= 0,
+              index.entries.count <= Self.recentIndexCapacity,
+              index.healthyRecordCount >= index.entries.count,
+              index.healthyRecordCount + index.diagnostics.skippedRecordCount == index.totalRecordCount,
+              Set(index.entries.map(\.fileName)).count == index.entries.count,
+              index.entries.allSatisfy({ Self.isValidAuditFileName($0.fileName) })
+        else {
+            throw EncryptedAuditLogError.integrityFailed
+        }
+
+        return index
+    }
+
+    private func writeRecentIndex(_ index: AuditRecentIndex, using auditKey: SymmetricKey) throws {
+        let plaintext = try encoder.encode(index)
+        let sealed = try AES.GCM.seal(
+            plaintext,
+            using: auditKey,
+            authenticating: Self.recentIndexAssociatedData
+        )
+        let envelope = AuditRecentIndexEnvelope(
+            ciphertext: sealed.ciphertext,
+            nonce: sealed.nonce.data,
+            tag: sealed.tag
+        )
+        let url = directoryURL.appending(path: Self.recentIndexFileName)
+        try encoder.encode(envelope).write(to: url, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
         )
     }
 
@@ -235,7 +447,7 @@ public struct EncryptedAuditLog: Sendable {
     }
 
     private func eventRecords() throws -> [(URL, EncryptedAuditEventRecord)] {
-        let result = try readEventRecords()
+        let result = try readEventRecords(urls: auditEventURLs())
         guard !result.diagnostics.hasIssues else {
             throw EncryptedAuditLogError.integrityFailed
         }
@@ -244,15 +456,19 @@ public struct EncryptedAuditLog: Sendable {
         }
     }
 
-    private func readEventRecords() throws -> AuditRecordReadResult {
-        let urls = try FileManager.default.contentsOfDirectory(
+    private func auditEventURLs() throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: nil
         )
+        .filter { $0.lastPathComponent.hasSuffix(".audit.json") }
+    }
+
+    private func readEventRecords(urls: [URL]) throws -> AuditRecordReadResult {
         var records: [(URL, EncryptedAuditEventRecord)] = []
         var unreadableRecordCount = 0
         var unsupportedMetadataVersionCount = 0
-        for url in urls where url.lastPathComponent.hasSuffix(".audit.json") {
+        for url in urls {
             do {
                 let record = try decoder.decode(
                     EncryptedAuditEventRecord.self,
@@ -262,10 +478,7 @@ public struct EncryptedAuditLog: Sendable {
                     unsupportedMetadataVersionCount += 1
                     continue
                 }
-                records.append((
-                    url,
-                    record
-                ))
+                records.append((url, record))
             } catch {
                 unreadableRecordCount += 1
             }
@@ -356,6 +569,29 @@ public struct EncryptedAuditLog: Sendable {
         data.append(contentsOf: createdAt.timeIntervalSince1970.description.utf8)
         return data
     }
+
+    private static func isNewerAuditEvent(_ lhs: ScannedAuditEvent, _ rhs: ScannedAuditEvent) -> Bool {
+        if lhs.event.timestamp != rhs.event.timestamp {
+            return lhs.event.timestamp > rhs.event.timestamp
+        }
+        return lhs.fileName < rhs.fileName
+    }
+
+    private static func isNewerIndexEntry(_ lhs: AuditRecentIndexEntry, _ rhs: AuditRecentIndexEntry) -> Bool {
+        if lhs.eventTimestamp != rhs.eventTimestamp {
+            return lhs.eventTimestamp > rhs.eventTimestamp
+        }
+        return lhs.fileName < rhs.fileName
+    }
+
+    private static func isValidAuditFileName(_ name: String) -> Bool {
+        !name.isEmpty &&
+            name.count <= 255 &&
+            name.hasSuffix(".audit.json") &&
+            !name.contains("/") &&
+            !name.contains("\\") &&
+            URL(fileURLWithPath: name).lastPathComponent == name
+    }
 }
 
 private struct WrappedAuditDataKey: Codable, Sendable {
@@ -410,9 +646,89 @@ private struct EncryptedAuditEventRecord: Codable, Sendable {
     }
 }
 
+private struct AuditRecentIndexEnvelope: Codable, Sendable {
+    let ciphertext: Data
+    let nonce: Data
+    let tag: Data
+}
+
+private struct AuditRecentIndex: Codable, Sendable {
+    let metadataVersion: Int
+    let totalRecordCount: Int
+    let healthyRecordCount: Int
+    let diagnostics: AuditReadDiagnostics
+    let entries: [AuditRecentIndexEntry]
+}
+
+private struct AuditRecentIndexEntry: Codable, Sendable {
+    let fileName: String
+    let eventTimestamp: Date
+}
+
+private struct ScannedAuditEvent: Sendable {
+    let fileName: String
+    let event: AuditEvent
+}
+
+private struct AuditScanResult: Sendable {
+    let events: [ScannedAuditEvent]
+    let diagnostics: AuditReadDiagnostics
+}
+
 private struct AuditRecordReadResult: Sendable {
     let records: [(URL, EncryptedAuditEventRecord)]
     let diagnostics: AuditReadDiagnostics
+}
+
+private struct AuditDiagnosticAccumulator {
+    var recordDecodeFailureCount: Int
+    var authenticationFailureCount: Int
+    var eventDecodeFailureCount: Int
+    var unsupportedMetadataVersionCount: Int
+    var legacyCompatibilityFailureCount: Int
+
+    init(_ diagnostics: AuditReadDiagnostics = .none) {
+        recordDecodeFailureCount = diagnostics.recordDecodeFailureCount
+        authenticationFailureCount = diagnostics.authenticationFailureCount
+        eventDecodeFailureCount = diagnostics.eventDecodeFailureCount
+        unsupportedMetadataVersionCount = diagnostics.unsupportedMetadataVersionCount
+        legacyCompatibilityFailureCount = diagnostics.legacyCompatibilityFailureCount
+    }
+
+    mutating func record(_ error: AuditRecordOpenFailure) {
+        switch error {
+        case .authenticationFailure:
+            authenticationFailureCount += 1
+        case .eventDecodeFailure:
+            eventDecodeFailureCount += 1
+        case .unsupportedMetadataVersion:
+            unsupportedMetadataVersionCount += 1
+        case .legacyCompatibilityFailure:
+            legacyCompatibilityFailureCount += 1
+        }
+    }
+
+    mutating func recordDecodeFailure() {
+        recordDecodeFailureCount += 1
+    }
+
+    mutating func recordUnsupportedMetadataVersion() {
+        unsupportedMetadataVersionCount += 1
+    }
+
+    mutating func recordUnknownFailure() {
+        authenticationFailureCount += 1
+    }
+
+    var value: AuditReadDiagnostics {
+        AuditReadDiagnostics(
+            recordDecodeFailureCount: recordDecodeFailureCount,
+            authenticationFailureCount: authenticationFailureCount,
+            eventDecodeFailureCount: eventDecodeFailureCount,
+            unsupportedMetadataVersionCount: unsupportedMetadataVersionCount,
+            legacyCompatibilityFailureCount: legacyCompatibilityFailureCount
+        )
+    }
 }
 
 private enum AuditRecordOpenFailure: Error {
