@@ -217,8 +217,9 @@ function sendFramedRequest(
       }
 
       if (expectedFrameBytes !== undefined && receivedBytes > expectedFrameBytes) {
+        const declaredPayloadBytes = expectedFrameBytes - FRAME_HEADER_BYTES;
         settle(() => reject(new Error(
-          `IPC frame length mismatch: expected ${expectedFrameBytes - FRAME_HEADER_BYTES}, got ${receivedBytes - FRAME_HEADER_BYTES}`
+          `IPC frame length mismatch: expected ${declaredPayloadBytes}, got ${receivedBytes - FRAME_HEADER_BYTES}`
         )));
         return;
       }
@@ -227,8 +228,9 @@ function sendFramedRequest(
     });
     socket.on("end", () => {
       if (expectedFrameBytes !== undefined && receivedBytes !== expectedFrameBytes) {
+        const declaredPayloadBytes = expectedFrameBytes - FRAME_HEADER_BYTES;
         settle(() => reject(new Error(
-          `IPC frame length mismatch: expected ${expectedFrameBytes - FRAME_HEADER_BYTES}, got ${receivedBytes - FRAME_HEADER_BYTES}`
+          `IPC frame length mismatch: expected ${declaredPayloadBytes}, got ${receivedBytes - FRAME_HEADER_BYTES}`
         )));
         return;
       }
