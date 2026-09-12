@@ -7,6 +7,7 @@ public enum FileRecordStoreError: Error, Equatable, Sendable {
     case versionAlreadyExists
     case noVersions
     case verificationFailed
+    case latestVersionCorrupt(version: Int)
 }
 
 public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Sendable {
@@ -60,42 +61,26 @@ public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Senda
     }
 
     public func latest(id: String) async throws -> EncryptedRecord {
-        let availableVersions = try await versions(id: id)
-        guard let latestVersion = availableVersions.last else {
+        let discoveredVersions = try discoveredVersionNumbers(id: id)
+        guard let latestVersion = discoveredVersions.last else {
             throw FileRecordStoreError.noVersions
         }
 
-        return try loadValidRecord(id: id, version: latestVersion)
+        do {
+            return try loadValidRecord(id: id, version: latestVersion)
+        } catch FileRecordStoreError.symlinkRejected {
+            throw FileRecordStoreError.symlinkRejected
+        } catch {
+            throw FileRecordStoreError.latestVersionCorrupt(version: latestVersion)
+        }
     }
 
     public func versions(id: String) async throws -> [Int] {
-        try validate(id: id)
-        let directory = recordDirectory(id: id)
-        guard fileManager.fileExists(atPath: directory.path) else {
-            return []
+        let discoveredVersions = try discoveredVersionNumbers(id: id)
+
+        return discoveredVersions.filter { version in
+            (try? loadValidRecord(id: id, version: version)) != nil
         }
-        try rejectSymlink(at: directory)
-
-        let contents = try fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-            options: [.skipsSubdirectoryDescendants]
-        )
-
-        let validVersions = contents.compactMap { url -> Int? in
-            guard let version = Self.versionNumber(from: url) else {
-                return nil
-            }
-
-            do {
-                _ = try loadValidRecord(id: id, version: version)
-                return version
-            } catch {
-                return nil
-            }
-        }
-
-        return validVersions.sorted()
     }
 
     public func recordIDs() async throws -> [String] {
@@ -137,6 +122,23 @@ public struct FileRecordStore: RecordStore, RecordListing, RecordDeleting, Senda
             throw FileRecordStoreError.symlinkRejected
         }
         try fileManager.removeItem(at: directory)
+    }
+
+    private func discoveredVersionNumbers(id: String) throws -> [Int] {
+        try validate(id: id)
+        let directory = recordDirectory(id: id)
+        guard fileManager.fileExists(atPath: directory.path) else {
+            return []
+        }
+        try rejectSymlink(at: directory)
+
+        let contents = try fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsSubdirectoryDescendants]
+        )
+
+        return contents.compactMap(Self.versionNumber(from:)).sorted()
     }
 
     private func loadValidRecord(id: String, version: Int) throws -> EncryptedRecord {
