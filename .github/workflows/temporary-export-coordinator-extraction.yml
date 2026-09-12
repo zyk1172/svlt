@@ -64,10 +64,12 @@ jobs:
               "\t\t\t);\n"
           )
           assert text.count(generated) == 1
-          text = text.replace(generated, stable, 1)
-          path.write_text(text)
+          path.write_text(text.replace(generated, stable, 1))
           PY
           git diff --check
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
           ./scripts/check-xcodegen-parity.sh
 
       - name: Commit project cleanup
