@@ -48,10 +48,6 @@ struct CatalogSecureInputReceiptRecord: Codable, Sendable {
     let terminalAt: Date
 }
 
-/// Owns the synchronous state transitions for one-shot Catalog Secure Input
-/// requests. The surrounding service owns authentication, encryption, I/O,
-/// notifications, and audit contexts; this value owns only request state and
-/// non-sensitive terminal receipts.
 /// Owns the non-sensitive Secure Input receipt sidecar I/O. Keeping this
 /// persistence boundary beside the transaction state machine prevents the service
 /// actor from owning JSON/file-permission mechanics while preserving the existing
@@ -108,6 +104,10 @@ struct CatalogSecureInputReceiptStore: Sendable {
     }
 }
 
+/// Owns the synchronous state transitions for one-shot Catalog Secure Input
+/// requests. The surrounding service owns authentication, encryption, I/O,
+/// notifications, and audit contexts; this value owns only request state and
+/// non-sensitive terminal receipts.
 struct CatalogSecureInputTransaction: Sendable {
     private var requests: [UUID: CatalogAgentSecureInputRequest] = [:]
     private var states: [UUID: CatalogSecureInputState] = [:]
