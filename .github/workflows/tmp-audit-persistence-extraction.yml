@@ -1,0 +1,365 @@
+name: Temporary audit persistence extraction
+
+on:
+  push:
+    branches:
+      - codex/extract-audit-persistence-coordinator
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+
+      - name: Extract audit persistence coordinator
+        run: |
+          cat > Sources/VaultService/CatalogAuditPersistenceCoordinator.swift <<'SWIFT'
+          import CryptoKit
+          import Foundation
+          import os
+          import VaultCore
+          import VaultIPC
+
+          /// Owns encrypted audit persistence, its non-sensitive sticky health
+          /// sidecar, bounded App-control reads, and path-free failure signaling.
+          /// Business services provide the semantic audit entry and caller context;
+          /// this actor owns only durable audit-channel mechanics.
+          actor CatalogAuditPersistenceCoordinator {
+              private let auditLog: EncryptedAuditLog?
+              private let fallbackMasterKey: SymmetricKey?
+              private let now: @Sendable () -> Date
+              private var healthStore: CatalogAuditHealthStore
+
+              init(
+                  auditLog: EncryptedAuditLog?,
+                  auditHealthURL: URL?,
+                  fallbackMasterKey: SymmetricKey?,
+                  now: @escaping @Sendable () -> Date
+              ) {
+                  self.auditLog = auditLog
+                  self.fallbackMasterKey = fallbackMasterKey
+                  self.now = now
+                  self.healthStore = CatalogAuditHealthStore(url: auditHealthURL)
+              }
+
+              func healthSignal() -> String? {
+                  healthStore.healthSignal
+              }
+
+              func recentCatalogEntries(limit: Int) async throws -> CatalogRecentAuditResult {
+                  guard let auditLog else {
+                      return CatalogRecentAuditResult(entries: [])
+                  }
+                  let readResult = try await auditLog.recentWithDiagnostics(
+                      limit: min(max(limit, 1), 100)
+                  )
+                  return CatalogRecentAuditResult(
+                      entries: readResult.events.map(Self.safeAuditEntry),
+                      diagnostics: readResult.diagnostics
+                  )
+              }
+
+              func append(
+                  entry: AgentAutomationAuditEntry,
+                  context: AuditContext,
+                  operation: AuditOperation?,
+                  authorizationOutcome: AuditAuthorizationOutcome,
+                  authorizationMode: AuditAuthorizationMode?,
+                  status: AuditStatus?
+              ) async {
+                  guard let auditLog else { return }
+                  let event = AuditEvent(
+                      timestamp: entry.occurredAt,
+                      source: context.source,
+                      integration: context.source == .app
+                          ? "agent-secret-vault-app-control"
+                          : "agent-secret-vault-mcp",
+                      correlationID: context.correlationID,
+                      requestID: context.requestID,
+                      referenceID: nil,
+                      referenceCount: entry.referenceCount,
+                      operation: operation ?? Self.auditOperation(for: entry.action),
+                      risk: 0,
+                      authorizationOutcome: authorizationOutcome,
+                      declaredTarget: Self.safeAuditTarget(entry.target),
+                      status: status ?? Self.auditStatus(for: entry.result),
+                      exitCode: nil,
+                      authorizationMode: authorizationMode,
+                      caller: context.caller
+                  )
+
+                  do {
+                      // The production daemon supplies an independent Keychain
+                      // audit key. Never acquire a vault key merely for audit.
+                      try await auditLog.append(event)
+                      recordAppendSuccess()
+                  } catch {
+                      guard let fallbackMasterKey else {
+                          recordAppendFailure()
+                          return
+                      }
+                      do {
+                          // Explicit test callers may already hold a master key.
+                          try await auditLog.append(event, masterKey: fallbackMasterKey)
+                          recordAppendSuccess()
+                      } catch {
+                          recordAppendFailure()
+                      }
+                  }
+              }
+
+              private func recordAppendSuccess() {
+                  healthStore.recordAppendSuccess()
+                  CatalogSecurityAuditNotifier.notify()
+              }
+
+              private func recordAppendFailure() {
+                  healthStore.recordAppendFailure(at: now())
+                  Self.logAuditAppendFailure()
+              }
+
+              private static func logAuditAppendFailure() {
+                  Logger(subsystem: "com.agent-secret-vault.SVLT", category: "audit")
+                      .error("AUDIT_APPEND_FAILED")
+              }
+
+              private static func auditOperation(for action: String) -> AuditOperation {
+                  if action.contains("格式") {
+                      return action.contains("修复") ? .formatRepair : .formatCheck
+                  }
+                  if action.contains("目录") || action.contains("分组") || action.contains("条目") {
+                      return .catalogMutation
+                  }
+                  if action.contains("凭据") || action.contains("密码") {
+                      return .credentialUse
+                  }
+                  if action.contains("显示") || action.contains("脱密") || action.contains("文件") {
+                      return .reveal
+                  }
+                  if action.contains("扫描") || action.contains("连接") || action.contains("元数据") {
+                      return .status
+                  }
+                  return .secureExecute
+              }
+
+              private static func auditStatus(for result: String) -> AuditStatus {
+                  if result.contains("显示") {
+                      return .displayedToUser
+                  }
+                  if result.contains("失败") {
+                      return .failure
+                  }
+                  return .completed
+              }
+
+              private static func safeAuditEntry(_ event: AuditEvent) -> CatalogSecurityAuditEntry {
+                  CatalogSecurityAuditEntry(
+                      id: event.id,
+                      timestamp: event.timestamp,
+                      source: event.source,
+                      operation: event.operation,
+                      authorizationOutcome: event.authorizationOutcome,
+                      result: event.status,
+                      target: safeAuditTarget(event.declaredTarget),
+                      referenceCount: event.referenceCount,
+                      authorizationMode: event.authorizationMode,
+                      caller: event.caller
+                  )
+              }
+
+              private static func safeAuditTarget(_ target: String?) -> String {
+                  guard let target, !target.isEmpty else { return "本机" }
+                  let normalized = target
+                      .replacingOccurrences(of: "\n", with: " ")
+                      .replacingOccurrences(of: "\r", with: " ")
+                      .trimmingCharacters(in: .whitespacesAndNewlines)
+                  let lowercased = normalized.lowercased()
+                  if lowercased.contains("secret://") || lowercased.contains("token") ||
+                      lowercased.contains("password") || lowercased.contains("cookie") ||
+                      lowercased.contains("authorization") || normalized.contains("密码") {
+                      return "敏感记录"
+                  }
+                  if normalized.contains("/") || normalized.contains("\\") ||
+                      lowercased.contains("http") || lowercased.contains("api") {
+                      return "受保护目标"
+                  }
+                  return String(normalized.prefix(80))
+              }
+          }
+          SWIFT
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('Sources/VaultService/VaultAppServices.swift')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '    private let auditLog: EncryptedAuditLog?\n'
+              '    private var auditHealthStore: CatalogAuditHealthStore\n',
+              '    private let auditPersistenceCoordinator: CatalogAuditPersistenceCoordinator\n',
+              'audit persistence properties'
+          )
+
+          replace_once(
+              '        self.auditObserver = auditObserver\n'
+              '        self.savedReferencesObserver = savedReferencesObserver\n'
+              '        self.auditLog = auditLog\n'
+              '        self.auditHealthStore = CatalogAuditHealthStore(url: auditHealthURL)\n',
+              '        self.auditObserver = auditObserver\n'
+              '        self.savedReferencesObserver = savedReferencesObserver\n'
+              '        self.auditPersistenceCoordinator = CatalogAuditPersistenceCoordinator(\n'
+              '            auditLog: auditLog,\n'
+              '            auditHealthURL: auditHealthURL,\n'
+              '            fallbackMasterKey: masterKey,\n'
+              '            now: now\n'
+              '        )\n',
+              'audit persistence initialization'
+          )
+
+          recent_start = text.index('    public func catalogRecentAuditEntries(limit: Int) async throws -> CatalogRecentAuditResult {')
+          secure_input_start = text.index('    public func pendingCatalogSecureInputRequestIDs() async -> [UUID] {', recent_start)
+          text = text[:recent_start] + (
+              '    public func catalogRecentAuditEntries(limit: Int) async throws -> CatalogRecentAuditResult {\n'
+              '        try await auditPersistenceCoordinator.recentCatalogEntries(limit: limit)\n'
+              '    }\n\n'
+              '    /// A deliberately narrow, non-sensitive health signal. It never contains\n'
+              '    /// paths, payloads, reference IDs, or key material.\n'
+              '    public func catalogAuditHealth() async -> String? {\n'
+              '        await auditPersistenceCoordinator.healthSignal()\n'
+              '    }\n\n'
+          ) + text[secure_input_start:]
+
+          emit_start = text.index('    private func emitAudit(')
+          receipts_start = text.index('    private func persistSecureInputReceipts()', emit_start)
+          text = text[:emit_start] + (
+              '    private func emitAudit(\n'
+              '        action: String,\n'
+              '        target: String,\n'
+              '        referenceCount: Int,\n'
+              '        result: String,\n'
+              '        context: AuditContext? = nil,\n'
+              '        operation: AuditOperation? = nil,\n'
+              '        authorizationOutcome: AuditAuthorizationOutcome = .notRequired,\n'
+              '        authorizationMode: AuditAuthorizationMode? = nil,\n'
+              '        status: AuditStatus? = nil\n'
+              '    ) async {\n'
+              '        let auditContext = context ?? AuditContext.current\n'
+              '        let entry = AgentAutomationAuditEntry(\n'
+              '            action: action,\n'
+              '            target: target,\n'
+              '            referenceCount: referenceCount,\n'
+              '            result: result,\n'
+              '            authorizationMode: authorizationMode,\n'
+              '            caller: auditContext?.caller\n'
+              '        )\n'
+              '        await auditObserver?(entry)\n'
+              '        // A production request always arrives through one of the two IPC\n'
+              '        // handlers, which installs AuditContext.current. Do not infer `.agent`\n'
+              '        // here: an unscoped event cannot be safely attributed to a caller.\n'
+              '        guard let auditContext else { return }\n'
+              '        await auditPersistenceCoordinator.append(\n'
+              '            entry: entry,\n'
+              '            context: auditContext,\n'
+              '            operation: operation,\n'
+              '            authorizationOutcome: authorizationOutcome,\n'
+              '            authorizationMode: authorizationMode,\n'
+              '            status: status\n'
+              '        )\n'
+              '    }\n\n'
+          ) + text[receipts_start:]
+
+          log_start = text.index('    private static func logAuditAppendFailure()')
+          agent_context_start = text.index('    private func agentAuditContext()', log_start)
+          text = text[:log_start] + text[agent_context_start:]
+
+          helpers_start = text.index('    private func auditOperation(for action: String) -> AuditOperation {')
+          selected_store_start = text.index('    private func selectedCatalogStoreForApp()', helpers_start)
+          text = text[:helpers_start] + text[selected_store_start:]
+
+          forbidden = [
+              'private let auditLog:',
+              'private var auditHealthStore:',
+              'logAuditAppendFailure()',
+              'private func auditOperation(for action:',
+              'private func auditStatus(for result:',
+              'private static func safeAuditEntry(',
+              'private func sanitizedAuditTarget(',
+              'private static func safeAuditTarget('
+          ]
+          leftovers = [item for item in forbidden if item in text]
+          if leftovers:
+              raise SystemExit('old audit persistence ownership remains: ' + ', '.join(leftovers))
+
+          path.write_text(text)
+
+          budget = Path('scripts/check-architecture-budgets.sh')
+          budget_text = budget.read_text()
+          actual = len(text.encode())
+          old_budget = 'Sources/VaultService/VaultAppServices.swift:259874'
+          new_budget = f'Sources/VaultService/VaultAppServices.swift:{actual}'
+          if budget_text.count(old_budget) != 1:
+              raise SystemExit('expected current VaultAppServices budget exactly once')
+          budget.write_text(budget_text.replace(old_budget, new_budget, 1))
+          print(f'VaultAppServices.swift architecture ceiling -> {actual} bytes')
+          PY
+
+      - name: Regenerate Xcode project without target-order noise
+        run: |
+          cp SVLT.xcodeproj/project.pbxproj /tmp/svlt-before-audit-persistence.pbxproj
+          xcodegen generate --quiet --spec project.yml --project . --project-root . --cache-path /tmp/svlt-xcodegen-cache
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          before = Path('/tmp/svlt-before-audit-persistence.pbxproj').read_text()
+          generated_path = Path('SVLT.xcodeproj/project.pbxproj')
+          generated = generated_path.read_text()
+          pattern = re.compile(r'(\n\s*targets\s*=\s*\(\n)(.*?)(\n\s*\);)', re.S)
+          old_match = pattern.search(before)
+          new_match = pattern.search(generated)
+          if old_match is None or new_match is None:
+              raise SystemExit('unable to locate PBXProject targets block')
+          generated = generated[:new_match.start(2)] + old_match.group(2) + generated[new_match.end(2):]
+          generated_path.write_text(generated)
+          PY
+
+      - name: Verify extraction
+        run: |
+          bash scripts/check-xcodegen-parity.sh
+          bash scripts/check-architecture-budgets.sh
+          git diff --check
+
+      - name: Commit extraction
+        run: |
+          git config user.name 'zyk1172'
+          git config user.email '53221608+zyk1172@users.noreply.github.com'
+          git add Sources/VaultService/CatalogAuditPersistenceCoordinator.swift \
+                  Sources/VaultService/VaultAppServices.swift \
+                  scripts/check-architecture-budgets.sh \
+                  SVLT.xcodeproj/project.pbxproj
+          if git diff --cached --quiet; then
+            echo 'No extraction changes to commit.'
+            exit 0
+          fi
+          git commit -m 'refactor: extract audit persistence coordinator'
+          git push
