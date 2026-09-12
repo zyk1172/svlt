@@ -182,6 +182,43 @@ private let transactionFieldKey = "password"
     #expect(loaded.allSatisfy { $0.schemaVersion == CatalogSecureInputReceiptRecord.currentSchemaVersion })
 }
 
+@Test func secureInputLifecycleFinishesRequestWithAuditContextAndCancelsExpiryTask() {
+    var lifecycle = CatalogSecureInputLifecycle()
+    let requestID = UUID()
+    let request = secureInputRequest(id: requestID)
+    let auditContext = AuditContext(source: .agent).withRequestID(requestID)
+    let expiryTask = Task<Void, Never> {
+        try? await Task.sleep(for: .seconds(60))
+    }
+
+    lifecycle.insert(
+    request,
+    auditContext: auditContext,
+    expiryTask: expiryTask
+)
+
+    #expect(lifecycle.request(id: requestID) == request)
+    #expect(lifecycle.auditContext(for: requestID)?.requestID == requestID)
+
+    let status = CatalogSecureInputStatus(
+        requestID: requestID,
+        status: .completed,
+        revision: 9
+    )
+    let completion = lifecycle.finish(
+        id: requestID,
+        status: status,
+        terminalDate: request.createdAt
+    )
+
+    #expect(completion?.request == request)
+    #expect(completion?.auditContext?.requestID == requestID)
+    #expect(expiryTask.isCancelled)
+    #expect(lifecycle.request(id: requestID) == nil)
+    #expect(lifecycle.auditContext(for: requestID)?.requestID == nil)
+    #expect(lifecycle.status(for: requestID) == status)
+}
+
 private func secureInputRequest(
     id: UUID,
     createdAt: Date = Date(timeIntervalSinceReferenceDate: 1_000)

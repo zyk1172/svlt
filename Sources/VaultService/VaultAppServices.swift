@@ -265,9 +265,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var auditAppendFailureAt: Date?
     private var auditAppendGapDetected = false
     private var lastSuccessfulAuditSequence: UInt64 = 0
-    private var secureInputTransactions = CatalogSecureInputTransaction()
-    private var secureInputExpiryTasks: [UUID: Task<Void, Never>] = [:]
-    private var secureInputAuditContexts: [UUID: AuditContext] = [:]
+    private var secureInputLifecycle = CatalogSecureInputLifecycle()
     /// Cancellation/expiry is latched while the one-shot authentication or
     /// store call is suspended. The request is not removed during submission;
     /// this prevents a late SecureField callback from committing after the
@@ -362,7 +360,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.auditAppendGapDetected = persistedAuditHealth?.gapDetected ?? false
         self.lastSuccessfulAuditSequence = persistedAuditHealth?.lastSuccessfulSequence ?? 0
         let persistedSecureInputReceipts = secureInputReceiptStore.load(now: now())
-        self.secureInputTransactions = CatalogSecureInputTransaction(receipts: persistedSecureInputReceipts)
+        self.secureInputLifecycle = CatalogSecureInputLifecycle(receipts: persistedSecureInputReceipts)
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
         self.writeAccessNotifier = writeAccessNotifier
         self.secureInputNotifier = secureInputNotifier
@@ -503,10 +501,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func cancelAllSecureInputRequests() async {
-        let requestIDs = secureInputTransactions.requestIDs
+        let requestIDs = secureInputLifecycle.requestIDs
         for id in requestIDs {
-            guard let request = secureInputTransactions.request(id: id),
-                  let state = secureInputTransactions.state(for: id)
+            guard let request = secureInputLifecycle.request(id: id),
+                  let state = secureInputLifecycle.state(for: id)
             else { continue }
             switch state {
             case .awaitingInput:
@@ -523,7 +521,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     auditStatus: .cancelled
                 )
             case .submitting:
-                secureInputTransactions.latchAbort(.cancelled, for: id)
+                secureInputLifecycle.latchAbort(.cancelled, for: id)
                 secureInputNotifier.notifyQueueChanged(requestID: id)
             case .committing, .completed, .failed, .expired, .cancelled:
                 // `.committing` is the linearization point: it is already
@@ -2345,13 +2343,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func pendingCatalogSecureInputRequestIDs() async -> [UUID] {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        return secureInputTransactions.pendingRequestIDs
+        return secureInputLifecycle.pendingRequestIDs
     }
 
     public func catalogSecureInputRequest(id: UUID) async throws -> CatalogAgentSecureInputRequest {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        guard let request = secureInputTransactions.pendingRequest(id: id)
+        guard let request = secureInputLifecycle.pendingRequest(id: id)
         else {
             throw SecretCatalogAgentError.invalidOperation
         }
@@ -2361,7 +2359,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     public func catalogSecureInputStatus(requestID: UUID) async -> CatalogSecureInputStatus {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        return secureInputTransactions.status(for: requestID)
+        return secureInputLifecycle.status(for: requestID)
     }
 
     public func requestCatalogSecureInputs(
@@ -2426,13 +2424,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             expiresAt: createdAt.addingTimeInterval(180),
             targets: resolvedTargets
         )
-        secureInputTransactions.insert(request)
-        secureInputAuditContexts[request.id] = operationContext
-        secureInputExpiryTasks[request.id] = Task { [weak self] in
+        let expiryTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(180))
             guard !Task.isCancelled else { return }
             await self?.expireCatalogSecureInputRequest(id: request.id)
         }
+        secureInputLifecycle.insert(
+            request,
+            auditContext: operationContext,
+            expiryTask: expiryTask
+        )
         await emitAudit(
             action: "智能体安全输入请求",
             target: "catalog-field",
@@ -2456,7 +2457,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     ) async throws -> CatalogSecureInputStatus {
         pruneSecureInputReceipts()
         await expireDueSecureInputRequests()
-        let request = try secureInputTransactions.beginSubmission(id: id, now: now())
+        let request = try secureInputLifecycle.beginSubmission(id: id, now: now())
         var createdReferences: [SecretReference] = []
         do {
             // This is the one device-owner authentication for this request.
@@ -2467,7 +2468,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 target: "catalog-field",
                 referenceCount: request.targets.count,
                 result: "请求中",
-                context: secureInputAuditContexts[id],
+                context: secureInputLifecycle.auditContext(for: id),
                 operation: .authorization,
                 authorizationOutcome: .requested,
                 status: .requested
@@ -2478,7 +2479,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 target: "catalog-field",
                 referenceCount: request.targets.count,
                 result: "成功",
-                context: secureInputAuditContexts[id],
+                context: secureInputLifecycle.auditContext(for: id),
                 operation: .authorization,
                 authorizationOutcome: .approved,
                 status: .completed
@@ -2514,7 +2515,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // linearization point. There is intentionally no await between
             // the active check above and this assignment: cancellation and
             // expiry either win before this point or are rejected after it.
-            try secureInputTransactions.markCommitting(id: id, request: request, now: now())
+            try secureInputLifecycle.markCommitting(id: id, request: request, now: now())
             let updated = try await catalogDocumentStore!.updateEntry(
                 finalEntry,
                 expectedRevision: request.expectedRevision
@@ -2589,12 +2590,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     public func cancelCatalogSecureInput(id: UUID) async {
-        guard let request = secureInputTransactions.request(id: id),
-              let state = secureInputTransactions.state(for: id),
+        guard let request = secureInputLifecycle.request(id: id),
+              let state = secureInputLifecycle.state(for: id),
               state == .awaitingInput || state == .submitting
         else { return }
         if state == .submitting {
-            secureInputTransactions.latchAbort(.cancelled, for: id)
+            secureInputLifecycle.latchAbort(.cancelled, for: id)
             secureInputNotifier.notifyQueueChanged(requestID: id)
             return
         }
@@ -2609,12 +2610,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func expireCatalogSecureInputRequest(id: UUID) async {
-        guard let request = secureInputTransactions.request(id: id),
-              let state = secureInputTransactions.state(for: id),
+        guard let request = secureInputLifecycle.request(id: id),
+              let state = secureInputLifecycle.state(for: id),
               state == .awaitingInput || state == .submitting
         else { return }
         if state == .submitting {
-            secureInputTransactions.latchAbort(.expired, for: id)
+            secureInputLifecycle.latchAbort(.expired, for: id)
             secureInputNotifier.notifyQueueChanged(requestID: id)
             return
         }
@@ -2629,12 +2630,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     }
 
     private func expireDueSecureInputRequests() async {
-        let due = secureInputTransactions.dueRequestIDs(now: now())
+        let due = secureInputLifecycle.dueRequestIDs(now: now())
         for id in due { await expireCatalogSecureInputRequest(id: id) }
     }
 
     private func pruneSecureInputReceipts() {
-        if secureInputTransactions.prune(now: now()) {
+        if secureInputLifecycle.prune(now: now()) {
             persistSecureInputReceipts()
         }
     }
@@ -2647,14 +2648,14 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         authorizationOutcome: AuditAuthorizationOutcome,
         auditStatus: AuditStatus
     ) async {
-        guard let request = secureInputTransactions.finish(
+        guard let completion = secureInputLifecycle.finish(
             id: id,
             status: status,
             terminalDate: now()
         ) else { return }
+        let request = completion.request
         persistSecureInputReceipts()
-        secureInputExpiryTasks.removeValue(forKey: id)?.cancel()
-        let context = secureInputAuditContexts.removeValue(forKey: id)
+        let context = completion.auditContext
         secureInputNotifier.notifyQueueChanged(requestID: id)
         await emitAudit(
             action: action,
@@ -2676,7 +2677,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         id: UUID,
         request: CatalogAgentSecureInputRequest
     ) throws {
-        try secureInputTransactions.ensureSubmissionIsStillActive(
+        try secureInputLifecycle.ensureSubmissionIsStillActive(
             id: id,
             request: request,
             now: now()
@@ -3311,7 +3312,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // A request-owned Secure Input transaction is the only path allowed
         // to consume plaintext for its Entry. Blocking the generic editor for
         // the lifetime of the request closes the stale-Sheet race.
-        guard !secureInputTransactions.hasRequest(forEntryID: entry.id) else {
+        guard !secureInputLifecycle.hasRequest(forEntryID: entry.id) else {
             throw SecretCatalogAgentError.invalidOperation
         }
         let snapshot = try await catalogSnapshotForAgent()
@@ -3410,7 +3411,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
 
         guard !secretInputs.isEmpty else {
-            guard !secureInputTransactions.hasRequest(forEntryID: entry.id) else {
+            guard !secureInputLifecycle.hasRequest(forEntryID: entry.id) else {
                 throw SecretCatalogAgentError.invalidOperation
             }
             do {
@@ -3476,7 +3477,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // encrypting. Re-check immediately before the store call so a
             // Secure Input request that began in that window cannot be
             // bypassed by this generic plaintext-consuming editor.
-            guard !secureInputTransactions.hasRequest(forEntryID: entry.id) else {
+            guard !secureInputLifecycle.hasRequest(forEntryID: entry.id) else {
                 throw SecretCatalogAgentError.invalidOperation
             }
             let updated = try await catalogDocumentStore!.updateEntry(finalEntry, expectedRevision: expectedRevision)
@@ -5651,7 +5652,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private func persistSecureInputReceipts() {
     do {
         try secureInputReceiptStore.persist(
-            secureInputTransactions.receiptRecords(now: now())
+            secureInputLifecycle.receiptRecords(now: now())
         )
     } catch {
         Logger(subsystem: "com.agent-secret-vault.SVLT", category: "secure-input")
