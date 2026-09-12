@@ -175,12 +175,18 @@ public extension VaultAppServices {
                     try Task.checkCancellation()
                     let output = try await self.performSecretOperation(descriptor)
                     await coordinator.succeed(operationID: operationID, output: output)
-                } catch let error as SecretOperationError {
+                } catch let error as VaultCore.SecretOperationError {
                     await coordinator.fail(operationID: operationID, errorCode: error.responseCode)
                 } catch is CancellationError {
-                    await coordinator.fail(operationID: operationID, errorCode: SecretOperationError.authorizationCancelled.responseCode)
+                    await coordinator.fail(
+                        operationID: operationID,
+                        errorCode: VaultCore.SecretOperationError.authorizationCancelled.responseCode
+                    )
                 } catch {
-                    await coordinator.fail(operationID: operationID, errorCode: SecretOperationError.actionExecutionFailed.responseCode)
+                    await coordinator.fail(
+                        operationID: operationID,
+                        errorCode: VaultCore.SecretOperationError.actionExecutionFailed.responseCode
+                    )
                 }
             }
         }
@@ -194,7 +200,7 @@ public extension VaultAppServices {
             operationID: operationID,
             principal: principal
         ) else {
-            throw SecretOperationError.invalidOperationParameters
+            throw VaultCore.SecretOperationError.invalidOperationParameters
         }
         return status
     }
@@ -205,7 +211,7 @@ public extension VaultAppServices {
             operationID: operationID,
             principal: principal
         ) else {
-            throw SecretOperationError.invalidOperationParameters
+            throw VaultCore.SecretOperationError.invalidOperationParameters
         }
         inFlightSecretOperations[operationID]?.cancel()
         return status
@@ -218,7 +224,7 @@ public extension VaultAppServices {
 
     func ensureTrackedSecretOperationIsActive() throws {
         guard SecretOperationLifecycleContext.operationID != nil, Task.isCancelled else { return }
-        throw SecretOperationError.authorizationCancelled
+        throw VaultCore.SecretOperationError.authorizationCancelled
     }
 
     func invalidateTrackedSecretOperations() async {
