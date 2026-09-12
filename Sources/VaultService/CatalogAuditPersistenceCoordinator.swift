@@ -9,9 +9,6 @@ import VaultIPC
 /// Business services provide the semantic audit entry and caller context;
 /// this actor owns only durable audit-channel mechanics.
 actor CatalogAuditPersistenceCoordinator {
-    private static let defaultIntegrityScanInterval: TimeInterval = 86_400
-    private static let defaultIntegrityScanRetryInterval: TimeInterval = 3_600
-
     private let auditLog: EncryptedAuditLog?
     private let fallbackMasterKey: SymmetricKey?
     private let now: @Sendable () -> Date
@@ -25,8 +22,8 @@ actor CatalogAuditPersistenceCoordinator {
         auditHealthURL: URL?,
         fallbackMasterKey: SymmetricKey?,
         now: @escaping @Sendable () -> Date,
-        integrityScanInterval: TimeInterval = CatalogAuditPersistenceCoordinator.defaultIntegrityScanInterval,
-        integrityScanRetryInterval: TimeInterval = CatalogAuditPersistenceCoordinator.defaultIntegrityScanRetryInterval
+        integrityScanInterval: TimeInterval = 86_400,
+        integrityScanRetryInterval: TimeInterval = 3_600
     ) {
         self.auditLog = auditLog
         self.fallbackMasterKey = fallbackMasterKey
