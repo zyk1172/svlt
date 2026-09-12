@@ -165,6 +165,15 @@ describe("plugin commands", () => {
     expect(isSafeTrackedCatalogPath("folder\\敏感信息.md")).toBe(false);
   });
 
+  it("binds validation identity to exact catalog bytes", async () => {
+    const first = "# catalog\nvalue=a\n";
+    const same = "# catalog\nvalue=a\n";
+    const changed = "# catalog\nvalue=b\n";
+
+    expect(await digest(first)).toBe(await digest(same));
+    expect(await digest(first)).not.toBe(await digest(changed));
+  });
+
   it("validates a tracked Catalog after a cold-start marker deletion", async () => {
     vi.useFakeTimers();
     try {
