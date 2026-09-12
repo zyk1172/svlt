@@ -119,6 +119,8 @@ jobs:
         run: |
           bash -n scripts/*.sh
           test -x scripts/release-e2e.sh
+      - name: Enforce large-file architecture budgets
+        run: bash scripts/check-architecture-budgets.sh
       - name: Check whitespace
         run: |
           # Select the complete event range instead of checking only the
