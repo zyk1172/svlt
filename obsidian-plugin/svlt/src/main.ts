@@ -38,6 +38,7 @@ type ValidationResult = Extract<Awaited<ReturnType<LocalVaultClient["request"]>>
 
 export default class AgentSecretVaultPlugin extends Plugin {
   private catalogValidationTimer: ReturnType<typeof setTimeout> | undefined;
+  private catalogValidationGeneration = 0;
   private statusBar?: HTMLElement;
   private latestDiagnostics: CatalogValidationDiagnostic[] = [];
   private lastNoticeFingerprint?: string;
@@ -63,7 +64,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
       id: "validate-catalog",
       name: "验证 SVLT 敏感信息目录",
       callback: async () => {
-        await this.validateManagedCatalog();
+        await this.validateManagedCatalog(this.invalidateCatalogValidation());
       }
     });
     this.addCommand({
@@ -80,13 +81,17 @@ export default class AgentSecretVaultPlugin extends Plugin {
     this.register(() => {
       if (this.catalogValidationTimer) clearTimeout(this.catalogValidationTimer);
       this.catalogValidationTimer = undefined;
+      // Invalidate every response still in flight. Network cancellation is an
+      // optimization only; generation ownership decides whether state may be
+      // committed after unload.
+      this.invalidateCatalogValidation();
     });
   }
 
   private registerCatalogWatcher(): void {
     const modifyRef = this.app.vault.on("modify", (file) => {
       if (!(file instanceof Object) || !("extension" in file) || (file as TFile).extension !== "md") return;
-      void this.validateModifiedCatalog(file as TFile);
+      void this.validateModifiedCatalog(file as TFile, this.invalidateCatalogValidation());
     }) as EventRef;
     this.registerEvent(modifyRef);
 
@@ -94,6 +99,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const renamed = file as TFile;
       if (!renamed || typeof oldPath !== "string" || oldPath !== this.trackedCatalogPath) return;
       if (!isSafeTrackedCatalogPath(renamed.path)) return;
+      this.invalidateCatalogValidation();
       this.trackedCatalogPath = renamed.path;
       this.activeCatalogFile = renamed;
       void this.saveTrackedCatalogIdentity();
@@ -103,6 +109,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
     const deleteRef = this.app.vault.on("delete", (file) => {
       const deleted = file as TFile;
       if (!deleted || deleted.path !== this.trackedCatalogPath) return;
+      this.invalidateCatalogValidation();
       this.activeCatalogFile = undefined;
       new Notice("SVLT：SVLT 管理的敏感信息目录文件已不存在。");
       // Keep the relative identity. If the user later recreates a file at the
@@ -113,13 +120,13 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
     const fileOpenRef = this.app.workspace.on("file-open", (file) => {
       if (!file || !(file instanceof Object) || !("extension" in file)) return;
-      void this.validateModifiedCatalog(file as TFile);
+      void this.validateModifiedCatalog(file as TFile, this.invalidateCatalogValidation());
     }) as EventRef;
     this.registerEvent(fileOpenRef);
 
     const activeLeafRef = this.app.workspace.on("active-leaf-change", () => {
       const file = this.app.workspace.getActiveFile();
-      if (file) void this.validateModifiedCatalog(file);
+      if (file) void this.validateModifiedCatalog(file, this.invalidateCatalogValidation());
     }) as EventRef;
     this.registerEvent(activeLeafRef);
   }
@@ -151,12 +158,14 @@ export default class AgentSecretVaultPlugin extends Plugin {
       ? this.app.vault.getMarkdownFiles().find((file) => file.path === this.trackedCatalogPath)
       : this.app.workspace.getActiveFile();
     if (!candidate) return;
-    await this.validateModifiedCatalog(candidate);
+    await this.validateModifiedCatalog(candidate, this.invalidateCatalogValidation());
   }
 
-  private async validateModifiedCatalog(file: TFile): Promise<void> {
+  private async validateModifiedCatalog(file: TFile, observationGeneration: number): Promise<void> {
     try {
       const text = await this.app.vault.cachedRead(file);
+      if (!this.isCurrentCatalogValidation(observationGeneration)) return;
+
       // A marker-bearing file is enough to trigger the Core validator. The
       // Core, not this classifier, decides whether it is actually valid.
       const classified = classifyCatalogText(text);
@@ -167,6 +176,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
         if (this.trackedCatalogPath !== file.path) {
           this.trackedCatalogPath = file.path;
           await this.saveTrackedCatalogIdentity();
+          if (!this.isCurrentCatalogValidation(observationGeneration)) return;
         }
       } else if (isTracked) {
         // Preserve the tracked identity after the marker or other structure
@@ -181,10 +191,20 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private scheduleCatalogValidation(): void {
     if (this.catalogValidationTimer) clearTimeout(this.catalogValidationTimer);
+    const generation = this.invalidateCatalogValidation();
     this.catalogValidationTimer = setTimeout(() => {
       this.catalogValidationTimer = undefined;
-      void this.validateManagedCatalog();
+      void this.validateManagedCatalog(generation);
     }, 300);
+  }
+
+  private invalidateCatalogValidation(): number {
+    this.catalogValidationGeneration += 1;
+    return this.catalogValidationGeneration;
+  }
+
+  private isCurrentCatalogValidation(generation: number): boolean {
+    return generation === this.catalogValidationGeneration;
   }
 
   private registerJumpProtocol(): void {
@@ -233,9 +253,11 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
   }
 
-  private async validateManagedCatalog(): Promise<void> {
+  private async validateManagedCatalog(generation: number): Promise<void> {
     try {
       const response = await this.createVaultClient().request({ type: "catalogValidate" });
+      if (!this.isCurrentCatalogValidation(generation)) return;
+
       if (response.type !== "catalogValidation") {
         this.publishValidationFailure(response.type === "failure" ? response.code : "UNEXPECTED_RESPONSE");
         return;
@@ -250,8 +272,10 @@ export default class AgentSecretVaultPlugin extends Plugin {
       this.updateDiagnosticStatusBar();
 
       if (response.catalogStatus === "FOUND") {
-        // Accepted/valid validation is intentionally silent, including after
-        // watcher-triggered revalidation.
+        // A recovery ends the previous notice episode. If the same failure
+        // happens again later, state must change immediately and a new notice
+        // is allowed to explain the new failure episode.
+        this.lastNoticeFingerprint = undefined;
         return;
       }
 
@@ -260,6 +284,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
       this.lastNoticeFingerprint = noticeFingerprint;
       this.publishDiagnosticsNotice(response);
     } catch {
+      if (!this.isCurrentCatalogValidation(generation)) return;
       this.publishValidationFailure("APP_UNAVAILABLE");
     }
   }
@@ -274,12 +299,18 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private publishValidationFailure(code: string): void {
     const fingerprint = `failure:${code}`;
-    if (this.lastNoticeFingerprint === fingerprint) return;
-    this.lastNoticeFingerprint = fingerprint;
+    const shouldPublishNotice = this.lastNoticeFingerprint !== fingerprint;
+
+    // Notice de-duplication is presentation-only. It must never suppress the
+    // authoritative state transition or leave a previous FOUND result visible.
     this.latestValidation = { status: "CATALOG_UNAVAILABLE", fingerprint };
     this.latestDiagnostics = [];
     this.updateDiagnosticStatusBar();
-    new Notice(`SVLT：敏感信息目录验证失败（${code}）。`);
+    this.lastNoticeFingerprint = fingerprint;
+
+    if (shouldPublishNotice) {
+      new Notice(`SVLT：敏感信息目录验证失败（${code}）。`);
+    }
   }
 
   private showCatalogDiagnostics(): void {

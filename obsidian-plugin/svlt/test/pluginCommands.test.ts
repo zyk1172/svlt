@@ -104,6 +104,13 @@ function makePlugin(
   return plugin;
 }
 
+type ValidationTestPlugin = {
+  createVaultClient: () => unknown;
+  invalidateCatalogValidation: () => number;
+  validateManagedCatalog: (generation: number) => Promise<void>;
+  latestValidation?: { status: string; rawSHA256?: string | null; fingerprint: string };
+};
+
 describe("plugin commands", () => {
   beforeEach(() => {
     obsidianMock.registeredCommands = [];
@@ -276,5 +283,60 @@ describe("plugin commands", () => {
       "SVLT：敏感信息目录有 2 个格式问题，第一个位于 第 7 行、第 1 列。"
     ]);
     expect(obsidianMock.statusItems[0]?.textContent).toContain("2 个问题");
+  });
+
+  it("updates state when the same failure recurs after a successful validation", async () => {
+    const plugin = makePlugin() as unknown as ValidationTestPlugin;
+    const responses = [
+      { type: "failure", code: "APP_UNAVAILABLE" },
+      { type: "catalogValidation", catalogStatus: "FOUND", rawSHA256: "new", diagnostics: [] },
+      { type: "failure", code: "APP_UNAVAILABLE" }
+    ];
+    plugin.createVaultClient = () => ({ request: async () => responses.shift() });
+
+    for (let index = 0; index < 3; index += 1) {
+      const generation = plugin.invalidateCatalogValidation();
+      await plugin.validateManagedCatalog(generation);
+    }
+
+    expect(plugin.latestValidation?.status).toBe("CATALOG_UNAVAILABLE");
+    expect(obsidianMock.notices).toEqual([
+      "SVLT：敏感信息目录验证失败（APP_UNAVAILABLE）。",
+      "SVLT：敏感信息目录验证失败（APP_UNAVAILABLE）。"
+    ]);
+  });
+
+  it("ignores an older validation response that arrives after a newer result", async () => {
+    const plugin = makePlugin() as unknown as ValidationTestPlugin;
+    const resolvers: Array<(value: unknown) => void> = [];
+    plugin.createVaultClient = () => ({
+      request: () => new Promise((resolve) => resolvers.push(resolve))
+    });
+
+    const firstGeneration = plugin.invalidateCatalogValidation();
+    const first = plugin.validateManagedCatalog(firstGeneration);
+    await Promise.resolve();
+
+    const secondGeneration = plugin.invalidateCatalogValidation();
+    const second = plugin.validateManagedCatalog(secondGeneration);
+    await Promise.resolve();
+
+    resolvers[1]?.({
+      type: "catalogValidation",
+      catalogStatus: "FOUND",
+      rawSHA256: "new",
+      diagnostics: []
+    });
+    await second;
+
+    resolvers[0]?.({
+      type: "catalogValidation",
+      catalogStatus: "FOUND",
+      rawSHA256: "old",
+      diagnostics: []
+    });
+    await first;
+
+    expect(plugin.latestValidation?.rawSHA256).toBe("new");
   });
 });
