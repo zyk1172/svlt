@@ -170,19 +170,6 @@ private enum ExecutionAuthorizationCommit: Equatable, Sendable {
     case needsFreshApproval
 }
 
-/// Non-sensitive, sticky audit-channel health. This is deliberately kept
-/// outside the encrypted event stream so the daemon can report an audit gap
-/// without acquiring a vault or audit key. The record contains no paths,
-/// payloads, references, or credentials.
-private struct CatalogAuditHealthRecord: Codable, Sendable {
-    static let currentSchemaVersion = 1
-
-    let schemaVersion: Int
-    let lastFailureAt: Date?
-    let gapDetected: Bool
-    let lastSuccessfulSequence: UInt64
-}
-
 private final class CatalogWriteAccessContinuationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
@@ -243,7 +230,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let auditObserver: (@Sendable (AgentAutomationAuditEntry) async -> Void)?
     private let savedReferencesObserver: (@Sendable ([SecretReferenceMetadata]) async -> Void)?
     private let auditLog: EncryptedAuditLog?
-    private let auditHealthURL: URL?
+    private var auditHealthStore: CatalogAuditHealthStore
     private let secureInputReceiptStore: CatalogSecureInputReceiptStore
     private let exportDirectory: URL
     private let writeAccessNotifier: CatalogAgentWriteAccessNotifier
@@ -262,9 +249,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// The Agent creates the request context; the App later uses the same
     /// correlation/request IDs when it records the device-owner decision.
     private var pendingWriteAuditContexts: [UUID: AuditContext] = [:]
-    private var auditAppendFailureAt: Date?
-    private var auditAppendGapDetected = false
-    private var lastSuccessfulAuditSequence: UInt64 = 0
     private var secureInputLifecycle = CatalogSecureInputLifecycle()
     /// Cancellation/expiry is latched while the one-shot authentication or
     /// store call is suspended. The request is not removed during submission;
@@ -349,16 +333,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.auditObserver = auditObserver
         self.savedReferencesObserver = savedReferencesObserver
         self.auditLog = auditLog
-        self.auditHealthURL = auditHealthURL?.standardizedFileURL
+        self.auditHealthStore = CatalogAuditHealthStore(url: auditHealthURL)
         let resolvedSecureInputReceiptURL = (secureInputReceiptURL
             ?? auditHealthURL?.deletingLastPathComponent().appendingPathComponent("secure-input-receipts.json"))?
             .standardizedFileURL
         let secureInputReceiptStore = CatalogSecureInputReceiptStore(url: resolvedSecureInputReceiptURL)
         self.secureInputReceiptStore = secureInputReceiptStore
-        let persistedAuditHealth = Self.loadAuditHealth(from: auditHealthURL)
-        self.auditAppendFailureAt = persistedAuditHealth?.lastFailureAt
-        self.auditAppendGapDetected = persistedAuditHealth?.gapDetected ?? false
-        self.lastSuccessfulAuditSequence = persistedAuditHealth?.lastSuccessfulSequence ?? 0
         let persistedSecureInputReceipts = secureInputReceiptStore.load(now: now())
         self.secureInputLifecycle = CatalogSecureInputLifecycle(receipts: persistedSecureInputReceipts)
         self.exportDirectory = (exportDirectory ?? Self.defaultExportDirectory()).standardizedFileURL
@@ -2336,8 +2316,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     /// A deliberately narrow, non-sensitive health signal. It never contains
     /// paths, payloads, reference IDs, or key material.
     public func catalogAuditHealth() async -> String? {
-        guard auditAppendGapDetected else { return nil }
-        return "AUDIT_APPEND_FAILED"
+        auditHealthStore.healthSignal
     }
 
     public func pendingCatalogSecureInputRequestIDs() async -> [UUID] {
@@ -5580,7 +5559,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             // The production daemon supplies an independent Keychain audit key.
             // This call must never go through resolvedMasterKey().
             try await auditLog.append(event)
-            recordAuditAppendSuccess()
+            auditHealthStore.recordAppendSuccess()
             CatalogSecurityAuditNotifier.notify()
         } catch {
             // Explicit test callers may have supplied an already-held
@@ -5588,87 +5567,30 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             if let masterKey {
                 do {
                     try await auditLog.append(event, masterKey: masterKey)
-                    recordAuditAppendSuccess()
+                    auditHealthStore.recordAppendSuccess()
                     CatalogSecurityAuditNotifier.notify()
                 } catch {
                     // Audit persistence must not make the user operation fail.
-                    recordAuditAppendFailure()
+                    auditHealthStore.recordAppendFailure(at: now())
                     Self.logAuditAppendFailure()
                 }
             }
             if masterKey == nil {
-                recordAuditAppendFailure()
+                auditHealthStore.recordAppendFailure(at: now())
                 Self.logAuditAppendFailure()
             }
         }
     }
 
-    private func recordAuditAppendFailure() {
-        auditAppendGapDetected = true
-        if auditAppendFailureAt == nil {
-            auditAppendFailureAt = now()
-        }
-        persistAuditHealth()
-    }
-
-    private func recordAuditAppendSuccess() {
-        lastSuccessfulAuditSequence &+= 1
-        persistAuditHealth()
-    }
-
-    private func persistAuditHealth() {
-        guard let auditHealthURL else { return }
-        let record = CatalogAuditHealthRecord(
-            schemaVersion: CatalogAuditHealthRecord.currentSchemaVersion,
-            lastFailureAt: auditAppendFailureAt,
-            gapDetected: auditAppendGapDetected,
-            lastSuccessfulSequence: lastSuccessfulAuditSequence
-        )
+    private func persistSecureInputReceipts() {
         do {
-            let parentURL = auditHealthURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: parentURL,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o700],
-                ofItemAtPath: parentURL.path
-            )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            let data = try encoder.encode(record)
-            try data.write(to: auditHealthURL, options: [.atomic])
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: auditHealthURL.path
+            try secureInputReceiptStore.persist(
+                secureInputLifecycle.receiptRecords(now: now())
             )
         } catch {
-            Logger(subsystem: "com.agent-secret-vault.SVLT", category: "audit")
-                .error("AUDIT_HEALTH_PERSIST_FAILED")
+            Logger(subsystem: "com.agent-secret-vault.SVLT", category: "secure-input")
+                .error("SECURE_INPUT_RECEIPT_PERSIST_FAILED")
         }
-    }
-
-    private func persistSecureInputReceipts() {
-    do {
-        try secureInputReceiptStore.persist(
-            secureInputLifecycle.receiptRecords(now: now())
-        )
-    } catch {
-        Logger(subsystem: "com.agent-secret-vault.SVLT", category: "secure-input")
-            .error("SECURE_INPUT_RECEIPT_PERSIST_FAILED")
-    }
-}
-
-    private static func loadAuditHealth(from url: URL?) -> CatalogAuditHealthRecord? {
-        guard let url,
-              let data = try? Data(contentsOf: url),
-              let record = try? JSONDecoder().decode(CatalogAuditHealthRecord.self, from: data),
-              record.schemaVersion == CatalogAuditHealthRecord.currentSchemaVersion
-        else {
-            return nil
-        }
-        return record
     }
 
     private static func logAuditAppendFailure() {
