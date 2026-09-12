@@ -220,7 +220,7 @@ jobs:
               }
           }
           '''
-          transaction = transaction.rstrip() + lifecycle_code + "\n"
+          transaction = (transaction.rstrip() + lifecycle_code).rstrip() + "\n"
           transaction_path.write_text(transaction)
 
           test_marker = "private func secureInputRequest(\n"
