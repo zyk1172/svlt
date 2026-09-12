@@ -19,6 +19,8 @@ jobs:
         with:
           ref: codex/daemon-owned-catalog-state
           fetch-depth: 0
+      - name: Normalize current CI insertion anchor
+        run: python3 scripts/prepare-catalog-owner-refactor.py
       - name: Apply deterministic refactor
         run: python3 scripts/apply-catalog-owner-refactor.py
       - name: Install XcodeGen when unavailable
