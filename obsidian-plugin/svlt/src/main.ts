@@ -30,6 +30,11 @@ export function isSafeTrackedCatalogPath(path: string): boolean {
     && !path.split("/").some((component) => component === ".." || component.length === 0);
 }
 
+export async function catalogRawSHA256(bytes: ArrayBuffer): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 type TrackedCatalogData = {
   managedCatalogPath?: unknown;
 };
@@ -48,6 +53,8 @@ export default class AgentSecretVaultPlugin extends Plugin {
     fingerprint: string;
   };
   private activeCatalogFile?: TFile;
+  private activeCatalogRawSHA256?: string;
+  private latestValidatedCatalogFile?: TFile;
   /** The only persisted Catalog identity: a Vault-relative path. */
   private trackedCatalogPath?: string;
 
@@ -81,9 +88,6 @@ export default class AgentSecretVaultPlugin extends Plugin {
     this.register(() => {
       if (this.catalogValidationTimer) clearTimeout(this.catalogValidationTimer);
       this.catalogValidationTimer = undefined;
-      // Invalidate every response still in flight. Network cancellation is an
-      // optimization only; generation ownership decides whether state may be
-      // committed after unload.
       this.invalidateCatalogValidation();
     });
   }
@@ -111,10 +115,8 @@ export default class AgentSecretVaultPlugin extends Plugin {
       if (!deleted || deleted.path !== this.trackedCatalogPath) return;
       this.invalidateCatalogValidation();
       this.activeCatalogFile = undefined;
+      this.activeCatalogRawSHA256 = undefined;
       new Notice("SVLT：SVLT 管理的敏感信息目录文件已不存在。");
-      // Keep the relative identity. If the user later recreates a file at the
-      // same Vault path, it remains tracked and malformed content is still
-      // validated; no replacement file is created automatically.
     }) as EventRef;
     this.registerEvent(deleteRef);
 
@@ -166,22 +168,29 @@ export default class AgentSecretVaultPlugin extends Plugin {
       const text = await this.app.vault.cachedRead(file);
       if (!this.isCurrentCatalogValidation(observationGeneration)) return;
 
-      // A marker-bearing file is enough to trigger the Core validator. The
-      // Core, not this classifier, decides whether it is actually valid.
       const classified = classifyCatalogText(text);
       const isTracked = this.trackedCatalogPath === file.path || this.activeCatalogFile?.path === file.path;
       if (!shouldWatchCatalogFile(classified, isTracked)) return;
+
+      // Bind the upcoming service response to the exact bytes Obsidian sees.
+      // The service already returns SHA-256 of the bytes it validated, so no
+      // absolute path or new wire-protocol identity is required.
+      const rawBytes = await this.app.vault.readBinary(file);
+      if (!this.isCurrentCatalogValidation(observationGeneration)) return;
+      const rawSHA256 = await catalogRawSHA256(rawBytes);
+      if (!this.isCurrentCatalogValidation(observationGeneration)) return;
+
       if (classified === "managedV3") {
         this.activeCatalogFile = file;
+        this.activeCatalogRawSHA256 = rawSHA256;
         if (this.trackedCatalogPath !== file.path) {
           this.trackedCatalogPath = file.path;
           await this.saveTrackedCatalogIdentity();
           if (!this.isCurrentCatalogValidation(observationGeneration)) return;
         }
       } else if (isTracked) {
-        // Preserve the tracked identity after the marker or other structure
-        // has been damaged; the Core validator must report the breakage.
         this.activeCatalogFile = file;
+        this.activeCatalogRawSHA256 = rawSHA256;
       }
       this.scheduleCatalogValidation();
     } catch {
@@ -200,6 +209,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
 
   private invalidateCatalogValidation(): number {
     this.catalogValidationGeneration += 1;
+    this.latestValidatedCatalogFile = undefined;
     return this.catalogValidationGeneration;
   }
 
@@ -254,6 +264,9 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 
   private async validateManagedCatalog(generation: number): Promise<void> {
+    const expectedFile = this.activeCatalogFile;
+    const expectedRawSHA256 = this.activeCatalogRawSHA256;
+
     try {
       const response = await this.createVaultClient().request({ type: "catalogValidate" });
       if (!this.isCurrentCatalogValidation(generation)) return;
@@ -263,6 +276,12 @@ export default class AgentSecretVaultPlugin extends Plugin {
         return;
       }
 
+      if (!expectedFile || !expectedRawSHA256 || response.rawSHA256 !== expectedRawSHA256) {
+        this.publishValidationDocumentMismatch();
+        return;
+      }
+
+      this.latestValidatedCatalogFile = expectedFile;
       this.latestDiagnostics = response.diagnostics ?? [];
       this.latestValidation = {
         status: response.catalogStatus,
@@ -272,9 +291,6 @@ export default class AgentSecretVaultPlugin extends Plugin {
       this.updateDiagnosticStatusBar();
 
       if (response.catalogStatus === "FOUND") {
-        // A recovery ends the previous notice episode. If the same failure
-        // happens again later, state must change immediately and a new notice
-        // is allowed to explain the new failure episode.
         this.lastNoticeFingerprint = undefined;
         return;
       }
@@ -289,6 +305,19 @@ export default class AgentSecretVaultPlugin extends Plugin {
     }
   }
 
+  private publishValidationDocumentMismatch(): void {
+    const fingerprint = "failure:CATALOG_DOCUMENT_MISMATCH";
+    const shouldPublishNotice = this.lastNoticeFingerprint !== fingerprint;
+    this.latestValidatedCatalogFile = undefined;
+    this.latestValidation = { status: "CATALOG_UNAVAILABLE", fingerprint };
+    this.latestDiagnostics = [];
+    this.updateDiagnosticStatusBar();
+    this.lastNoticeFingerprint = fingerprint;
+    if (shouldPublishNotice) {
+      new Notice("SVLT：当前文件不是正在校验的目录，已忽略这次校验结果。");
+    }
+  }
+
   private publishDiagnosticsNotice(response: ValidationResult): void {
     const diagnostics = response.diagnostics ?? [];
     const first = response.diagnostics?.[0];
@@ -300,9 +329,7 @@ export default class AgentSecretVaultPlugin extends Plugin {
   private publishValidationFailure(code: string): void {
     const fingerprint = `failure:${code}`;
     const shouldPublishNotice = this.lastNoticeFingerprint !== fingerprint;
-
-    // Notice de-duplication is presentation-only. It must never suppress the
-    // authoritative state transition or leave a previous FOUND result visible.
+    this.latestValidatedCatalogFile = undefined;
     this.latestValidation = { status: "CATALOG_UNAVAILABLE", fingerprint };
     this.latestDiagnostics = [];
     this.updateDiagnosticStatusBar();
@@ -326,9 +353,9 @@ export default class AgentSecretVaultPlugin extends Plugin {
   }
 
   private async jumpToDiagnostic(diagnostic: CatalogValidationDiagnostic): Promise<void> {
-    const file = this.activeCatalogFile ?? this.app.workspace.getActiveFile();
+    const file = this.latestValidatedCatalogFile;
     if (!file) {
-      new Notice("SVLT：无法定位当前目录文件。");
+      new Notice("SVLT：当前诊断未绑定到已校验的目录文件，请重新验证。");
       return;
     }
     const leaf = this.app.workspace.getLeaf(false);
