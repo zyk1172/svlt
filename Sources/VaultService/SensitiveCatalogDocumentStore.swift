@@ -5,6 +5,8 @@ import VaultAuthorization
 import VaultCore
 
 private let svltPosixFileReaderMaximumBytes = 64 * 1024 * 1024
+private let svltCatalogLockWaitNanoseconds: UInt64 = 1_000_000_000
+private let svltCatalogLockRetryMicroseconds: useconds_t = 10_000
 
 public enum SensitiveCatalogDocumentStoreError: Error, Equatable, Sendable {
     case noSelectedDocument
@@ -873,9 +875,11 @@ public actor SensitiveCatalogDocumentStore {
     /// Read-only Catalog validation for editor integrations. Unlike
     /// `snapshot()`, this path never reconciles accepted state, writes an
     /// integrity sidecar, creates a recovery archive, or runs the parent
-    /// directory write probe.
+    /// directory write probe. Interrupted recovery is deliberately left for
+    /// the next exclusive snapshot/mutation; validation fails closed against
+    /// whatever durable pair exists without mutating it.
     public func validationReport() throws -> CatalogValidationReport {
-        try withCatalogLock(exclusive: true) {
+        try withCatalogLock(exclusive: false) {
             try validationReportUnlocked()
         }
     }
@@ -1422,7 +1426,6 @@ public actor SensitiveCatalogDocumentStore {
     }
 
     private func validationReportUnlocked() throws -> CatalogValidationReport {
-        try recoverInterruptedRecoveryUnlocked()
         guard let url = documentURL else {
             throw SensitiveCatalogDocumentStoreError.noSelectedDocument
         }
@@ -2092,7 +2095,7 @@ public actor SensitiveCatalogDocumentStore {
         let key: Data
         do { key = try keyStore.loadOrCreateKey() } catch { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
         let computed = Data(HMAC<SHA256>.authenticationCode(for: integrityPayload(record.acceptedState), using: SymmetricKey(data: key)))
-        guard constantTimeEqual(computed, expected) else { throw SensitiveCatalogDocumentStoreError.invalidIntegrity }
+        guard constantTimeEqual(computed, expected) else { throw SensitiveCatalogDocumentStoreError.externalModification }
     }
 
     private func integrityPayload(_ state: CatalogAcceptedState) -> Data {
@@ -2718,10 +2721,29 @@ public actor SensitiveCatalogDocumentStore {
             throw SensitiveCatalogDocumentStoreError.writeFailed
         }
         defer { close(descriptor) }
-        guard flock(descriptor, exclusive ? LOCK_EX : LOCK_SH) == 0 else {
+
+        let requestedLock = (exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB
+        let deadline = DispatchTime.now().uptimeNanoseconds + svltCatalogLockWaitNanoseconds
+        while flock(descriptor, requestedLock) != 0 {
             let status = errno
-            logIOFailure(stage: .acquireLock, status: status, operation: .catalogMutation)
-            throw SensitiveCatalogDocumentStoreError.writeFailed
+            let isContention = status == EWOULDBLOCK || status == EAGAIN
+            if !isContention && status != EINTR {
+                logIOFailure(
+                    stage: .acquireLock,
+                    status: status,
+                    operation: exclusive ? .catalogMutation : .catalogRead
+                )
+                throw SensitiveCatalogDocumentStoreError.writeFailed
+            }
+            if DispatchTime.now().uptimeNanoseconds >= deadline {
+                logIOFailure(
+                    stage: .acquireLock,
+                    status: ETIMEDOUT,
+                    operation: exclusive ? .catalogMutation : .catalogRead
+                )
+                throw SensitiveCatalogDocumentStoreError.writeFailed
+            }
+            usleep(svltCatalogLockRetryMicroseconds)
         }
         defer { _ = flock(descriptor, LOCK_UN) }
         return try operation()
