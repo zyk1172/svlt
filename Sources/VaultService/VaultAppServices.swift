@@ -209,10 +209,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
     private var securityGeneration: UInt64 = 0
     private var secureInputLifecycle = CatalogSecureInputLifecycle()
-    /// Cancellation/expiry is latched while the one-shot authentication or
-    /// store call is suspended. The request is not removed during submission;
-    /// this prevents a late SecureField callback from committing after the
-    /// App has asked the daemon to cancel it.
+    /// Keep cancellation/expiry latched during suspended submission so a late
+    /// SecureField callback cannot commit after App cancellation.
 
     public init(
         textEncryptor: any TextEncrypting,
@@ -2087,6 +2085,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } else {
             operation = try await beginCatalogOperation()
         }
+        var mutationFailureAudit: (referenceCount: Int, context: AuditContext)?
         do {
             let snapshot = try await catalogSnapshotForAgent(using: operation)
             guard expectedRevision == snapshot.revision,
@@ -2115,14 +2114,17 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             let diff = CatalogSemanticDiff.between(old: snapshot.document, new: next)
             try await authorizeCatalogDiff(diff, transport: .createEntry, requireAgentSafeWrite: false)
-            await emitCatalogMutationStarted(action: "提交目录条目草稿", referenceCount: diff.referencedSecretRefs.count, context: operationContext)
+            let referenceCount = diff.referencedSecretRefs.count
+            await emitCatalogMutationStarted(action: "提交目录条目草稿", referenceCount: referenceCount, context: operationContext)
+            mutationFailureAudit = (referenceCount, operationContext)
             let updatedSnapshot = try await operation.createEntry(pending, expectedRevision: expectedRevision)
+            mutationFailureAudit = nil
             pendingCatalogDrafts.removeValue(forKey: draft.draftID)
             pendingCatalogDraftDocumentPaths.removeValue(forKey: draft.draftID)
             await emitAudit(
                 action: "提交目录条目草稿",
                 target: "catalog",
-                referenceCount: diff.referencedSecretRefs.count,
+                referenceCount: referenceCount,
                 result: "成功",
                 context: operationContext,
                 operation: .catalogMutation
@@ -2136,9 +2138,17 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             await endCatalogOperation(operation)
             return result
         } catch let error as SensitiveCatalogDocumentStoreError {
+            if let audit = mutationFailureAudit {
+                await emitCatalogMutationFailed(action: "提交目录条目草稿", referenceCount: audit.referenceCount, context: audit.context)
+            }
             await endCatalogOperation(operation)
             throw catalogAgentError(for: error)
         } catch {
+            if let audit = mutationFailureAudit {
+                await emitCatalogMutationFailed(action: "提交目录条目草稿", referenceCount: audit.referenceCount, context: audit.context)
+                await endCatalogOperation(operation)
+                throw SecretCatalogAgentError.writeFailed
+            }
             await endCatalogOperation(operation)
             throw error
         }
