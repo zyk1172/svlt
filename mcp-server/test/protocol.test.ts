@@ -916,17 +916,10 @@ describe("local IPC client", () => {
           request?: { type?: string };
         };
         receivedRequestType = envelope.request?.type;
-        setTimeout(() => {
-          if (!socket.destroyed) {
-            socket.end(IpcFrameCodec.encode({
-              type: "secretOperationHandle",
-              result: {
-                operationID: "00000000-0000-4000-8000-000000000111",
-                state: "queued"
-              }
-            }));
-          }
-        }, 50);
+        // Deliberately do not reply. A lifecycle start/status/cancel request is
+        // a bounded control request; if the daemon does not acknowledge it in
+        // time the caller must surface uncertainty rather than hold one long
+        // execution socket open or retry the side effect.
       });
     });
     await new Promise<void>((resolve, reject) => {
