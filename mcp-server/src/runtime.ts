@@ -13,6 +13,10 @@ import {
   type VaultIpcClient
 } from "./server.js";
 import { runWithSecretOperationAbortSignal } from "./secretOperations/context.js";
+import {
+  OPERATION_OUTCOME_UNKNOWN,
+  OUTCOME_UNKNOWN_GUIDANCE
+} from "./secretOperations/index.js";
 
 export { createVaultToolDefinitions } from "./server.js";
 export type { VaultIpcClient, VaultToolDefinition } from "./server.js";
@@ -57,7 +61,7 @@ export function registerVaultTools(server: McpServer, client: VaultIpcClient): v
           }
           await tool.outputSchema.parseAsync(result.structuredContent);
         }
-        return result;
+        return annotateOutcomeUnknownResult(result);
       })
     );
   }
@@ -66,6 +70,31 @@ export function registerVaultTools(server: McpServer, client: VaultIpcClient): v
 export async function runStdioServer(client: VaultIpcClient = new LocalIpcClient()): Promise<void> {
   const server = createMcpServer(client);
   await server.connect(new StdioServerTransport());
+}
+
+export function annotateOutcomeUnknownResult(result: CallToolResult): CallToolResult {
+  const structuredContent = result.structuredContent;
+  if (
+    structuredContent === undefined
+    || structuredContent.status !== OPERATION_OUTCOME_UNKNOWN
+  ) {
+    return result;
+  }
+
+  // Keep structuredContent schema-compatible with the existing MCP tools, but
+  // make the non-retry semantics explicit in the human/model-readable content.
+  // outcomeUnknown is a business state, not a generic MCP error: the external
+  // side effect may already have happened and must be reconciled before retry.
+  const agentFacingContent = {
+    ...structuredContent,
+    retrySafe: false,
+    reconciliationRequired: true,
+    guidance: OUTCOME_UNKNOWN_GUIDANCE
+  };
+  return {
+    ...result,
+    content: [{ type: "text", text: JSON.stringify(agentFacingContent) }]
+  };
 }
 
 function declaredCallerIdentity(server: McpServer): AgentCallerIdentity {
