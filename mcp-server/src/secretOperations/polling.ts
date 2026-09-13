@@ -19,7 +19,11 @@ export interface SecretOperationPollingOptions {
   onState?: (state: SecretOperationState, operationID: string) => void | Promise<void>;
 }
 
-const DEFAULT_POLL_INTERVAL_MS = 100;
+// Cancellation wakes the wait immediately through AbortSignal, so polling does
+// not need to run at UI-frame frequency. Four control reads per second keeps
+// terminal-result latency low without repeatedly reopening the local IPC socket
+// and rereading the capability token during a long approval wait.
+const DEFAULT_POLL_INTERVAL_MS = 250;
 
 export async function pollSecretOperation(
   client: SecretOperationIpcClient,
