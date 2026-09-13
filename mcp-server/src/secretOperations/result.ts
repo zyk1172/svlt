@@ -1,7 +1,5 @@
-import type {
-  SecretOperationOutput,
-  SecretOperationStatus
-} from "../protocol.js";
+import type { SecretOperationOutput } from "../protocol.js";
+import type { SecretOperationStatus } from "./protocol.js";
 import {
   OPERATION_CANCELLED,
   OPERATION_OUTCOME_UNKNOWN
