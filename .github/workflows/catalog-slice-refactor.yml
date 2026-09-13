@@ -23,16 +23,26 @@ jobs:
           from pathlib import Path
           path = Path('Sources/VaultService/VaultAppServices.swift')
           source = path.read_text()
-          replacements = {
+          required = {
               'private enum CatalogMutationPhase: String {': 'enum CatalogMutationPhase: String {',
               'private enum SecretOperationAuthorizationPath: Sendable {': 'enum SecretOperationAuthorizationPath: Sendable {',
-              'private func assessCatalogReadAuthorization(': 'func assessCatalogReadAuthorization(',
           }
-          for old, new in replacements.items():
+          for old, new in required.items():
               count = source.count(old)
               if count != 1:
                   raise SystemExit(f'expected exactly one {old!r}, found {count}')
               source = source.replace(old, new, 1)
+
+          # The initial extraction already promotes private helpers referenced
+          # by the extracted slice. Keep this repair safe if that promotion
+          # has already happened on the branch.
+          old = 'private func assessCatalogReadAuthorization('
+          new = 'func assessCatalogReadAuthorization('
+          if source.count(old) == 1:
+              source = source.replace(old, new, 1)
+          elif source.count(new) != 1:
+              raise SystemExit('assessCatalogReadAuthorization declaration not found exactly once')
+
           path.write_text(source)
           PY
           git diff --check
