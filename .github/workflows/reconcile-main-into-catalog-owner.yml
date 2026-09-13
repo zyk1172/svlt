@@ -1,0 +1,38 @@
+name: Reconcile main into catalog owner
+
+on:
+  push:
+    branches:
+      - codex/daemon-owned-catalog-state
+    paths:
+      - '.github/workflows/reconcile-main-into-catalog-owner.yml'
+      - 'scripts/reconcile-main-into-catalog-owner.trigger*'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose-merge:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Diagnose merge with main
+        run: |
+          set +e
+          git fetch origin main
+          git merge --no-commit --no-ff origin/main
+          merge_status=$?
+          echo "merge_status=$merge_status"
+          echo '=== unmerged files ==='
+          git diff --name-only --diff-filter=U
+          echo '=== conflict markers ==='
+          for f in $(git diff --name-only --diff-filter=U); do
+            echo "--- $f ---"
+            grep -n -C 12 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
+          done
+          echo '=== worktree summary ==='
+          git status --short
+          git merge --abort >/dev/null 2>&1 || true
+          exit 0
