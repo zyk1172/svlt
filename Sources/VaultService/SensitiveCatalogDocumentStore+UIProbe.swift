@@ -100,7 +100,12 @@ public extension SensitiveCatalogDocumentStore {
         }
 
         let result = CatalogUIProbeIO.read(url.path)
-        if result.status == ENOENT {
+        // Admission contention and an I/O deadline are both unavailable
+        // states for an optional UI adoption probe.  In particular, the
+        // single-permit gate deliberately fails fast instead of queueing
+        // File Provider work; do not turn that expected back-pressure into a
+        // write failure that makes the presentation test (and UI) throw.
+        if result.status == ENOENT || result.status == ETIMEDOUT {
             return SensitiveCatalogAdoptionAvailability()
         }
         guard result.status == 0, let data = result.data else {
