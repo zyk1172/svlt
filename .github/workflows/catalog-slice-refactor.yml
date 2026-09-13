@@ -21,18 +21,28 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          path = Path('Sources/VaultService/VaultAppServices.swift')
-          source = path.read_text()
-          replacements = {
+
+          app_path = Path('Sources/VaultService/VaultAppServices.swift')
+          app_source = app_path.read_text()
+          app_replacements = {
               'private enum CatalogMutationPhase: String {': 'enum CatalogMutationPhase: String {',
               'private enum SecretOperationAuthorizationPath: Sendable {': 'enum SecretOperationAuthorizationPath: Sendable {',
           }
-          for old, new in replacements.items():
-              count = source.count(old)
+          for old, new in app_replacements.items():
+              count = app_source.count(old)
               if count != 1:
                   raise SystemExit(f'expected exactly one {old!r}, found {count}')
-              source = source.replace(old, new, 1)
-          path.write_text(source)
+              app_source = app_source.replace(old, new, 1)
+          app_path.write_text(app_source)
+
+          catalog_path = Path('Sources/VaultService/VaultAppServices+CatalogOperations.swift')
+          catalog_source = catalog_path.read_text()
+          old = '    private func finishSecureInputRequest(\n'
+          new = '    func finishSecureInputRequest(\n'
+          count = catalog_source.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one finishSecureInputRequest declaration, found {count}')
+          catalog_path.write_text(catalog_source.replace(old, new, 1))
           PY
           git diff --check
       - name: Verify XcodeGen parity
@@ -53,6 +63,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Sources/VaultService/VaultAppServices.swift
+          git add Sources/VaultService/VaultAppServices.swift Sources/VaultService/VaultAppServices+CatalogOperations.swift
           git commit -m 'refactor: align catalog slice access boundary'
           git push origin HEAD:codex/catalog-agent-operations-slice
