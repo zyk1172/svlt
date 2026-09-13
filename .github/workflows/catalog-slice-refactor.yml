@@ -21,8 +21,9 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          path = Path('Sources/VaultService/VaultAppServices.swift')
-          source = path.read_text()
+
+          primary = Path('Sources/VaultService/VaultAppServices.swift')
+          source = primary.read_text()
           required = {
               'private enum CatalogMutationPhase: String {': 'enum CatalogMutationPhase: String {',
               'private enum SecretOperationAuthorizationPath: Sendable {': 'enum SecretOperationAuthorizationPath: Sendable {',
@@ -32,18 +33,24 @@ jobs:
               if count != 1:
                   raise SystemExit(f'expected exactly one {old!r}, found {count}')
               source = source.replace(old, new, 1)
+          primary.write_text(source)
 
-          # The initial extraction already promotes private helpers referenced
-          # by the extracted slice. Keep this repair safe if that promotion
-          # has already happened on the branch.
           old = 'private func assessCatalogReadAuthorization('
           new = 'func assessCatalogReadAuthorization('
-          if source.count(old) == 1:
-              source = source.replace(old, new, 1)
-          elif source.count(new) != 1:
-              raise SystemExit('assessCatalogReadAuthorization declaration not found exactly once')
-
-          path.write_text(source)
+          files = sorted(Path('Sources/VaultService').glob('*.swift'))
+          old_hits = [(path, path.read_text().count(old)) for path in files]
+          old_hits = [(path, count) for path, count in old_hits if count]
+          new_count = sum(path.read_text().count(new) for path in files)
+          if sum(count for _, count in old_hits) == 1:
+              path = old_hits[0][0]
+              text = path.read_text()
+              path.write_text(text.replace(old, new, 1))
+          elif sum(count for _, count in old_hits) == 0 and new_count == 1:
+              pass
+          else:
+              raise SystemExit(
+                  f'assessCatalogReadAuthorization declaration is ambiguous: old={old_hits}, new_count={new_count}'
+              )
           PY
           git diff --check
       - name: Verify XcodeGen parity
@@ -64,6 +71,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Sources/VaultService/VaultAppServices.swift
+          git add Sources/VaultService/*.swift
           git commit -m 'refactor: align catalog slice access boundary'
           git push origin HEAD:codex/catalog-agent-operations-slice
