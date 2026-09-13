@@ -216,12 +216,16 @@ import Foundation
     #expect(!workbench.contains("private struct WorkbenchPage<Content: View>: View {\n    var body: some View {\n        ScrollView"))
 }
 
-@Test func numericTelemetryLabelsRespondToStringSelectorsOnMacOS27() {
-    if #available(macOS 27.0, *) {
-        let number = NSNumber(value: 42)
-        #expect(number.responds(to: NSSelectorFromString("length")))
-        #expect(number.responds(to: NSSelectorFromString("getCString:maxLength:encoding:")))
-        #expect(number.responds(to: NSSelectorFromString("_getCString:maxLength:encoding:")))
-        #expect(number.responds(to: NSSelectorFromString("UTF8String")))
-    }
+@Test func numericTelemetryCompatibilityDoesNotInstallGlobalRuntimeHooks() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AgentSecretVaultApp/Compatibility/MetalTelemetryCompatibility.m")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    #expect(source.contains("workaround has been retired"))
+    #expect(!source.contains("#import <objc/runtime.h>"))
+    #expect(!source.contains("class_addMethod"))
+    #expect(!source.contains("__attribute__((constructor))"))
 }

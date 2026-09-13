@@ -244,6 +244,25 @@ import VaultService
     let finalEntry = try #require(final.document.entries.first(where: { $0.id == created.id }))
     #expect(finalEntry.fields.first(where: { $0.key == "service" })?.value == .string("QNAP 音乐服务器"))
     #expect(finalEntry.fields.first(where: { $0.key == "token" })?.secretRef == bound.reference)
+
+    let presentation = try await client.catalogPresentationState()
+    #expect(presentation.selectedDocumentPath == documentURL.standardizedFileURL.path)
+    #expect(presentation.snapshot?.revision == final.revision)
+    #expect(presentation.snapshot?.document == final.document)
+
+    let selected = try await client.selectCatalogDocument(path: documentURL.path)
+    #expect(selected.selectedDocumentPath == documentURL.standardizedFileURL.path)
+    #expect(selected.snapshot?.revision == final.revision)
+
+    let missingURL = root.appendingPathComponent("missing.md")
+    var missingSelectionRejected = false
+    do {
+        _ = try await client.selectCatalogDocument(path: missingURL.path)
+    } catch {
+        missingSelectionRejected = true
+    }
+    #expect(missingSelectionRejected)
+    #expect(try SecretCatalogSelectionStore(manifestURL: selectionURL).selectedDocumentURL() == documentURL.standardizedFileURL)
 }
 
 private actor ControllerSpyWorkbenchService: WorkbenchServicing {

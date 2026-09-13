@@ -31,6 +31,9 @@ jobs:
           # Keep bundle execution serial and relaunch failed tests so a
           # transient provider timeout cannot poison a retry; persistent
           # failures still fail this job.
+          xcodebuild_log="$RUNNER_TEMP/svlt-xcodebuild.log"
+          set -o pipefail
+          set +e
           xcodebuild test \
             -project SVLT.xcodeproj \
             -scheme AgentSecretVault \
@@ -40,7 +43,17 @@ jobs:
             -retry-tests-on-failure \
             -test-iterations 3 \
             -test-repetition-relaunch-enabled YES \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$xcodebuild_log"
+          xcodebuild_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$xcodebuild_status" -ne 0 ]; then
+            echo "::group::xcodebuild error diagnostics"
+            if ! grep -nE '(^|[[:space:]])(fatal )?error:' "$xcodebuild_log"; then
+              echo "No explicit error: diagnostics found; inspect the complete xcodebuild log above."
+            fi
+            echo "::endgroup::"
+          fi
+          exit "$xcodebuild_status"
       - name: Scan Swift build products for plaintext canary
         env:
           ASV_CANARY: ASV_CANARY_7F2D1C9E_DO_NOT_PERSIST
@@ -139,6 +152,8 @@ jobs:
           test -x scripts/release-e2e.sh
       - name: Enforce large-file architecture budgets
         run: bash scripts/check-architecture-budgets.sh
+      - name: Enforce daemon-owned Catalog state
+        run: bash scripts/check-catalog-owner-boundary.sh
       - name: Enforce app runtime mutation boundary
         run: bash scripts/check-runtime-mutation-boundary.sh
       - name: Check whitespace

@@ -434,15 +434,14 @@ public struct SensitiveCatalogSnapshot: Equatable, Sendable {
     }
 }
 
-/// Persistent catalog coordinator. App/MCP and external writers share the
-/// sidecar flock; external Markdown changes are reconciled by semantic diff.
+/// Catalog owner; App/MCP/external writers share sidecar flock.
 public actor SensitiveCatalogDocumentStore {
-    private let fileManager: FileManager
-    private let keyStore: any CatalogIntegrityKeyStoring
-    private let suppliedIntegrityURL: URL?
-    private let suppliedIntegrityDirectoryURL: URL?
-    private let atomicWriteFaultInjector: (any CatalogAtomicWriteFaultInjecting)?
-    private let secretReferenceExists: (@Sendable (String) async -> Bool)?
+    let fileManagerBox: CatalogFileManagerBox
+    let keyStore: any CatalogIntegrityKeyStoring
+    let suppliedIntegrityURL: URL?
+    let suppliedIntegrityDirectoryURL: URL?
+    let atomicWriteFaultInjector: (any CatalogAtomicWriteFaultInjecting)?
+    let secretReferenceExists: (@Sendable (String) async -> Bool)?
     private var documentURL: URL?
 
     public init(
@@ -456,7 +455,7 @@ public actor SensitiveCatalogDocumentStore {
         self.suppliedIntegrityURL = integrityURL?.standardizedFileURL
         self.suppliedIntegrityDirectoryURL = nil
         self.keyStore = keyStore
-        self.fileManager = fileManager
+        self.fileManagerBox = CatalogFileManagerBox(fileManager)
         self.atomicWriteFaultInjector = nil
         self.secretReferenceExists = secretReferenceExists
     }
@@ -474,10 +473,12 @@ public actor SensitiveCatalogDocumentStore {
         self.suppliedIntegrityURL = integrityURL?.standardizedFileURL
         self.suppliedIntegrityDirectoryURL = integrityDirectoryURL?.standardizedFileURL
         self.keyStore = keyStore
-        self.fileManager = fileManager
+        self.fileManagerBox = CatalogFileManagerBox(fileManager)
         self.atomicWriteFaultInjector = atomicWriteFaultInjector
         self.secretReferenceExists = secretReferenceExists
     }
+
+    private var fileManager: FileManager { fileManagerBox.value }
 
     public func selectDocument(at url: URL?) throws {
         if let url {
@@ -1425,7 +1426,7 @@ public actor SensitiveCatalogDocumentStore {
         return value
     }
 
-    private func validationReportUnlocked() throws -> CatalogValidationReport {
+    func validationReportUnlocked() throws -> CatalogValidationReport {
         guard let url = documentURL else {
             throw SensitiveCatalogDocumentStoreError.noSelectedDocument
         }
@@ -1533,7 +1534,7 @@ public actor SensitiveCatalogDocumentStore {
         )
     }
 
-    private func snapshotUnlocked() throws -> SensitiveCatalogSnapshot {
+    func snapshotUnlocked() throws -> SensitiveCatalogSnapshot {
         guard let url = documentURL else { throw SensitiveCatalogDocumentStoreError.noSelectedDocument }
         try recoverInterruptedRecoveryUnlocked()
         try recoverInterruptedV2MigrationUnlocked()
@@ -2704,7 +2705,7 @@ public actor SensitiveCatalogDocumentStore {
         return directory.appendingPathComponent("catalog-integrity.json")
     }
 
-    private func withCatalogLock<T>(exclusive: Bool, _ operation: () throws -> T) throws -> T {
+    func withCatalogLock<T>(exclusive: Bool, _ operation: () throws -> T) throws -> T {
         let lockURL = try integrityURL().appendingPathExtension("lock")
         let parent = lockURL.deletingLastPathComponent()
         do {

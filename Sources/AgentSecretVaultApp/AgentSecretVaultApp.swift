@@ -252,8 +252,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     private var secureInputObserver: NSObjectProtocol?
     private var applicationActivationObserver: NSObjectProtocol?
     private var presentedAgentSessionIDs: Set<String> = []
-    private var sensitiveIndexStore: SensitiveInformationDocumentStore?
-    private var sensitiveCatalogStore: SensitiveCatalogDocumentStore?
     private let catalogTemplateStore = SensitiveCatalogTemplateStore()
     private var started = false
     private var isStarting = false
@@ -291,21 +289,6 @@ private final class AgentSecretVaultRuntime: ObservableObject {
             startSecureInputObserver()
             startApplicationActivationObserver()
             try? catalogTemplateStore.ensureInstalled()
-            sensitiveIndexStore = try makeSensitiveIndexStore()
-            sensitiveCatalogStore = try makeSensitiveCatalogStore()
-            guard let sensitiveIndexStore else {
-                throw AgentSecretVaultRuntimeError.notStarted
-            }
-            let existingDocumentURL = await sensitiveIndexStore.selectedExistingDocumentURL()
-            sensitiveIndexURL = existingDocumentURL
-            if let documentURL = existingDocumentURL {
-                // A missing previously selected file is not recreated on
-                // startup. The user must explicitly choose an existing file.
-                SensitiveIndexSelectionStore.save(documentURL)
-                persistCatalogSelection(at: documentURL)
-                sensitiveIndexURL = documentURL
-            }
-
             await refreshSensitiveCatalog()
             await refreshAuditEntries()
             await refreshPendingCatalogWriteAccessRequests()
@@ -923,98 +906,66 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     func refreshSensitiveCatalog() async {
-        guard let sensitiveCatalogStore else {
-            sensitiveCatalogSnapshot = nil
+        guard let appControlClient else {
+            sensitiveIndexError = "本机控制服务不可用，无法读取敏感信息目录"
             return
         }
-        guard await sensitiveCatalogStore.selectedDocumentExists() else {
-            sensitiveCatalogSnapshot = nil
-            sensitiveCatalogCanAdoptV2 = false
-            sensitiveCatalogCanAdoptV3 = false
-            return
-        }
-
         do {
-            sensitiveCatalogSnapshot = try await sensitiveCatalogStore.snapshot()
-            sensitiveCatalogCanAdoptV2 = false
-            sensitiveCatalogCanAdoptV3 = false
-            if sensitiveCatalogSnapshot?.integrity == .verified {
-                sensitiveIndexError = nil
-            }
-        } catch SensitiveCatalogDocumentStoreError.legacyCatalogUnsupported {
-            sensitiveCatalogSnapshot = nil
-            sensitiveCatalogCanAdoptV2 = false
-            sensitiveCatalogCanAdoptV3 = false
-            sensitiveIndexError = "当前敏感信息.md 是旧版格式。SVLT 不提供自动升级，请先备份并手动转换为 Catalog v3。"
-        } catch SensitiveCatalogDocumentStoreError.externalModification {
-            sensitiveCatalogSnapshot = nil
-            sensitiveCatalogCanAdoptV2 = false
-            sensitiveCatalogCanAdoptV3 = false
-            sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
-        } catch SensitiveCatalogDocumentStoreError.integrityMissing {
-            sensitiveCatalogSnapshot = nil
-            await updateCatalogAdoptionAvailability()
-            sensitiveIndexError = sensitiveCatalogCanAdoptV3
-                ? "检测到合法但尚未建立本机 accepted state 的 v3 文件，请验证并接纳。"
-                : "检测到合法但尚未被 SVLT 接管的 v2 文件，请验证并升级为 v3。"
+            applyCatalogPresentationState(try await appControlClient.catalogPresentationState())
         } catch {
-            sensitiveCatalogSnapshot = nil
-            sensitiveCatalogCanAdoptV2 = false
-            sensitiveCatalogCanAdoptV3 = false
-            sensitiveIndexError = "敏感信息目录校验失败"
+            // Keep the last successful projection on transient IPC failure.
+            sensitiveIndexError = "无法读取敏感信息目录"
         }
     }
 
-    private func updateCatalogAdoptionAvailability() async {
-        sensitiveCatalogCanAdoptV2 = false
-        sensitiveCatalogCanAdoptV3 = false
-        guard let sensitiveCatalogStore,
-              let availability = try? await sensitiveCatalogStore.adoptionAvailability()
-        else {
-            return
+    private func applyCatalogPresentationState(_ state: CatalogPresentationState) {
+        sensitiveIndexURL = state.selectedDocumentPath.map {
+            URL(fileURLWithPath: $0).standardizedFileURL
         }
-        sensitiveCatalogCanAdoptV2 = availability.canAdoptV2
-        sensitiveCatalogCanAdoptV3 = availability.canAdoptV3
+        sensitiveCatalogCanAdoptV2 = state.canAdoptV2
+        sensitiveCatalogCanAdoptV3 = state.canAdoptV3
+        sensitiveCatalogSnapshot = state.snapshot.map {
+            SensitiveCatalogSnapshot(
+                document: $0.document,
+                revision: $0.revision,
+                integrity: .verified
+            )
+        }
+
+        switch state.validation.status {
+        case .found:
+            sensitiveIndexError = nil
+        case .legacyCatalogUnsupported:
+            sensitiveIndexError = "当前敏感信息.md 是旧版格式。SVLT 不提供自动升级，请先备份并手动转换为 Catalog v3。"
+        case .integrityMissing:
+            sensitiveIndexError = state.canAdoptV3
+                ? "检测到合法但尚未建立本机 accepted state 的 v3 文件，请验证并接纳。"
+                : "检测到合法但尚未被 SVLT 接管的 v2 文件，请验证并升级为 v3。"
+        case .externalModification:
+            sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
+        case .pendingExternalChange:
+            sensitiveIndexError = "目录存在待审批的高风险外部变更，已暂停使用"
+        case .invalidCatalog:
+            sensitiveIndexError = "敏感信息目录校验失败，未继续使用"
+        case .notFound:
+            sensitiveIndexError = "已选择的敏感信息目录文件不存在"
+        case .unavailable:
+            sensitiveIndexError = state.selectedDocumentPath == nil
+                ? nil
+                : "敏感信息目录当前不可用"
+        case .invalidQuery:
+            sensitiveIndexError = "敏感信息目录当前不可用"
+        }
     }
 
     func validateSensitiveCatalog() async {
-        guard let agentClient else {
-            sensitiveIndexError = "本机智能体服务不可用，无法验证敏感信息目录"
+        guard let appControlClient else {
+            sensitiveIndexError = "本机控制服务不可用，无法验证敏感信息目录"
             return
         }
-
         do {
-            let result = try await agentClient.validateCatalog()
-            switch result.status {
-            case .found:
-                await refreshSensitiveCatalog()
-                if sensitiveCatalogSnapshot?.integrity == .verified {
-                    sensitiveIndexError = nil
-                }
-            case .legacyCatalogUnsupported:
-                sensitiveCatalogCanAdoptV2 = false
-                sensitiveCatalogCanAdoptV3 = false
-                sensitiveIndexError = "当前敏感信息.md 是旧版格式。SVLT 不提供自动升级，请手动转换为 Catalog v3。"
-            case .integrityMissing:
-                await updateCatalogAdoptionAvailability()
-                sensitiveIndexError = sensitiveCatalogCanAdoptV3
-                    ? "检测到合法但尚未建立本机 accepted state 的 v3 文件，请验证并接纳。"
-                    : "检测到合法但尚未被 SVLT 接管的 v2 文件，请验证并升级为 v3。"
-            case .externalModification:
-                sensitiveCatalogCanAdoptV2 = false
-                sensitiveCatalogCanAdoptV3 = false
-                sensitiveIndexError = "检测到目录被外部修改，已暂停使用"
-            case .pendingExternalChange:
-                sensitiveCatalogCanAdoptV2 = false
-                sensitiveCatalogCanAdoptV3 = false
-                sensitiveIndexError = "目录存在待审批的高风险外部变更，已暂停使用"
-            case .invalidCatalog:
-                sensitiveCatalogCanAdoptV2 = false
-                sensitiveCatalogCanAdoptV3 = false
-                sensitiveIndexError = "敏感信息目录校验失败，未继续使用"
-            case .unavailable, .notFound, .invalidQuery:
-                sensitiveIndexError = "敏感信息目录当前不可用"
-            }
+            _ = try await appControlClient.catalogStatus()
+            applyCatalogPresentationState(try await appControlClient.catalogPresentationState())
         } catch {
             sensitiveIndexError = "无法验证敏感信息目录"
         }
@@ -1474,43 +1425,17 @@ private final class AgentSecretVaultRuntime: ObservableObject {
     }
 
     private func activateSensitiveIndex(at url: URL) async {
-        guard let sensitiveIndexStore else {
+        guard let appControlClient else {
+            sensitiveIndexError = "本机控制服务不可用，无法切换敏感信息目录"
             return
         }
-        let priorURL = await sensitiveIndexStore.selectedDocumentURL()
-
         do {
-            guard await sensitiveIndexStore.documentExists(at: url) else {
-                throw SensitiveCatalogDocumentStoreError.noSelectedDocument
-            }
-            try await sensitiveIndexStore.selectDocument(at: url)
-            try await sensitiveCatalogStore?.selectDocument(at: url)
-            SensitiveIndexSelectionStore.save(url)
-            persistCatalogSelection(at: url)
-            sensitiveIndexURL = url
-            sensitiveIndexError = nil
-            await refreshSensitiveCatalog()
+            let state = try await appControlClient.selectCatalogDocument(path: url.path)
+            applyCatalogPresentationState(state)
             await refreshSavedReferences()
         } catch {
-            try? await sensitiveIndexStore.selectDocument(at: priorURL)
-            try? await sensitiveCatalogStore?.selectDocument(at: priorURL)
             sensitiveIndexError = "所选文件不是有效的敏感信息.md"
         }
-    }
-
-    private func makeSensitiveIndexStore() throws -> SensitiveInformationDocumentStore {
-        SensitiveInformationDocumentStore(documentURL: SensitiveIndexSelectionStore.selectedURL())
-    }
-
-    private func makeSensitiveCatalogStore() throws -> SensitiveCatalogDocumentStore {
-        SensitiveCatalogDocumentStore(documentURL: SensitiveIndexSelectionStore.selectedURL())
-    }
-
-    private func persistCatalogSelection(at url: URL) {
-        guard let manifestURL = try? SecretCatalogSelectionStore.defaultManifestURL() else {
-            return
-        }
-        try? SecretCatalogSelectionStore(manifestURL: manifestURL).save(documentURL: url)
     }
 
 }

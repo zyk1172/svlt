@@ -25,6 +25,10 @@ public struct AppControlRequestHandler: Sendable {
             switch request {
             case .catalogStatus:
                 return .catalogStatus(try await service.catalogStatus())
+            case .catalogPresentationState:
+                return .catalogPresentationState(await service.catalogPresentationState())
+            case let .catalogSelectDocument(path):
+                return .catalogPresentationState(try await service.selectCatalogDocument(path: path))
             case .catalogFormatRepairPlan:
                 return .catalogFormatRepairPlan(try await service.catalogFormatRepairPlan())
             case let .catalogRepairFormat(expectedRawSHA256):

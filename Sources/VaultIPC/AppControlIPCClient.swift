@@ -27,6 +27,18 @@ public actor AppControlIPCClient {
         return status
     }
 
+    public func catalogPresentationState() async throws -> CatalogPresentationState {
+        let response = try await send(.catalogPresentationState)
+        guard case let .catalogPresentationState(state) = response else { throw unexpected(response) }
+        return state
+    }
+
+    public func selectCatalogDocument(path: String) async throws -> CatalogPresentationState {
+        let response = try await send(.catalogSelectDocument(path: path))
+        guard case let .catalogPresentationState(state) = response else { throw unexpected(response) }
+        return state
+    }
+
     public func catalogFormatRepairPlan() async throws -> CatalogFormatRepairPlan? {
         let response = try await send(.catalogFormatRepairPlan)
         guard case let .catalogFormatRepairPlan(plan) = response else { throw unexpected(response) }

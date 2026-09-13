@@ -8,6 +8,28 @@ private struct ControlService: AppControlServicing {
         CatalogValidationResult(status: .found, revision: 3)
     }
 
+    func catalogPresentationState() async -> CatalogPresentationState {
+        CatalogPresentationState(
+            selectedDocumentPath: "/tmp/sensitive.md",
+            validation: CatalogValidationResult(status: .found, revision: 3),
+            snapshot: CatalogPresentationSnapshot(
+                document: SecretCatalogDocument(indexes: [], entries: []),
+                revision: 3
+            )
+        )
+    }
+
+    func selectCatalogDocument(path: String) async throws -> CatalogPresentationState {
+        CatalogPresentationState(
+            selectedDocumentPath: path,
+            validation: CatalogValidationResult(status: .found, revision: 3),
+            snapshot: CatalogPresentationSnapshot(
+                document: SecretCatalogDocument(indexes: [], entries: []),
+                revision: 3
+            )
+        )
+    }
+
     func repairCatalogFormat(expectedRawSHA256: String) async throws -> CatalogValidationResult {
         _ = expectedRawSHA256
         return CatalogValidationResult(status: .found, revision: 4)
@@ -237,6 +259,31 @@ private struct ControlService: AppControlServicing {
     let encoded = String(decoding: try JSONEncoder().encode(response), as: UTF8.self)
     #expect(!encoded.contains("ASV_APP_CONTROL_CANARY"))
     #expect(response == .secretBound(reference: "secret://0123456789ABCDEFGHJKMNPQRS", revision: 4))
+}
+
+@Test func catalogPresentationMessagesRoundTripAndRouteSelection() async throws {
+    let path = "/tmp/managed-sensitive.md"
+    let request = AppControlRequest.catalogSelectDocument(path: path)
+    let decodedRequest = try JSONDecoder().decode(
+        AppControlRequest.self,
+        from: JSONEncoder().encode(request)
+    )
+    #expect(decodedRequest == request)
+
+    let handler = AppControlRequestHandler(service: ControlService())
+    let response = await handler.handle(request)
+    guard case let .catalogPresentationState(state) = response else {
+        Issue.record("Expected Catalog presentation state")
+        return
+    }
+    #expect(state.selectedDocumentPath == path)
+    #expect(state.snapshot?.revision == 3)
+
+    let decodedResponse = try JSONDecoder().decode(
+        AppControlResponse.self,
+        from: JSONEncoder().encode(response)
+    )
+    #expect(decodedResponse == response)
 }
 
 @Test func plaintextRevealOperationsRoundTripOnlyOnAppControlChannel() async throws {
