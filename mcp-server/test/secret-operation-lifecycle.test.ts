@@ -8,11 +8,14 @@ import {
   OPERATION_OUTCOME_UNKNOWN
 } from "../src/secretOperations/index.js";
 import { runWithSecretOperationAbortSignal } from "../src/secretOperations/context.js";
+import {
+  getSecretOperationStatus,
+  type SecretOperationIpcClient
+} from "../src/secretOperations/client.js";
 import type {
   IpcRequest,
   IpcResponse
 } from "../src/secretOperations/protocol.js";
-import type { SecretOperationIpcClient } from "../src/secretOperations/client.js";
 
 const operationID = "00000000-0000-4000-8000-000000000101";
 const descriptor: SecretOperationDescriptor = {
@@ -91,14 +94,25 @@ describe("operationID MCP lifecycle", () => {
       .resolves.toEqual({ status: "AUTHORIZATION_CANCELLED" });
   });
 
-  it("preserves operation-not-found as the shared principal-safe lookup failure", async () => {
+  it("preserves operation-not-found at the direct control-client boundary", async () => {
+    const client = new FakeLifecycleClient([
+      { type: "failure", code: OPERATION_NOT_FOUND }
+    ]);
+
+    await expect(getSecretOperationStatus(client, operationID)).resolves.toEqual({
+      kind: "failure",
+      code: OPERATION_NOT_FOUND
+    });
+  });
+
+  it("treats a lost acknowledged handle as outcomeUnknown even if status says not found", async () => {
     const client = new FakeLifecycleClient([
       handle(),
       { type: "failure", code: OPERATION_NOT_FOUND }
     ]);
 
     await expect(executeOpaqueOperation(client, descriptor, undefined, { pollIntervalMs: 0 }))
-      .resolves.toEqual({ status: OPERATION_NOT_FOUND });
+      .resolves.toEqual({ status: OPERATION_OUTCOME_UNKNOWN });
   });
 
   it("cancels definitively before execution when the MCP call is aborted", async () => {
