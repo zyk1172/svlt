@@ -2,6 +2,52 @@ from pathlib import Path
 import re
 
 
+def contains(path, needle):
+    return needle in Path(path).read_text()
+
+
+def already_applied():
+    return (
+        contains(
+            "Sources/VaultService/VaultAppServices.swift",
+            "operationApprovalTimeout: Duration = .seconds(120),",
+        )
+        and contains(
+            "Sources/VaultExecution/ProcessRunning.swift",
+            "        timeout: Duration?,\n",
+        )
+        and contains(
+            "Sources/VaultExecution/FoundationProcessRunner.swift",
+            "let timeoutTask = timeout.map",
+        )
+        and contains(
+            "Sources/VaultExecution/ExecutionBroker.swift",
+            "        timeout: Duration? = nil,\n",
+        )
+        and not contains(
+            "Sources/VaultExecution/SecretOperationExecutor.swift",
+            "    private let timeout: Duration\n",
+        )
+        and contains(
+            "Tests/VaultExecutionTests/SecretOperationExecutorTests.swift",
+            "sshExecutorIgnoresLegacyDescriptorTimeoutAndUsesNoExecutionDeadline",
+        )
+        and contains(
+            "Tests/VaultAuthorizationTests/SecretOperationServiceTests.swift",
+            "longRunningOperationDoesNotBlockLaterOperation",
+        )
+        and not contains(
+            "mcp-server/src/server.ts",
+            "timeoutMs: z.number()",
+        )
+    )
+
+
+if already_applied():
+    print("unbounded execution refactor already applied")
+    raise SystemExit(0)
+
+
 def replace(path, old, new, count=1):
     p = Path(path)
     text = p.read_text()
@@ -669,6 +715,18 @@ for path in Path("Tests/VaultExecutionTests").glob("*.swift"):
     text = text.replace("timeout: Duration,", "timeout: Duration?,")
     text = text.replace("timeout _: Duration,", "timeout _: Duration?,")
     path.write_text(text)
+
+# The redaction test also constructed the executor with the removed timeout.
+replace(
+    "Tests/VaultExecutionTests/SecretOperationExecutorTests.swift",
+    """    let executor = LocalSecretOperationExecutor(
+        processRunner: runner,
+        timeout: .seconds(5)
+    )
+""",
+    """    let executor = LocalSecretOperationExecutor(processRunner: runner)
+""",
+)
 
 # SSH regression now verifies legacy timeoutMs does not create an execution deadline.
 p = Path("Tests/VaultExecutionTests/SecretOperationExecutorTests.swift")
