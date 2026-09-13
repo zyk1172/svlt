@@ -173,4 +173,14 @@ describe("operationID MCP lifecycle", () => {
     await expect(executeOpaqueOperation(client, descriptor, undefined, { pollIntervalMs: 0 }))
       .resolves.toEqual({ status: OPERATION_OUTCOME_UNKNOWN });
   });
+
+  it("does not turn post-start APP_UNAVAILABLE into a retryable failure", async () => {
+    const client = new FakeLifecycleClient([
+      handle(),
+      { type: "failure", code: "APP_UNAVAILABLE" }
+    ]);
+
+    await expect(executeOpaqueOperation(client, descriptor, undefined, { pollIntervalMs: 0 }))
+      .resolves.toEqual({ status: OPERATION_OUTCOME_UNKNOWN });
+  });
 });
