@@ -1,0 +1,24 @@
+name: Audit execution timeout references
+
+on:
+  push:
+    branches:
+      - codex/approval-2m-unbounded-execution
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find execution timeout and process runner references
+        run: |
+          echo '=== timeoutMs ==='
+          rg -n --hidden --glob '!SVLT.xcodeproj/**' 'timeoutMs|batchTotalTimeout|defaultTimeout|operationApprovalTimeout' Sources Tests mcp-server docs plugins || true
+          echo '=== ProcessRunning conformers/calls ==='
+          rg -n --hidden --glob '!SVLT.xcodeproj/**' 'ProcessRunning|processRunner\.run\(' Sources Tests || true
+          echo '=== session expiry ==='
+          rg -n --hidden --glob '!SVLT.xcodeproj/**' 'idleTTL|absoluteTTL|reapExpired|isExpired' Sources/VaultExecution Tests/VaultExecutionTests || true
