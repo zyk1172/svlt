@@ -1283,3 +1283,65 @@ private final class ServiceTestClock: @unchecked Sendable {
         set { lock.withLock { storedMonotonicNow = newValue } }
     }
 }
+@Test func operationIDLifecycleReportsApprovalThenSuccess() async throws {
+    let gate = ApprovalGate()
+    let fixture = try await OperationServiceFixture(approval: .gated, approvalGate: gate)
+    defer { fixture.remove() }
+
+    let handle = try await fixture.service.startSecretOperation(fixture.ssh(command: "hostname"))
+    #expect(handle.state == .queued)
+    _ = try await waitForOperationState(fixture.service, operationID: handle.operationID, state: .awaitingApproval)
+
+    await gate.release()
+    let final = try await waitForOperationState(fixture.service, operationID: handle.operationID, state: .succeeded)
+    #expect(final.output?.status == "COMPLETED")
+    #expect(final.errorCode == nil)
+}
+
+@Test func operationIDCancellationBeforeApprovalIsDefinitive() async throws {
+    let gate = ApprovalGate()
+    let fixture = try await OperationServiceFixture(approval: .gated, approvalGate: gate)
+    defer { fixture.remove() }
+
+    let handle = try await fixture.service.startSecretOperation(fixture.ssh(command: "hostname"))
+    _ = try await waitForOperationState(fixture.service, operationID: handle.operationID, state: .awaitingApproval)
+    let cancelled = try await fixture.service.cancelSecretOperation(operationID: handle.operationID)
+    #expect(cancelled.state == .cancelled)
+
+    await gate.release()
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(try await fixture.service.secretOperationStatus(operationID: handle.operationID).state == .cancelled)
+    #expect(await fixture.executor.count == 0)
+}
+
+@Test func operationIDCancellationDuringExecutorIsOutcomeUnknown() async throws {
+    let fixture = try await OperationServiceFixture(blockExecution: true)
+    defer { fixture.remove() }
+
+    let handle = try await fixture.service.startSecretOperation(fixture.ssh(command: "hostname"))
+    _ = try await waitForOperationState(fixture.service, operationID: handle.operationID, state: .running)
+    let cancelled = try await fixture.service.cancelSecretOperation(operationID: handle.operationID)
+    #expect(cancelled.state == .outcomeUnknown)
+
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(try await fixture.service.secretOperationStatus(operationID: handle.operationID).state == .outcomeUnknown)
+}
+
+private func waitForOperationState(
+    _ service: VaultAppServices,
+    operationID: UUID,
+    state: SecretOperationState
+) async throws -> SecretOperationStatus {
+    for _ in 0..<200 {
+        let status = try await service.secretOperationStatus(operationID: operationID)
+        if status.state == state { return status }
+        if status.state.isTerminal {
+            Issue.record("Operation reached unexpected terminal state: \(status.state)")
+            return status
+        }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let status = try await service.secretOperationStatus(operationID: operationID)
+    Issue.record("Timed out waiting for operation state \(state); current state is \(status.state)")
+    return status
+}

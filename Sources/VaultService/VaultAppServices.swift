@@ -164,6 +164,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let revealSessionCoordinator: RevealSessionCoordinator
     private let authorizationSession: AuthorizationSession
     private let scopedMasterKeyCoordinator: ScopedMasterKeyCoordinator
+    let secretOperationCoordinator = SecretOperationCoordinator()
     private let operationPolicyEngine: SecretOperationPolicyEngine
     private let approvalTicketStore: ApprovalTicketStore
     private let operationApprover: any OperationApproving
@@ -188,7 +189,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var approvalPending = false
     private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
     private var pendingExecutionApprovalIDs: Set<UUID> = []
-    private var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
+    var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
     private var securityGeneration: UInt64 = 0
     private var writeAccessLifecycle = CatalogWriteAccessLifecycle()
     private var secureInputLifecycle = CatalogSecureInputLifecycle()
@@ -411,6 +412,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         executionApprovalFlights.removeAll()
         await scopedMasterKeyCoordinator.invalidateAll()
         pendingExecutionApprovalIDs.removeAll()
+        await invalidateTrackedSecretOperations()
         for operation in inFlightSecretOperations.values {
             operation.cancel()
         }
@@ -582,10 +584,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        // Policy metadata is intentionally read and evaluated again after
-        // approval (or an execution-window hit). The actor can be reentrant
-        // while LocalAuthentication is suspended, so a previously approved
-        // decision must never be reused after a binding or policy mutation.
+        // Re-read policy after approval because actor reentrancy may change bindings.
         var currentMetadata: [SecretPolicyMetadata]
         do {
             currentMetadata = try await policyMetadata(for: descriptor.secretReferences)
@@ -613,12 +612,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        // A re-evaluation may promote a previously reusable operation to a
-        // fresh-approval requirement while the first approval was suspended.
-        // Do not let the original scope commit a reusable lease in that case:
-        // discard the in-flight/active scoped authorization, obtain the
-        // exact one-shot decision, and re-read policy once more before key
-        // resolution or execution.
+        // A stricter re-evaluation discards reusable scope before fresh approval.
         if executionScope != nil,
            currentDecision.authorizationRequirement != .reusableApproval {
             // A re-evaluated fresh requirement takes the one-shot path, but
@@ -683,6 +677,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
 
             if commit == .needsFreshApproval {
+                await noteTrackedSecretOperationState(.awaitingApproval)
                 authorizationPath = try await authorizeAgentExecution(
                     descriptor,
                     metadata: currentMetadata,
@@ -690,6 +685,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                     generation: operationGeneration,
                     scope: executionScope
                 )
+                try ensureTrackedSecretOperationIsActive()
+                await noteTrackedSecretOperationState(.running)
                 guard operationGeneration == securityGeneration else {
                     throw SecretOperationError.authorizationCancelled
                 }
@@ -751,13 +748,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
         }
 
-        // This is the execution linearization point. All awaits that can
-        // suspend across a security-state invalidation are above it; once this
-        // guard passes, task creation and registration below are synchronous
-        // on this actor so a lock cannot slip between the check and tracking.
+        // Final generation/cancellation gate before executor registration.
         guard operationGeneration == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
         }
+        try ensureTrackedSecretOperationIsActive()
+        await noteTrackedSecretOperationState(.running)
         if shouldEmitExecutionWindowReuseAudit {
             await emitExecutionWindowReuseAudit(
                 descriptor: descriptor,
@@ -765,14 +761,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         }
 
-        // The audit append above is an await point. Re-check the generation
-        // before creating the task so a lock/sleep during that append cannot
-        // start a secret-bearing executor after security invalidation.
+        // Audit append can suspend; re-check before creating the executor.
         guard operationGeneration == securityGeneration else {
             throw SecretOperationError.authorizationCancelled
         }
+        try ensureTrackedSecretOperationIsActive()
 
-        let executionID = UUID()
+        let executionID = trackedSecretOperationID() ?? UUID()
         let executionContext = SecretOperationExecutionContext(
             principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
             securityGeneration: operationGeneration
@@ -784,11 +779,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 metadata: currentMetadata,
                 context: executionContext,
                 resolve: { reference in
-                    // Keep the resolver independently constrained to the
-                    // exact opaque set that was checked before approval and
-                    // copied into the execution lease. A future adapter must
-                    // not widen a live authorization scope by asking for an
-                    // undeclared reference.
+                    // The executor may resolve only references approved for this operation.
                     guard authorizedReferences.contains(reference) else {
                         throw SecretOperationExecutionError.invalidParameter
                     }
@@ -3836,6 +3827,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 masterKey: key
             )
             if commit == .needsFreshApproval {
+                await noteTrackedSecretOperationState(.awaitingApproval)
                 authorizationPath = try await authorizeAgentExecution(
                     descriptor,
                     metadata: currentMetadata,
@@ -4005,9 +3997,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             break
         }
 
+        await noteTrackedSecretOperationState(.awaitingApproval)
         if decision.authorizationRequirement == .reusableApproval,
            let executionScope {
-            return try await authorizeAgentExecution(
+            let authorization = try await authorizeAgentExecution(
                 descriptor,
                 metadata: metadata,
                 decision: decision,
@@ -4015,6 +4008,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 scope: executionScope,
                 hostKeyReview: hostKeyReview
             )
+            try ensureTrackedSecretOperationIsActive()
+            await noteTrackedSecretOperationState(.running)
+            return authorization
         }
 
         await emitAudit(
@@ -4108,6 +4104,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
         approvalPending = false
         await statusObserver?(status())
+        try ensureTrackedSecretOperationIsActive()
+        await noteTrackedSecretOperationState(.running)
         return .freshLocalApproval(authenticationContext)
     }
 
