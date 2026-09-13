@@ -6,15 +6,13 @@ import {
   startSecretOperation,
   type SecretOperationIpcClient
 } from "./client.js";
+import { currentSecretOperationAbortSignal } from "./context.js";
 import {
   pollSecretOperation,
   type SecretOperationPollingOptions
 } from "./polling.js";
+import { OPERATION_CANCELLED } from "./protocol.js";
 import {
-  OPERATION_CANCELLED
-} from "./protocol.js";
-import {
-  isSecretOperationOutput,
   transportOutcomeUnknown,
   type SecretOperationExecutionResult
 } from "./result.js";
@@ -26,9 +24,7 @@ export {
   OUTCOME_UNKNOWN_GUIDANCE
 } from "./protocol.js";
 export { isSecretOperationOutput } from "./result.js";
-export type {
-  SecretOperationExecutionResult
-} from "./result.js";
+export type { SecretOperationExecutionResult } from "./result.js";
 
 export async function executeOpaqueOperation(
   client: SecretOperationIpcClient,
@@ -46,6 +42,15 @@ export async function executeOpaqueOperation(
     }
   }
 
+  return executeTrackedOperation(client, descriptor, signal, pollingOptions);
+}
+
+export async function executeTrackedOperation(
+  client: SecretOperationIpcClient,
+  descriptor: SecretOperationDescriptor,
+  signal: AbortSignal | undefined = currentSecretOperationAbortSignal(),
+  pollingOptions: Omit<SecretOperationPollingOptions, "signal"> = {}
+): Promise<SecretOperationExecutionResult> {
   if (signal?.aborted === true) {
     return { status: OPERATION_CANCELLED };
   }
@@ -92,7 +97,3 @@ async function ensureSecretOperationCapability(
   }
   return "ACTION_EXECUTOR_UNAVAILABLE";
 }
-
-// Keep a local reference so TypeScript verifies the exported type guard stays
-// compatible with the execution result union as this module evolves.
-void isSecretOperationOutput;
