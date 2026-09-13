@@ -4,8 +4,10 @@ import type { SecretOperationDescriptor } from "../src/protocol.js";
 import {
   executeOpaqueOperation,
   OPERATION_CANCELLED,
+  OPERATION_NOT_FOUND,
   OPERATION_OUTCOME_UNKNOWN
 } from "../src/secretOperations/index.js";
+import { runWithSecretOperationAbortSignal } from "../src/secretOperations/context.js";
 import type {
   IpcRequest,
   IpcResponse
@@ -89,6 +91,16 @@ describe("operationID MCP lifecycle", () => {
       .resolves.toEqual({ status: "AUTHORIZATION_CANCELLED" });
   });
 
+  it("preserves operation-not-found as the shared principal-safe lookup failure", async () => {
+    const client = new FakeLifecycleClient([
+      handle(),
+      { type: "failure", code: OPERATION_NOT_FOUND }
+    ]);
+
+    await expect(executeOpaqueOperation(client, descriptor, undefined, { pollIntervalMs: 0 }))
+      .resolves.toEqual({ status: OPERATION_NOT_FOUND });
+  });
+
   it("cancels definitively before execution when the MCP call is aborted", async () => {
     const controller = new AbortController();
     const client = new FakeLifecycleClient([
@@ -106,6 +118,31 @@ describe("operationID MCP lifecycle", () => {
 
     expect(result).toEqual({ status: OPERATION_CANCELLED });
     expect(client.requests.at(-1)?.type).toBe("cancelSecretOperation");
+  });
+
+  it("inherits the real MCP request AbortSignal through AsyncLocalStorage", async () => {
+    const controller = new AbortController();
+    const client = new FakeLifecycleClient([
+      handle(),
+      status("awaitingApproval"),
+      status("cancelled", { errorCode: OPERATION_CANCELLED })
+    ]);
+
+    const result = await runWithSecretOperationAbortSignal(controller.signal, () =>
+      executeOpaqueOperation(client, descriptor, undefined, {
+        pollIntervalMs: 0,
+        onState: (state) => {
+          if (state === "awaitingApproval") controller.abort();
+        }
+      })
+    );
+
+    expect(result).toEqual({ status: OPERATION_CANCELLED });
+    expect(client.requests.map((request) => request.type)).toEqual([
+      "startSecretOperation",
+      "secretOperationStatus",
+      "cancelSecretOperation"
+    ]);
   });
 
   it("surfaces outcomeUnknown when cancellation races with execution", async () => {
