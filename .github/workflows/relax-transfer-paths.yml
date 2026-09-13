@@ -1,0 +1,85 @@
+name: Relax transfer path policy text
+
+on:
+  push:
+    branches:
+      - codex/relax-file-transfer-paths
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-verify:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/relax-file-transfer-paths
+          fetch-depth: 0
+
+      - name: Sync capability and MCP guidance
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              Path('Sources/VaultExecution/SFTPSecretOperationAdapter.swift'): [
+                  (
+                      '受控 SFTP/SCP list/download/upload/delete；本地文件仅限 SVLT Downloads 目录',
+                      'SFTP/SCP list/download/upload/delete；本地文件可使用任意绝对路径，远端路径不限定目录',
+                  ),
+              ],
+              Path('mcp-server/src/server.ts'): [
+                  (
+                      'Capability-gated SFTP/SCP descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Local files are restricted to SVLT Downloads. Plaintext is never returned.',
+                      'Capability-gated SFTP/SCP descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Local upload sources and download destinations may use any absolute path; remote transfer paths are not confined to an SVLT directory. Plaintext is never returned.',
+                  ),
+                  (
+                      'Capability-gated plaintext FTP descriptor. Only loopback/private destinations are supported and every request requires fresh device-owner authentication. Local files are restricted to SVLT Downloads. Plaintext is never returned.',
+                      'Capability-gated plaintext FTP descriptor. Only loopback/private destinations are supported and every request requires fresh device-owner authentication. Local upload sources and download destinations may use any absolute path; remote transfer paths are not confined to an SVLT directory. Plaintext is never returned.',
+                  ),
+                  (
+                      'Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter with controlled SVLT Downloads paths; otherwise stop. Do not substitute shell, scp, or an unreviewed local path.',
+                      'Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter; otherwise stop. Local upload sources and download destinations may use any absolute local path, and remote transfer paths are not directory-scoped by SVLT. Do not substitute shell or raw scp.',
+                  ),
+              ],
+          }
+
+          for path, pairs in replacements.items():
+              text = path.read_text()
+              for old, new in pairs:
+                  count = text.count(old)
+                  if count != 1:
+                      raise SystemExit(f'{path}: expected exactly one occurrence, found {count}: {old}')
+                  text = text.replace(old, new, 1)
+              path.write_text(text)
+          PY
+
+          git diff --check
+
+      - name: Verify Swift transfer tests
+        run: |
+          DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -parallel-testing-enabled NO \
+            -only-testing:VaultExecutionTests/FileTransferAdapterTests \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Verify MCP
+        working-directory: mcp-server
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Commit synchronized policy text and remove temporary workflow
+        run: |
+          git rm .github/workflows/relax-transfer-paths.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Sources/VaultExecution/SFTPSecretOperationAdapter.swift mcp-server/src/server.ts
+          git commit -m 'fix: align transfer path guidance with unrestricted locations'
+          git push origin HEAD:codex/relax-file-transfer-paths
