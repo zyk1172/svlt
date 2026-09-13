@@ -21,6 +21,16 @@ public enum SecretOperationState: String, Codable, Equatable, Sendable {
     }
 }
 
+/// Stable lifecycle-level error codes shared by every IPC consumer. These are
+/// deliberately separate from executor failures: cancellation before the
+/// execution linearization point is definitive, while cancellation after that
+/// point cannot prove whether an external side effect completed.
+public enum SecretOperationLifecycleErrorCode {
+    public static let operationNotFound = "OPERATION_NOT_FOUND"
+    public static let cancelled = "OPERATION_CANCELLED"
+    public static let outcomeUnknown = "OPERATION_OUTCOME_UNKNOWN"
+}
+
 public struct SecretOperationHandle: Codable, Equatable, Sendable {
     public let operationID: UUID
     public let state: SecretOperationState
