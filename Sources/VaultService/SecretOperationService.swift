@@ -1,4 +1,5 @@
 import Foundation
+import VaultAuthorization
 import VaultCore
 import VaultExecution
 import VaultIPC
@@ -9,16 +10,26 @@ private enum SecretOperationLifecycleContext {
 
 /// Owns the mutable coordination state for Agent secret operations.
 ///
-/// IPC lifecycle records, executor tasks, cancellation and approval-pending
-/// accounting live here instead of in the much larger `VaultAppServices`
-/// actor. Policy evaluation, owner-prompt construction and key resolution are
-/// still injected business responsibilities, which keeps this boundary small
-/// enough to reason about while removing cross-cutting mutable dictionaries
-/// from the God actor.
+/// IPC lifecycle records, executor tasks, cancellation, approval-pending
+/// accounting and execution-approval flight deduplication live here instead
+/// of in the much larger `VaultAppServices` actor. Policy evaluation,
+/// owner-prompt construction and key resolution remain injected business
+/// responsibilities.
 actor SecretOperationService {
     struct CancellationResult: Sendable {
         let status: SecretOperationStatus
         let ownedByPrincipal: Bool
+    }
+
+    struct ExecutionApprovalFlight: Sendable {
+        let id: UUID
+        let generation: UInt64
+        let task: Task<LocalAuthenticationContext?, Error>
+    }
+
+    struct ExecutionApprovalFlightAcquisition: Sendable {
+        let flight: ExecutionApprovalFlight
+        let created: Bool
     }
 
     private struct Record {
@@ -40,6 +51,7 @@ actor SecretOperationService {
     private var records: [UUID: Record] = [:]
     private var executionTasks: [UUID: ExecutionTaskRecord] = [:]
     private var pendingApprovalIDs: Set<UUID> = []
+    private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
 
     init(terminalRetentionLimit: Int = 128) {
         self.terminalRetentionLimit = max(1, terminalRetentionLimit)
@@ -66,15 +78,9 @@ actor SecretOperationService {
                 } catch let error as VaultCore.SecretOperationError {
                     await self.fail(operationID: operationID, errorCode: error.responseCode)
                 } catch is CancellationError {
-                    await self.fail(
-                        operationID: operationID,
-                        errorCode: VaultCore.SecretOperationError.authorizationCancelled.responseCode
-                    )
+                    await self.fail(operationID: operationID, errorCode: VaultCore.SecretOperationError.authorizationCancelled.responseCode)
                 } catch {
-                    await self.fail(
-                        operationID: operationID,
-                        errorCode: VaultCore.SecretOperationError.actionExecutionFailed.responseCode
-                    )
+                    await self.fail(operationID: operationID, errorCode: VaultCore.SecretOperationError.actionExecutionFailed.responseCode)
                 }
             }
         }
@@ -91,10 +97,7 @@ actor SecretOperationService {
 
     func cancelForBoundary(operationID: UUID, principal: String) -> CancellationResult {
         guard let status = cancel(operationID: operationID, principal: principal) else {
-            return CancellationResult(
-                status: notFoundStatus(operationID: operationID),
-                ownedByPrincipal: false
-            )
+            return CancellationResult(status: notFoundStatus(operationID: operationID), ownedByPrincipal: false)
         }
         return CancellationResult(status: status, ownedByPrincipal: true)
     }
@@ -104,33 +107,20 @@ actor SecretOperationService {
         transition(operationID: operationID, to: state)
     }
 
-    /// Registers the actual executor task under the lifecycle operation ID and
-    /// waits for it. Cancellation can therefore reach the side-effecting task
-    /// without `VaultAppServices` owning a parallel task dictionary.
     func awaitExecutionTask(
         _ task: Task<SecretOperationOutput, Error>,
         operationID: UUID?
     ) async throws -> SecretOperationOutput {
         if let operationID {
             guard let record = records[operationID], !record.state.isTerminal else {
-                // Cancellation may win in the narrow interval after the App
-                // creates an unstructured executor task but before it reaches
-                // this actor. Never register such a task after the lifecycle
-                // has already terminalized.
                 task.cancel()
                 throw CancellationError()
             }
         }
-
         let executionID = operationID ?? UUID()
         let registrationID = UUID()
-        if let existing = executionTasks[executionID] {
-            existing.task.cancel()
-        }
-        executionTasks[executionID] = ExecutionTaskRecord(
-            registrationID: registrationID,
-            task: task
-        )
+        if let existing = executionTasks[executionID] { existing.task.cancel() }
+        executionTasks[executionID] = ExecutionTaskRecord(registrationID: registrationID, task: task)
         defer {
             if executionTasks[executionID]?.registrationID == registrationID {
                 executionTasks.removeValue(forKey: executionID)
@@ -139,9 +129,58 @@ actor SecretOperationService {
         return try await task.value
     }
 
-    /// Approval status is reference-counted by opaque IDs rather than a single
-    /// Bool. Two overlapping local approvals can no longer make Workbench
-    /// report `approvalPending = false` when only the first one finishes.
+    func joinOrCreateExecutionApprovalFlight(
+        scope: ExecutionAuthorizationScope,
+        generation: UInt64,
+        create: @escaping @Sendable () async throws -> LocalAuthenticationContext?
+    ) -> ExecutionApprovalFlightAcquisition {
+        if let existing = executionApprovalFlights[scope] {
+            return ExecutionApprovalFlightAcquisition(flight: existing, created: false)
+        }
+        let approvalID = UUID()
+        let task = Task { try await create() }
+        let flight = ExecutionApprovalFlight(id: approvalID, generation: generation, task: task)
+        executionApprovalFlights[scope] = flight
+        pendingApprovalIDs.insert(approvalID)
+        return ExecutionApprovalFlightAcquisition(flight: flight, created: true)
+    }
+
+    func executionApprovalFlight(for scope: ExecutionAuthorizationScope) -> ExecutionApprovalFlight? {
+        executionApprovalFlights[scope]
+    }
+
+    @discardableResult
+    func removeExecutionApprovalFlight(
+        scope: ExecutionAuthorizationScope,
+        matching approvalID: UUID? = nil,
+        cancelTask: Bool = false
+    ) -> Bool {
+        guard let flight = executionApprovalFlights[scope],
+              approvalID == nil || flight.id == approvalID else {
+            if let approvalID { return pendingApprovalIDs.remove(approvalID) != nil }
+            return false
+        }
+        executionApprovalFlights.removeValue(forKey: scope)
+        if cancelTask { flight.task.cancel() }
+        return pendingApprovalIDs.remove(flight.id) != nil
+    }
+
+    @discardableResult
+    func finishExecutionApprovalFlight(
+        scope: ExecutionAuthorizationScope,
+        approvalID: UUID,
+        generation: UInt64
+    ) -> Bool {
+        guard let flight = executionApprovalFlights[scope],
+              flight.id == approvalID,
+              flight.generation == generation else {
+            return pendingApprovalIDs.remove(approvalID) != nil
+        }
+        executionApprovalFlights.removeValue(forKey: scope)
+        flight.task.cancel()
+        return pendingApprovalIDs.remove(approvalID) != nil
+    }
+
     @discardableResult
     func beginApproval(id: UUID = UUID()) -> UUID {
         pendingApprovalIDs.insert(id)
@@ -153,21 +192,16 @@ actor SecretOperationService {
         pendingApprovalIDs.remove(id) != nil
     }
 
-    /// Security invalidation is the single mutable-state reset for this slice.
-    /// The caller remains responsible for invalidating external authorization
-    /// leases and executor-owned security state after these tasks are latched.
     func invalidateAllCoordination() {
         cancelAllLifecycleOperations()
-        for execution in executionTasks.values {
-            execution.task.cancel()
-        }
+        for execution in executionTasks.values { execution.task.cancel() }
         executionTasks.removeAll()
+        for flight in executionApprovalFlights.values { flight.task.cancel() }
+        executionApprovalFlights.removeAll()
         pendingApprovalIDs.removeAll()
     }
 
-    nonisolated static var currentOperationID: UUID? {
-        SecretOperationLifecycleContext.operationID
-    }
+    nonisolated static var currentOperationID: UUID? { SecretOperationLifecycleContext.operationID }
 
     nonisolated static func ensureCurrentOperationIsActive() throws {
         guard SecretOperationLifecycleContext.operationID != nil, Task.isCancelled else { return }
@@ -177,26 +211,12 @@ actor SecretOperationService {
     private func register(principal: String) -> SecretOperationHandle {
         let operationID = UUID()
         nextSequence &+= 1
-        records[operationID] = Record(
-            principal: principal,
-            sequence: nextSequence,
-            state: .queued,
-            output: nil,
-            errorCode: nil,
-            task: nil
-        )
+        records[operationID] = Record(principal: principal, sequence: nextSequence, state: .queued, output: nil, errorCode: nil, task: nil)
         return SecretOperationHandle(operationID: operationID, state: .queued)
     }
 
-    private func attachTask(
-        operationID: UUID,
-        principal: String,
-        task: Task<Void, Never>
-    ) {
-        guard var record = records[operationID],
-              record.principal == principal,
-              !record.state.isTerminal
-        else {
+    private func attachTask(operationID: UUID, principal: String, task: Task<Void, Never>) {
+        guard var record = records[operationID], record.principal == principal, !record.state.isTerminal else {
             task.cancel()
             return
         }
@@ -205,10 +225,7 @@ actor SecretOperationService {
     }
 
     private func transition(operationID: UUID, to state: SecretOperationState) {
-        guard !state.isTerminal,
-              var record = records[operationID],
-              !record.state.isTerminal
-        else { return }
+        guard !state.isTerminal, var record = records[operationID], !record.state.isTerminal else { return }
         record.state = state
         records[operationID] = record
     }
@@ -222,20 +239,13 @@ actor SecretOperationService {
     }
 
     private func status(operationID: UUID, principal: String) -> SecretOperationStatus? {
-        guard let record = records[operationID], record.principal == principal else {
-            return nil
-        }
+        guard let record = records[operationID], record.principal == principal else { return nil }
         return status(operationID: operationID, record: record)
     }
 
     private func cancel(operationID: UUID, principal: String) -> SecretOperationStatus? {
-        guard var record = records[operationID], record.principal == principal else {
-            return nil
-        }
-        guard !record.state.isTerminal else {
-            return status(operationID: operationID, record: record)
-        }
-
+        guard var record = records[operationID], record.principal == principal else { return nil }
+        guard !record.state.isTerminal else { return status(operationID: operationID, record: record) }
         applyCancellation(to: &record)
         let driverTask = record.task
         record.task = nil
@@ -274,16 +284,8 @@ actor SecretOperationService {
         }
     }
 
-    private func finish(
-        operationID: UUID,
-        state: SecretOperationState,
-        output: SecretOperationOutput?,
-        errorCode: String?
-    ) {
-        guard state.isTerminal,
-              var record = records[operationID],
-              !record.state.isTerminal
-        else { return }
+    private func finish(operationID: UUID, state: SecretOperationState, output: SecretOperationOutput?, errorCode: String?) {
+        guard state.isTerminal, var record = records[operationID], !record.state.isTerminal else { return }
         record.state = state
         record.output = output
         record.errorCode = errorCode
@@ -293,9 +295,7 @@ actor SecretOperationService {
     }
 
     private func trimTerminalRecords() {
-        let terminal = records
-            .filter { $0.value.state.isTerminal }
-            .sorted { $0.value.sequence < $1.value.sequence }
+        let terminal = records.filter { $0.value.state.isTerminal }.sorted { $0.value.sequence < $1.value.sequence }
         guard terminal.count > terminalRetentionLimit else { return }
         for (operationID, _) in terminal.prefix(terminal.count - terminalRetentionLimit) {
             records.removeValue(forKey: operationID)
@@ -303,19 +303,10 @@ actor SecretOperationService {
     }
 
     private func status(operationID: UUID, record: Record) -> SecretOperationStatus {
-        SecretOperationStatus(
-            operationID: operationID,
-            state: record.state,
-            output: record.output,
-            errorCode: record.errorCode
-        )
+        SecretOperationStatus(operationID: operationID, state: record.state, output: record.output, errorCode: record.errorCode)
     }
 
     private func notFoundStatus(operationID: UUID) -> SecretOperationStatus {
-        SecretOperationStatus(
-            operationID: operationID,
-            state: .failed,
-            errorCode: SecretOperationLifecycleErrorCode.operationNotFound
-        )
+        SecretOperationStatus(operationID: operationID, state: .failed, errorCode: SecretOperationLifecycleErrorCode.operationNotFound)
     }
 }
