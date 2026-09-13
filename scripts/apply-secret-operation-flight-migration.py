@@ -116,7 +116,7 @@ text = text[:start] + '''    private func authorizeAgentExecution(
 replace_once('        _ flight: ExecutionApprovalFlight,\n', '        _ flight: SecretOperationService.ExecutionApprovalFlight,\n')
 
 start = text.index('    private func finishExecutionApprovalFlight(\n')
-end = text.index('    private func markExecutionApprovalCompleted(\n', start)
+end = text.index('    private func markExecutionApprovalCompleted(', start)
 text = text[:start] + '''    private func finishExecutionApprovalFlight(
         scope: ExecutionAuthorizationScope,
         approvalID: UUID,
