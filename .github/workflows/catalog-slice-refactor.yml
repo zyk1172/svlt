@@ -26,6 +26,7 @@ jobs:
           replacements = {
               'private enum CatalogMutationPhase: String {': 'enum CatalogMutationPhase: String {',
               'private enum SecretOperationAuthorizationPath: Sendable {': 'enum SecretOperationAuthorizationPath: Sendable {',
+              'private func assessCatalogReadAuthorization(': 'func assessCatalogReadAuthorization(',
           }
           for old, new in replacements.items():
               count = source.count(old)
