@@ -59,10 +59,11 @@ public struct SecretOperationPolicyEngine: Sendable {
         var effectiveRequirement = local.authorizationRequirement
         var reasons = local.reasons
         let semantic = descriptor.agentAssessment
+        let semanticParticipated = local.authorizationRequirement != .denied
+            && !local.technicalFailure
+            && !descriptor.secretReferences.isEmpty
 
-        if local.authorizationRequirement != .denied,
-           !local.technicalFailure,
-           !descriptor.secretReferences.isEmpty {
+        if semanticParticipated {
             if local.authorizationRequirement == .freshApprovalRequired,
                Self.isNonDowngradableFreshRule(local.policyRuleID) {
                 effectiveRequirement = .freshApprovalRequired
@@ -91,9 +92,9 @@ public struct SecretOperationPolicyEngine: Sendable {
             reasons: reasons.map(Self.sanitizeReason),
             normalizedDestination: normalizedDestination,
             requiredApproval: effectiveRequirement.requiresApproval,
-            policyRuleID: descriptor.secretReferences.isEmpty
-                ? local.policyRuleID
-                : "\(local.policyRuleID)+intent-first",
+            policyRuleID: semanticParticipated
+                ? "\(local.policyRuleID)+intent-first"
+                : local.policyRuleID,
             authorizationRequirement: effectiveRequirement,
             requiresFreshApprovalOnFirstUse: false,
             technicalFailure: local.technicalFailure
