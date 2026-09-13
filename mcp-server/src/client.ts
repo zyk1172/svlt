@@ -12,6 +12,11 @@ import {
   MAX_FRAME_BYTES
 } from "./protocol.js";
 import {
+  executeTrackedOperation,
+  isSecretOperationOutput
+} from "./secretOperations/index.js";
+import type { SecretOperationIpcClient } from "./secretOperations/client.js";
+import {
   IpcRequest,
   IpcResponse
 } from "./secretOperations/protocol.js";
@@ -42,8 +47,8 @@ const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
 const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
 // This is only a control-request timeout. Secret-operation execution now runs
 // behind operationID, so start/status/cancel remain bounded control requests.
-// The legacy executeSecretOperation compatibility request still has no MCP
-// transport deadline because it may span local approval plus executor work.
+// The legacy executeSecretOperation compatibility request is translated to
+// that lifecycle before a frame is written to the daemon.
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const FRAME_HEADER_BYTES = 4;
 const MAX_WIRE_FRAME_BYTES = FRAME_HEADER_BYTES + MAX_FRAME_BYTES;
@@ -107,8 +112,32 @@ export class LocalIpcClient {
     // not carry descriptors and therefore pass through unchanged.
     const riskJudgedRequest = await applyContextBoundedRiskJudge(request);
     const parsedRequest = IpcRequest.parse(riskJudgedRequest);
+    const effectiveCaller = caller ?? this.declaredCaller;
+
+    // Keep the old public request shape for in-process compatibility while
+    // removing it from the MCP↔daemon execution path. Existing server handlers
+    // may still construct executeSecretOperation, but LocalIpcClient converts
+    // that one call into start/status/cancel control requests and then maps the
+    // terminal result back to the legacy response shape.
+    if (parsedRequest.type === "executeSecretOperation") {
+      const rawLifecycleClient: SecretOperationIpcClient = {
+        request: (lifecycleRequest) => this.requestRaw(lifecycleRequest, effectiveCaller)
+      };
+      const result = await executeTrackedOperation(rawLifecycleClient, parsedRequest.descriptor);
+      return isSecretOperationOutput(result)
+        ? { type: "secretOperation", output: result }
+        : { type: "failure", code: result.status };
+    }
+
+    return this.requestRaw(parsedRequest, effectiveCaller);
+  }
+
+  private async requestRaw(
+    parsedRequest: IpcRequest,
+    caller?: AgentCallerIdentity
+  ): Promise<IpcResponse> {
     for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
-      const response = await this.requestOnce(parsedRequest, caller ?? this.declaredCaller);
+      const response = await this.requestOnce(parsedRequest, caller);
       if (
         response.type !== "failure" ||
         response.code !== "APP_UNAVAILABLE" ||
@@ -146,7 +175,7 @@ export class LocalIpcClient {
       const responseFrame = await sendFramedRequest(
         this.socketPath,
         IpcFrameCodec.encode(authenticatedRequest),
-        parsedRequest.type === "executeSecretOperation" ? undefined : this.requestTimeoutMs
+        this.requestTimeoutMs
       );
       return IpcFrameCodec.decode(responseFrame, IpcResponse);
     } catch (error) {
