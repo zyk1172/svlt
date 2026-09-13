@@ -5,43 +5,154 @@ import VaultExecution
 import VaultIPC
 @testable import VaultService
 
-@Test func operationLifecycleIsPrincipalScoped() async {
-    let coordinator = SecretOperationCoordinator()
-    let handle = await coordinator.register(principal: "pid:100")
+@Test func operationLifecycleIsPrincipalScopedAtServiceBoundary() async {
+    let service = SecretOperationService()
+    let handle = await service.start(
+        principal: "pid:100",
+        descriptor: testDescriptor(),
+        execute: { _ in
+            try await Task.sleep(for: .seconds(60))
+            return SecretOperationOutput(status: "COMPLETED")
+        }
+    )
 
-    #expect(await coordinator.status(operationID: handle.operationID, principal: "pid:100")?.state == .queued)
-    #expect(await coordinator.status(operationID: handle.operationID, principal: "pid:200") == nil)
-    #expect(await coordinator.cancel(operationID: handle.operationID, principal: "pid:200") == nil)
+    let ownerStatus = await service.statusForBoundary(
+        operationID: handle.operationID,
+        principal: "pid:100"
+    )
+    #expect(ownerStatus.state == .queued)
+
+    let foreignStatus = await service.statusForBoundary(
+        operationID: handle.operationID,
+        principal: "pid:200"
+    )
+    #expect(foreignStatus.state == .failed)
+    #expect(foreignStatus.errorCode == SecretOperationLifecycleErrorCode.operationNotFound)
+
+    let foreignCancellation = await service.cancelForBoundary(
+        operationID: handle.operationID,
+        principal: "pid:200"
+    )
+    #expect(foreignCancellation.ownedByPrincipal == false)
+    #expect(foreignCancellation.status.errorCode == SecretOperationLifecycleErrorCode.operationNotFound)
+
+    _ = await service.cancelForBoundary(operationID: handle.operationID, principal: "pid:100")
 }
 
 @Test func cancellingRunningOperationProducesOutcomeUnknown() async {
-    let coordinator = SecretOperationCoordinator()
-    let handle = await coordinator.register(principal: "pid:100")
-    await coordinator.transition(operationID: handle.operationID, to: .running)
-
-    let cancelled = await coordinator.cancel(operationID: handle.operationID, principal: "pid:100")
-    #expect(cancelled?.state == .outcomeUnknown)
-    #expect(cancelled?.errorCode == SecretOperationLifecycleErrorCode.outcomeUnknown)
-
-    await coordinator.succeed(
-        operationID: handle.operationID,
-        output: SecretOperationOutput(status: "COMPLETED")
+    let service = SecretOperationService()
+    let handle = await service.start(
+        principal: "pid:100",
+        descriptor: testDescriptor(),
+        execute: { _ in
+            await service.transitionCurrent(to: .running)
+            try await Task.sleep(for: .seconds(60))
+            return SecretOperationOutput(status: "COMPLETED")
+        }
     )
-    let retained = await coordinator.status(operationID: handle.operationID, principal: "pid:100")
-    #expect(retained?.state == .outcomeUnknown)
-    #expect(retained?.errorCode == SecretOperationLifecycleErrorCode.outcomeUnknown)
+
+    let running = await waitForState(
+        .running,
+        operationID: handle.operationID,
+        principal: "pid:100",
+        service: service
+    )
+    #expect(running.state == .running)
+
+    let cancellation = await service.cancelForBoundary(
+        operationID: handle.operationID,
+        principal: "pid:100"
+    )
+    #expect(cancellation.ownedByPrincipal)
+    #expect(cancellation.status.state == .outcomeUnknown)
+    #expect(cancellation.status.errorCode == SecretOperationLifecycleErrorCode.outcomeUnknown)
+
+    await Task.yield()
+    let retained = await service.statusForBoundary(
+        operationID: handle.operationID,
+        principal: "pid:100"
+    )
+    #expect(retained.state == .outcomeUnknown)
+    #expect(retained.errorCode == SecretOperationLifecycleErrorCode.outcomeUnknown)
 }
 
 @Test func cancellingQueuedOrApprovalOperationIsDefinitive() async {
-    let coordinator = SecretOperationCoordinator()
-    let queued = await coordinator.register(principal: "pid:100")
-    let cancelledQueued = await coordinator.cancel(operationID: queued.operationID, principal: "pid:100")
-    #expect(cancelledQueued?.state == .cancelled)
-    #expect(cancelledQueued?.errorCode == SecretOperationLifecycleErrorCode.cancelled)
+    let queuedService = SecretOperationService()
+    let queued = await queuedService.start(
+        principal: "pid:100",
+        descriptor: testDescriptor(),
+        execute: { _ in
+            try await Task.sleep(for: .seconds(60))
+            return SecretOperationOutput(status: "COMPLETED")
+        }
+    )
+    let cancelledQueued = await queuedService.cancelForBoundary(
+        operationID: queued.operationID,
+        principal: "pid:100"
+    )
+    #expect(cancelledQueued.status.state == .cancelled)
+    #expect(cancelledQueued.status.errorCode == SecretOperationLifecycleErrorCode.cancelled)
 
-    let approval = await coordinator.register(principal: "pid:100")
-    await coordinator.transition(operationID: approval.operationID, to: .awaitingApproval)
-    let cancelledApproval = await coordinator.cancel(operationID: approval.operationID, principal: "pid:100")
-    #expect(cancelledApproval?.state == .cancelled)
-    #expect(cancelledApproval?.errorCode == SecretOperationLifecycleErrorCode.cancelled)
+    let approvalService = SecretOperationService()
+    let approval = await approvalService.start(
+        principal: "pid:100",
+        descriptor: testDescriptor(),
+        execute: { _ in
+            await approvalService.transitionCurrent(to: .awaitingApproval)
+            try await Task.sleep(for: .seconds(60))
+            return SecretOperationOutput(status: "COMPLETED")
+        }
+    )
+    let awaitingApproval = await waitForState(
+        .awaitingApproval,
+        operationID: approval.operationID,
+        principal: "pid:100",
+        service: approvalService
+    )
+    #expect(awaitingApproval.state == .awaitingApproval)
+
+    let cancelledApproval = await approvalService.cancelForBoundary(
+        operationID: approval.operationID,
+        principal: "pid:100"
+    )
+    #expect(cancelledApproval.status.state == .cancelled)
+    #expect(cancelledApproval.status.errorCode == SecretOperationLifecycleErrorCode.cancelled)
+}
+
+@Test func releasedExecutionOwnerCannotLeaveOperationQueuedForever() async {
+    let service = SecretOperationService()
+    let handle = await service.start(
+        principal: "pid:100",
+        descriptor: testDescriptor(),
+        execute: { _ in
+            throw SecretOperationError.actionExecutionFailed
+        }
+    )
+
+    let terminal = await waitForState(
+        .failed,
+        operationID: handle.operationID,
+        principal: "pid:100",
+        service: service
+    )
+    #expect(terminal.state == .failed)
+    #expect(terminal.errorCode == SecretOperationError.actionExecutionFailed.responseCode)
+}
+
+private func testDescriptor() -> SecretOperationDescriptor {
+    SecretOperationDescriptor(actionType: .vaultStatus, secretReferences: [])
+}
+
+private func waitForState(
+    _ expected: SecretOperationState,
+    operationID: UUID,
+    principal: String,
+    service: SecretOperationService
+) async -> SecretOperationStatus {
+    var last = await service.statusForBoundary(operationID: operationID, principal: principal)
+    for _ in 0..<200 where last.state != expected {
+        await Task.yield()
+        last = await service.statusForBoundary(operationID: operationID, principal: principal)
+    }
+    return last
 }
