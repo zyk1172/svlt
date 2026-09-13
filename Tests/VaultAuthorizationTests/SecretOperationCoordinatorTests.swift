@@ -125,15 +125,18 @@ import VaultIPC
     let first = await service.beginApproval()
     let second = await service.beginApproval()
 
-    #expect(await service.approvalPending)
+    let initiallyPending = await service.approvalPending
+    #expect(initiallyPending)
 
     let removedFirst = await service.finishApproval(id: first)
+    let stillPending = await service.approvalPending
     #expect(removedFirst)
-    #expect(await service.approvalPending)
+    #expect(stillPending)
 
     let removedSecond = await service.finishApproval(id: second)
+    let finallyPending = await service.approvalPending
     #expect(removedSecond)
-    #expect(!(await service.approvalPending))
+    #expect(!finallyPending)
 }
 
 @Test func executionApprovalFlightJoinIsAtomicPerScope() async {
@@ -168,24 +171,27 @@ import VaultIPC
         }
     )
 
+    let pendingAfterJoin = await service.approvalPending
     #expect(first.created)
     #expect(!second.created)
     #expect(first.flight.id == second.flight.id)
-    #expect(await service.approvalPending)
+    #expect(pendingAfterJoin)
 
     for _ in 0..<200 {
         if await probe.count() > 0 { break }
         await Task.yield()
     }
-    #expect(await probe.count() == 1)
+    let invocationCount = await probe.count()
+    #expect(invocationCount == 1)
 
     let removed = await service.removeExecutionApprovalFlight(
         scope: scope,
         matching: first.flight.id,
         cancelTask: true
     )
+    let pendingAfterRemoval = await service.approvalPending
     #expect(removed)
-    #expect(!(await service.approvalPending))
+    #expect(!pendingAfterRemoval)
 }
 
 @Test func lifecycleCancellationReachesRegisteredExecutorTask() async {
