@@ -214,7 +214,9 @@ public extension VaultAppServices {
         inFlightSecretOperations[operationID]?.cancel()
         return status
     }
+}
 
+extension VaultAppServices {
     func noteTrackedSecretOperationState(_ state: SecretOperationState) async {
         guard let operationID = SecretOperationLifecycleContext.operationID else { return }
         await secretOperationCoordinator.transition(operationID: operationID, to: state)
