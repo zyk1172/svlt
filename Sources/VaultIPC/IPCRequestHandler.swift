@@ -67,6 +67,9 @@ public protocol WorkbenchServicing: Sendable {
     ) async throws
     func pendingRevealSessionIDs() async throws -> [String]
     func performSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationOutput
+    func startSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationHandle
+    func secretOperationStatus(operationID: UUID) async throws -> SecretOperationStatus
+    func cancelSecretOperation(operationID: UUID) async throws -> SecretOperationStatus
     func secretOperationCapabilities() async -> [SecretOperationCapability]
     func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview
     func sshSessionStatuses(sessionID: String?) async throws -> [SSHSessionStatus]
@@ -218,6 +221,18 @@ public extension WorkbenchServicing {
     }
 
     func performSecretOperation(_: SecretOperationDescriptor) async throws -> SecretOperationOutput {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func startSecretOperation(_: SecretOperationDescriptor) async throws -> SecretOperationHandle {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func secretOperationStatus(operationID _: UUID) async throws -> SecretOperationStatus {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func cancelSecretOperation(operationID _: UUID) async throws -> SecretOperationStatus {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
@@ -415,6 +430,12 @@ public struct IPCRequestHandler: Sendable {
             } catch {
                 return .failure(code: "ACTION_EXECUTION_FAILED")
             }
+        case let .startSecretOperation(descriptor):
+            return try await lifecycleResponse { try await service.startSecretOperation(descriptor) }
+        case let .secretOperationStatus(operationID):
+            return try await lifecycleStatusResponse { try await service.secretOperationStatus(operationID: operationID) }
+        case let .cancelSecretOperation(operationID):
+            return try await lifecycleStatusResponse { try await service.cancelSecretOperation(operationID: operationID) }
         case let .reviewSSHHostKey(host, port):
             return .sshHostKeyReview(try await service.reviewSSHHostKey(host: host, port: port))
         case .secretOperationCapabilities:
@@ -424,6 +445,30 @@ public struct IPCRequestHandler: Sendable {
         case let .sshSessionClose(sessionID):
             try await service.closeSSHSession(sessionID: sessionID)
             return .operationCompleted
+        }
+    }
+
+    private func lifecycleResponse(
+        _ operation: () async throws -> SecretOperationHandle
+    ) async throws -> IPCResponse {
+        do {
+            return .secretOperationHandle(try await operation())
+        } catch let error as SecretOperationError {
+            return .failure(code: error.responseCode)
+        } catch {
+            return .failure(code: "ACTION_EXECUTION_FAILED")
+        }
+    }
+
+    private func lifecycleStatusResponse(
+        _ operation: () async throws -> SecretOperationStatus
+    ) async throws -> IPCResponse {
+        do {
+            return .secretOperationStatus(try await operation())
+        } catch let error as SecretOperationError {
+            return .failure(code: error.responseCode)
+        } catch {
+            return .failure(code: "ACTION_EXECUTION_FAILED")
         }
     }
 

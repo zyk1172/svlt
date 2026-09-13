@@ -305,6 +305,32 @@ public actor VaultIPCClient {
         return output
     }
 
+    public func startSecretOperation(
+        _ descriptor: SecretOperationDescriptor
+    ) async throws -> SecretOperationHandle {
+        let response = try await send(.startSecretOperation(descriptor))
+        guard case let .secretOperationHandle(handle) = response else {
+            throw unexpected(response)
+        }
+        return handle
+    }
+
+    public func secretOperationStatus(operationID: UUID) async throws -> SecretOperationStatus {
+        let response = try await send(.secretOperationStatus(operationID: operationID))
+        guard case let .secretOperationStatus(status) = response else {
+            throw unexpected(response)
+        }
+        return status
+    }
+
+    public func cancelSecretOperation(operationID: UUID) async throws -> SecretOperationStatus {
+        let response = try await send(.cancelSecretOperation(operationID: operationID))
+        guard case let .secretOperationStatus(status) = response else {
+            throw unexpected(response)
+        }
+        return status
+    }
+
     public func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview {
         let response = try await send(.reviewSSHHostKey(host: host, port: port))
         guard case let .sshHostKeyReview(review) = response else {
