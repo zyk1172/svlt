@@ -1,0 +1,727 @@
+name: Fix PR 85 review findings
+
+on:
+  push:
+    branches: [codex/approval-2m-unbounded-execution]
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/approval-2m-unbounded-execution
+          fetch-depth: 0
+
+      - name: Apply review fixes and regression tests
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected exactly one match, found {count}: {old[:100]!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          def replace_count(path: Path, old: str, new: str, expected: int) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{path}: expected {expected} matches, found {count}: {old[:100]!r}")
+              path.write_text(text.replace(old, new))
+
+          # 1) MCP compatibility: keep legacy timeoutMs accepted by strict schemas,
+          # but intentionally do not forward it into execution descriptors.
+          server = Path("mcp-server/src/server.ts")
+          replace_count(
+              server,
+              '    responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+              '    responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),\n    timeoutMs: z.number().int().min(100).max(30_000).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+              2,
+          )
+          replace_once(
+              server,
+              '    sessionID: z.string().min(1).max(128).optional(),\n    agentAssessment: optionalAgentRiskAssessment\n  })\n  .strict();',
+              '    sessionID: z.string().min(1).max(128).optional(),\n    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),\n    agentAssessment: optionalAgentRiskAssessment\n  })\n  .strict();',
+          )
+          replace_once(
+              server,
+              '    stopOnFailure: z.boolean().default(true),\n    agentAssessment: optionalAgentRiskAssessment',
+              '    stopOnFailure: z.boolean().default(true),\n    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+          )
+          replace_once(
+              server,
+              '    maxRows: z.number().int().min(1).max(100).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+              '    maxRows: z.number().int().min(1).max(100).optional(),\n    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+          )
+          replace_count(
+              server,
+              '    localPath: z.string().min(1).max(4_096).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+              '    localPath: z.string().min(1).max(4_096).optional(),\n    timeoutMs: z.number().int().min(1_000).max(60_000).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+              2,
+          )
+          replace_once(
+              server,
+              '    submit: z.boolean().optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+              '    submit: z.boolean().optional(),\n    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+          )
+          replace_once(
+              server,
+              '    submitButton: z.string().min(1).max(256).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+              '    submitButton: z.string().min(1).max(256).optional(),\n    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),\n    agentAssessment: optionalAgentRiskAssessment',
+          )
+
+          # 2) SSH concurrency: account for one-shot fallback sessions and drain
+          # an unhealthy shared master instead of killing concurrent commands.
+          ssh = Path("Sources/VaultExecution/SSHSessionManager.swift")
+          replace_once(
+              ssh,
+              '''    private enum RecordState: Equatable {
+                  case pending
+                  case active
+              }''',
+              '''    private enum RecordState: Equatable {
+                  case pending
+                  case active
+                  case draining
+              }''',
+          )
+          replace_once(
+              ssh,
+              '''    private var records: [String: Record] = [:]
+              private var openingTasks: [SSHSessionScope: OpeningTask] = [:]
+              private var didCleanStaleControlPaths = false''',
+              '''    private var records: [String: Record] = [:]
+              private var openingTasks: [SSHSessionScope: OpeningTask] = [:]
+              private var transientSessionCountsByPrincipal: [String: Int] = [:]
+              private var transientSessionCount = 0
+              private var didCleanStaleControlPaths = false''',
+          )
+          replace_once(
+              ssh,
+              '''    private func executeWhileOpening(
+                  scope: SSHSessionScope,
+                  operation: @escaping @Sendable (SSHSessionAccess) async throws -> SSHSessionCommandExecution
+              ) async throws -> SSHSessionCommandExecution {
+                  let id = Self.makeSessionID()''',
+              '''    private func executeWhileOpening(
+                  scope: SSHSessionScope,
+                  operation: @escaping @Sendable (SSHSessionAccess) async throws -> SSHSessionCommandExecution
+              ) async throws -> SSHSessionCommandExecution {
+                  try reserveTransientSlot(for: scope.principal)
+                  defer { releaseTransientSlot(for: scope.principal) }
+                  let id = Self.makeSessionID()''',
+          )
+          old_execute_active = '''    private func executeOnActiveRecord(
+                  _ record: Record,
+                  operation: @escaping @Sendable (SSHSessionAccess) async throws -> SSHSessionCommandExecution
+              ) async throws -> SSHSessionCommandExecution {
+                  let access = SSHSessionAccess(
+                      id: record.id,
+                      controlPath: record.controlPath,
+                      requiresAuthentication: false,
+                      outputFingerprints: record.outputFingerprints
+                  )
+                  guard var active = records[record.id] else {
+                      return try await operation(access).assigningSessionID(nil, masterReady: false)
+                  }
+                  active.inFlightCount += 1
+                  records[record.id] = active
+                  do {
+                      let result = try await operation(access)
+                      guard result.channelState == .remoteCommandCompleted else {
+                          await closeRecord(record)
+                          return result.assigningSessionID(nil, masterReady: false)
+                      }
+                      guard var current = records[record.id] else {
+                          // Explicit invalidation may remove the cache record while the
+                          // command is finishing. Preserve the real command result.
+                          return result.assigningSessionID(nil, masterReady: false)
+                      }
+                      current.inFlightCount = max(0, current.inFlightCount - 1)
+                      current.lastUsedAt = now()
+                      current.lastUsedTick = monotonicNow()
+                      records[record.id] = current
+                      return result
+                          .assigningFingerprintsIfMissing(record.outputFingerprints)
+                          .assigningSessionID(record.id, masterReady: true)
+                  } catch {
+                      if var current = records[record.id] {
+                          current.inFlightCount = max(0, current.inFlightCount - 1)
+                          current.lastUsedAt = now()
+                          current.lastUsedTick = monotonicNow()
+                          records[record.id] = current
+                      }
+                      throw error
+                  }
+              }
+
+              private func enforceLimits(for principal: String) throws {
+                  let principalRecords = records.values.filter { $0.scope.principal == principal }
+                  guard principalRecords.count < maxSessionsPerPrincipal,
+                        records.count < maxGlobalSessions
+                  else {
+                      throw SSHSessionManagerError.sessionLimitReached
+                  }
+              }'''
+          new_execute_active = '''    private func executeOnActiveRecord(
+                  _ record: Record,
+                  operation: @escaping @Sendable (SSHSessionAccess) async throws -> SSHSessionCommandExecution
+              ) async throws -> SSHSessionCommandExecution {
+                  let access = SSHSessionAccess(
+                      id: record.id,
+                      controlPath: record.controlPath,
+                      requiresAuthentication: false,
+                      outputFingerprints: record.outputFingerprints
+                  )
+                  guard var active = records[record.id] else {
+                      return try await operation(access).assigningSessionID(nil, masterReady: false)
+                  }
+                  active.inFlightCount += 1
+                  records[record.id] = active
+                  do {
+                      let result = try await operation(access)
+                      guard var current = records[record.id] else {
+                          // Explicit invalidation may remove the cache record while the
+                          // command is finishing. Preserve the real command result.
+                          return result.assigningSessionID(nil, masterReady: false)
+                      }
+                      current.inFlightCount = max(0, current.inFlightCount - 1)
+                      current.lastUsedAt = now()
+                      current.lastUsedTick = monotonicNow()
+
+                      guard result.channelState == .remoteCommandCompleted else {
+                          if current.inFlightCount == 0 {
+                              await closeRecord(current)
+                          } else {
+                              current.state = .draining
+                              records[record.id] = current
+                          }
+                          return result.assigningSessionID(nil, masterReady: false)
+                      }
+
+                      if current.state == .draining {
+                          if current.inFlightCount == 0 {
+                              await closeRecord(current)
+                          } else {
+                              records[record.id] = current
+                          }
+                          return result
+                              .assigningFingerprintsIfMissing(record.outputFingerprints)
+                              .assigningSessionID(nil, masterReady: false)
+                      }
+
+                      records[record.id] = current
+                      return result
+                          .assigningFingerprintsIfMissing(record.outputFingerprints)
+                          .assigningSessionID(record.id, masterReady: true)
+                  } catch {
+                      if var current = records[record.id] {
+                          current.inFlightCount = max(0, current.inFlightCount - 1)
+                          current.lastUsedAt = now()
+                          current.lastUsedTick = monotonicNow()
+                          if current.state == .draining, current.inFlightCount == 0 {
+                              await closeRecord(current)
+                          } else {
+                              records[record.id] = current
+                          }
+                      }
+                      throw error
+                  }
+              }
+
+              private func reserveTransientSlot(for principal: String) throws {
+                  try enforceLimits(for: principal)
+                  transientSessionCountsByPrincipal[principal, default: 0] += 1
+                  transientSessionCount += 1
+              }
+
+              private func releaseTransientSlot(for principal: String) {
+                  if let count = transientSessionCountsByPrincipal[principal] {
+                      if count <= 1 {
+                          transientSessionCountsByPrincipal.removeValue(forKey: principal)
+                      } else {
+                          transientSessionCountsByPrincipal[principal] = count - 1
+                      }
+                  }
+                  transientSessionCount = max(0, transientSessionCount - 1)
+              }
+
+              private func enforceLimits(for principal: String) throws {
+                  let principalRecords = records.values.filter { $0.scope.principal == principal }
+                  let principalTransientCount = transientSessionCountsByPrincipal[principal, default: 0]
+                  guard principalRecords.count + principalTransientCount < maxSessionsPerPrincipal,
+                        records.count + transientSessionCount < maxGlobalSessions
+                  else {
+                      throw SSHSessionManagerError.sessionLimitReached
+                  }
+              }'''
+          replace_once(ssh, old_execute_active, new_execute_active)
+          replace_once(
+              ssh,
+              '''        guard record.state == .active, await checkControl(record) else {
+                      await closeRecord(record)
+                      throw SSHSessionManagerError.controlUnavailable
+                  }''',
+              '''        guard record.state == .active else {
+                      if record.state != .draining {
+                          await closeRecord(record)
+                      }
+                      throw SSHSessionManagerError.controlUnavailable
+                  }
+                  guard await checkControl(record) else {
+                      await closeRecord(record)
+                      throw SSHSessionManagerError.controlUnavailable
+                  }''',
+          )
+          replace_once(
+              ssh,
+              '''        for record in recordsToClose {
+                      if record.state == .active {
+                          await closeControl(record)
+                      } else {
+                          removeControlPath(record.controlPath)
+                      }
+                  }''',
+              '''        for record in recordsToClose {
+                      if record.state == .active || record.state == .draining {
+                          await closeControl(record)
+                      } else {
+                          removeControlPath(record.controlPath)
+                      }
+                  }''',
+          )
+          replace_once(
+              ssh,
+              '''    private func closeRecord(_ record: Record) async {
+                  records.removeValue(forKey: record.id)
+                  if record.state == .active {
+                      await closeControl(record)
+                  } else {
+                      removeControlPath(record.controlPath)
+                  }
+              }''',
+              '''    private func closeRecord(_ record: Record) async {
+                  records.removeValue(forKey: record.id)
+                  if record.state == .active || record.state == .draining {
+                      await closeControl(record)
+                  } else {
+                      removeControlPath(record.controlPath)
+                  }
+              }''',
+          )
+
+          # 3) FTP: once the parent Task is cancelled, transport callbacks may
+          # report NWConnection failure; cancellation must win over that failure.
+          ftp = Path("Sources/VaultExecution/FTPSecretOperationAdapter.swift")
+          replace_once(
+              ftp,
+              '''        do {
+                      try await runFTPStage { try await data.start() }
+                  } catch {
+                      data.cancel()
+                      throw FTPClientError.connection
+                  }''',
+              '''        do {
+                      try await runFTPStage { try await data.start() }
+                  } catch is CancellationError {
+                      data.cancel()
+                      throw CancellationError()
+                  } catch {
+                      data.cancel()
+                      throw FTPClientError.connection
+                  }''',
+          )
+          replace_once(
+              ftp,
+              '''        } catch let error as FTPClientError {
+                      throw error
+                  } catch {
+                      throw FTPClientError.localIO
+                  }
+              }''',
+              '''        } catch let error as FTPClientError {
+                      throw error
+                  } catch is CancellationError {
+                      throw CancellationError()
+                  } catch {
+                      throw FTPClientError.localIO
+                  }
+              }''',
+          )
+          replace_once(
+              ftp,
+              '''private func runFTPStage<T: Sendable>(
+                  operation: @escaping @Sendable () async throws -> T
+              ) async throws -> T {
+                  try Task.checkCancellation()
+                  return try await operation()
+              }''',
+              '''func runFTPStage<T: Sendable>(
+                  operation: @escaping @Sendable () async throws -> T
+              ) async throws -> T {
+                  try Task.checkCancellation()
+                  do {
+                      let result = try await operation()
+                      try Task.checkCancellation()
+                      return result
+                  } catch {
+                      try Task.checkCancellation()
+                      throw error
+                  }
+              }''',
+          )
+
+          # Swift regression tests: session-limit accounting, shared-master drain,
+          # and FTP cancellation precedence.
+          ssh_tests = Path("Tests/VaultExecutionTests/SSHSessionManagerTests.swift")
+          ssh_text = ssh_tests.read_text()
+          test_marker = "\nprivate func open(\n"
+          if ssh_text.count(test_marker) != 1:
+              raise SystemExit("SSHSessionManagerTests.swift: open() insertion marker mismatch")
+          ssh_regressions = r'''
+
+          @Test func SSHSessionManagerCountsOpeningFallbackAgainstPerPrincipalLimit() async throws {
+              let root = try makeTemporaryDirectory()
+              defer { try? FileManager.default.removeItem(at: root) }
+              let manager = SSHSessionManager(
+                  processRunner: SessionProcessRunner(),
+                  sessionDirectory: root,
+                  maxSessionsPerPrincipal: 1,
+                  maxGlobalSessions: 32
+              )
+              let scope = sessionScope()
+              let gate = BlockingSessionOperationGate()
+              let first = Task {
+                  try await manager.execute(scope: scope) { _ in
+                      await gate.markStartedAndWait()
+                      return SSHSessionCommandExecution(
+                          processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                          channelState: .remoteCommandCompleted
+                      )
+                  }
+              }
+              await gate.waitUntilStarted()
+
+              do {
+                  _ = try await manager.execute(scope: scope) { _ in
+                      SSHSessionCommandExecution(
+                          processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                          channelState: .remoteCommandCompleted
+                      )
+                  }
+                  Issue.record("An opening fallback bypassed the per-principal session limit.")
+              } catch SSHSessionManagerError.sessionLimitReached {
+                  // Expected.
+              } catch {
+                  Issue.record("Unexpected opening fallback limit error: \(error)")
+              }
+
+              await gate.release()
+              _ = try await first.value
+          }
+
+          @Test func SSHSessionManagerCountsOpeningFallbackAgainstGlobalLimit() async throws {
+              let root = try makeTemporaryDirectory()
+              defer { try? FileManager.default.removeItem(at: root) }
+              let manager = SSHSessionManager(
+                  processRunner: SessionProcessRunner(),
+                  sessionDirectory: root,
+                  maxSessionsPerPrincipal: 8,
+                  maxGlobalSessions: 1
+              )
+              let scope = sessionScope()
+              let gate = BlockingSessionOperationGate()
+              let first = Task {
+                  try await manager.execute(scope: scope) { _ in
+                      await gate.markStartedAndWait()
+                      return SSHSessionCommandExecution(
+                          processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                          channelState: .remoteCommandCompleted
+                      )
+                  }
+              }
+              await gate.waitUntilStarted()
+
+              do {
+                  _ = try await manager.execute(scope: scope) { _ in
+                      SSHSessionCommandExecution(
+                          processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                          channelState: .remoteCommandCompleted
+                      )
+                  }
+                  Issue.record("An opening fallback bypassed the global session limit.")
+              } catch SSHSessionManagerError.sessionLimitReached {
+                  // Expected.
+              } catch {
+                  Issue.record("Unexpected global opening fallback limit error: \(error)")
+              }
+
+              await gate.release()
+              _ = try await first.value
+          }
+
+          @Test func SSHSessionManagerDefersSharedMasterCloseUntilConcurrentCommandsFinish() async throws {
+              let root = try makeTemporaryDirectory()
+              defer { try? FileManager.default.removeItem(at: root) }
+              let runner = SessionProcessRunner()
+              let manager = SSHSessionManager(processRunner: runner, sessionDirectory: root)
+              let scope = sessionScope()
+              let opened = try await open(manager: manager, scope: scope)
+              let sessionID = try #require(opened.sessionID)
+              let failingGate = BlockingSessionOperationGate()
+              let successfulGate = BlockingSessionOperationGate()
+
+              let failing = Task {
+                  try await manager.execute(scope: scope, requestedSessionID: sessionID) { _ in
+                      await failingGate.markStartedAndWait()
+                      return SSHSessionCommandExecution(
+                          processResult: ProcessResult(exitCode: 255, stdout: Data(), stderr: Data()),
+                          channelState: .transportFailed
+                      )
+                  }
+              }
+              await failingGate.waitUntilStarted()
+
+              let successful = Task {
+                  try await manager.execute(scope: scope, requestedSessionID: sessionID) { _ in
+                      await successfulGate.markStartedAndWait()
+                      return SSHSessionCommandExecution(
+                          processResult: ProcessResult(exitCode: 0, stdout: Data("done".utf8), stderr: Data()),
+                          channelState: .remoteCommandCompleted
+                      )
+                  }
+              }
+              await successfulGate.waitUntilStarted()
+
+              await failingGate.release()
+              let failedResult = try await failing.value
+              #expect(failedResult.channelState == .transportFailed)
+              #expect(await runner.invocations.contains { $0.arguments.contains("exit") } == false)
+
+              await successfulGate.release()
+              let successfulResult = try await successful.value
+              #expect(successfulResult.processResult.stdout == Data("done".utf8))
+              #expect(successfulResult.sessionID == nil)
+              #expect(!successfulResult.masterReady)
+              #expect(await runner.invocations.filter { $0.arguments.contains("exit") }.count == 1)
+              #expect(await manager.statuses(for: scope.principal).isEmpty)
+          }
+          '''
+          ssh_tests.write_text(ssh_text.replace(test_marker, ssh_regressions + test_marker, 1))
+
+          ssh_text = ssh_tests.read_text()
+          actor_marker = "\nprivate actor SessionProcessRunner: ProcessRunning {\n"
+          if ssh_text.count(actor_marker) != 1:
+              raise SystemExit("SSHSessionManagerTests.swift: runner insertion marker mismatch")
+          blocking_actor = r'''
+
+          private actor BlockingSessionOperationGate {
+              private var started = false
+              private var released = false
+              private var startWaiters: [CheckedContinuation<Void, Never>] = []
+              private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+              func markStartedAndWait() async {
+                  started = true
+                  let waiters = startWaiters
+                  startWaiters.removeAll()
+                  waiters.forEach { $0.resume() }
+                  guard !released else { return }
+                  await withCheckedContinuation { continuation in
+                      releaseWaiters.append(continuation)
+                  }
+              }
+
+              func waitUntilStarted() async {
+                  guard !started else { return }
+                  await withCheckedContinuation { continuation in
+                      startWaiters.append(continuation)
+                  }
+              }
+
+              func release() {
+                  released = true
+                  let waiters = releaseWaiters
+                  releaseWaiters.removeAll()
+                  waiters.forEach { $0.resume() }
+              }
+          }
+          '''
+          ssh_tests.write_text(ssh_text.replace(actor_marker, blocking_actor + actor_marker, 1))
+
+          transfer_tests = Path("Tests/VaultExecutionTests/FileTransferAdapterTests.swift")
+          transfer_text = transfer_tests.read_text()
+          transfer_marker = "\nprivate func transferDescriptor(\n"
+          if transfer_text.count(transfer_marker) != 1:
+              raise SystemExit("FileTransferAdapterTests.swift: descriptor insertion marker mismatch")
+          ftp_regression = r'''
+
+          @Test func ftpStagePrefersTaskCancellationOverTransportFailure() async {
+              let gate = BlockingFTPStageGate()
+              let task = Task {
+                  try await runFTPStage {
+                      await gate.markStartedAndWait()
+                      throw FTPCancellationProbeError.transport
+                  }
+              }
+              await gate.waitUntilStarted()
+              task.cancel()
+              await gate.release()
+
+              do {
+                  _ = try await task.value
+                  Issue.record("FTP stage returned a transport result after cancellation.")
+              } catch is CancellationError {
+                  // Expected: explicit task cancellation wins over the callback error.
+              } catch {
+                  Issue.record("FTP cancellation was rewritten as \(error).")
+              }
+          }
+
+          private enum FTPCancellationProbeError: Error {
+              case transport
+          }
+
+          private actor BlockingFTPStageGate {
+              private var started = false
+              private var released = false
+              private var startWaiters: [CheckedContinuation<Void, Never>] = []
+              private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+              func markStartedAndWait() async {
+                  started = true
+                  let waiters = startWaiters
+                  startWaiters.removeAll()
+                  waiters.forEach { $0.resume() }
+                  guard !released else { return }
+                  await withCheckedContinuation { continuation in
+                      releaseWaiters.append(continuation)
+                  }
+              }
+
+              func waitUntilStarted() async {
+                  guard !started else { return }
+                  await withCheckedContinuation { continuation in
+                      startWaiters.append(continuation)
+                  }
+              }
+
+              func release() {
+                  released = true
+                  let waiters = releaseWaiters
+                  releaseWaiters.removeAll()
+                  waiters.forEach { $0.resume() }
+              }
+          }
+          '''
+          transfer_tests.write_text(transfer_text.replace(transfer_marker, ftp_regression + transfer_marker, 1))
+
+          # MCP regression test: every legacy timeoutMs field remains accepted by
+          # the public strict tool schema. Handlers intentionally ignore the value.
+          Path("mcp-server/test/legacy-timeout-compat.test.ts").write_text(r'''import { describe, expect, it } from "vitest";
+
+          import type { IpcRequest, IpcResponse } from "../src/protocol.js";
+          import { createVaultToolDefinitions, type VaultIpcClient } from "../src/server.js";
+
+          const reference = "secret://0123456789ABCDEFGHJKMNPQRS";
+
+          class NoopClient implements VaultIpcClient {
+            async request(_request: IpcRequest): Promise<IpcResponse> {
+              throw new Error("not used by schema compatibility tests");
+            }
+          }
+
+          function inputSchema(name: string) {
+            const definition = createVaultToolDefinitions(new NoopClient()).find((item) => item.name === name);
+            if (definition === undefined) throw new Error(`missing tool ${name}`);
+            return definition.inputSchema;
+          }
+
+          describe("legacy timeoutMs compatibility", () => {
+            it("accepts deprecated timeoutMs on every strict tool schema that historically exposed it", () => {
+              const cases: Array<[string, Record<string, unknown>]> = [
+                ["local_http_request_with_secret", { url: "https://example.com", timeoutMs: 100 }],
+                ["ssh_command_with_secret", { host: "example.com", passwordRef: reference, command: "true", timeoutMs: 1_000 }],
+                ["ssh_batch_with_secret", { host: "example.com", passwordRef: reference, commands: [{ executable: "true", arguments: [] }], timeoutMs: 1_000 }],
+                ["api_request_with_token", { url: "https://example.com", tokenRef: reference, timeoutMs: 100 }],
+                ["database_query_with_secret", { engine: "postgres", host: "db.local", database: "app", username: "user", passwordRef: reference, query: "SELECT 1", timeoutMs: 1_000 }],
+                ["sftp_transfer_with_secret", { operation: "list", host: "nas.local", username: "user", passwordRef: reference, remotePath: "/", timeoutMs: 1_000 }],
+                ["ftp_transfer_with_secret", { operation: "list", host: "nas.local", username: "user", passwordRef: reference, remotePath: "/", timeoutMs: 1_000 }],
+                ["browser_web_login_with_secret", { url: "https://example.com", username: "user", passwordRef: reference, passwordSelector: "#password", timeoutMs: 1_000 }],
+                ["local_app_form_fill_with_secret", { appName: "Test App", fields: [{ name: "password", valueRef: reference }], timeoutMs: 1_000 }]
+              ];
+
+              for (const [name, input] of cases) {
+                expect(() => inputSchema(name).parse(input), name).not.toThrow();
+              }
+            });
+          });
+          ''')
+          PY
+
+      - name: Check architecture budget and whitespace
+        run: |
+          bash scripts/check-architecture-budgets.sh
+          git diff --check
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Verify MCP
+        working-directory: mcp-server
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Verify Swift suite
+        run: |
+          xcodebuild_log="$RUNNER_TEMP/svlt-pr85-xcodebuild.log"
+          set -o pipefail
+          set +e
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/svlt-pr85-derived" \
+            -parallel-testing-enabled NO \
+            -retry-tests-on-failure \
+            -test-iterations 3 \
+            -test-repetition-relaunch-enabled YES \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$xcodebuild_log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -nE '(^|[[:space:]])(fatal )?error:' "$xcodebuild_log" || true
+          fi
+          exit "$status"
+
+      - name: Commit verified fixes and remove temporary workflow
+        run: |
+          git rm .github/workflows/fix-pr85-review.yml
+          git add Sources/VaultExecution/SSHSessionManager.swift \
+            Sources/VaultExecution/FTPSecretOperationAdapter.swift \
+            Tests/VaultExecutionTests/SSHSessionManagerTests.swift \
+            Tests/VaultExecutionTests/FileTransferAdapterTests.swift \
+            mcp-server/src/server.ts \
+            mcp-server/test/legacy-timeout-compat.test.ts
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix: address PR 85 review findings'
+          git push origin HEAD:codex/approval-2m-unbounded-execution
