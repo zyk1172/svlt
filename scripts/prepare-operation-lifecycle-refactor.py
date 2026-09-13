@@ -53,6 +53,17 @@ if text.count(ipc_test_import) != 1:
     raise RuntimeError("lifecycle IPC test import anchor not found exactly once")
 text = text.replace(ipc_test_import, ipc_test_import_with_execution, 1)
 
+coordinator_test_import = '''import VaultCore
+import VaultIPC
+@testable import VaultService'''
+coordinator_test_import_with_execution = '''import VaultCore
+import VaultExecution
+import VaultIPC
+@testable import VaultService'''
+if text.count(coordinator_test_import) != 1:
+    raise RuntimeError("lifecycle coordinator test import anchor not found exactly once")
+text = text.replace(coordinator_test_import, coordinator_test_import_with_execution, 1)
+
 old_ending = 'write(path, text.rstrip() + append + "\\n")'
 new_ending = 'write(path, text.rstrip() + "\\n" + append.strip() + "\\n")'
 if text.count(old_ending) != 1:
