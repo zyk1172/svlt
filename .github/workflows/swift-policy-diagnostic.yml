@@ -1,4 +1,4 @@
-name: Swift policy diagnostic
+name: Apply Swift policy diagnostic fix
 
 on:
   push:
@@ -9,57 +9,65 @@ permissions:
   contents: write
 
 concurrency:
-  group: svlt-swift-policy-diagnostic-${{ github.ref }}
+  group: svlt-swift-policy-fix-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  diagnose:
-    if: ${{ !contains(github.event.head_commit.message, '[policy-diag-result]') }}
-    runs-on: macos-latest
-    timeout-minutes: 15
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[policy-diag-fix]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Run VaultAuthorization tests and capture diagnostics
+      - name: Apply narrow implementation fix and remove diagnostics
         shell: bash
         run: |
-          set -o pipefail
-          set +e
-          xcodebuild test \
-            -project SVLT.xcodeproj \
-            -scheme AgentSecretVault \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$RUNNER_TEMP/svlt-policy-diag-derived" \
-            -parallel-testing-enabled NO \
-            -only-testing:VaultAuthorizationTests \
-            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$RUNNER_TEMP/policy-diag.log"
-          status=${PIPESTATUS[0]}
-          set -e
-
-          python3 - "$RUNNER_TEMP/policy-diag.log" "$status" <<'PY'
-          import re, sys
+          python3 <<'PY'
           from pathlib import Path
-          src = Path(sys.argv[1])
-          status = int(sys.argv[2])
-          lines = src.read_text(errors='replace').splitlines()
-          patterns = re.compile(r'(error:|failed|failure|recorded an issue|Expectation failed|✘|Test .* failed)', re.I)
-          hits = [i for i, line in enumerate(lines) if patterns.search(line)]
-          selected = set()
-          for i in hits:
-              selected.update(range(max(0, i - 8), min(len(lines), i + 16)))
-          if not selected:
-              selected.update(range(max(0, len(lines) - 400), len(lines)))
-          out = [f'xcodebuild_status={status}', '']
-          previous = None
-          for i in sorted(selected):
-              if previous is not None and i > previous + 1:
-                  out.append('...')
-              out.append(f'{i+1:06d}: {lines[i]}')
-              previous = i
-          Path('swift-policy-diagnostic.txt').write_text('\n'.join(out) + '\n')
+
+          path = Path('Sources/VaultAuthorization/SecretOperationPolicyEngine.swift')
+          text = path.read_text()
+          old = '''        var effectiveRequirement = local.authorizationRequirement
+        var reasons = local.reasons
+        let semantic = descriptor.agentAssessment
+
+        if local.authorizationRequirement != .denied,
+           !local.technicalFailure,
+           !descriptor.secretReferences.isEmpty {
+'''
+          new = '''        var effectiveRequirement = local.authorizationRequirement
+        var reasons = local.reasons
+        let semantic = descriptor.agentAssessment
+        let semanticParticipated = local.authorizationRequirement != .denied
+            && !local.technicalFailure
+            && !descriptor.secretReferences.isEmpty
+
+        if semanticParticipated {
+'''
+          if old not in text:
+              raise SystemExit('semantic participation block not found')
+          text = text.replace(old, new, 1)
+
+          old_rule = '''            policyRuleID: descriptor.secretReferences.isEmpty
+                ? local.policyRuleID
+                : "\\(local.policyRuleID)+intent-first",
+'''
+          new_rule = '''            policyRuleID: semanticParticipated
+                ? "\\(local.policyRuleID)+intent-first"
+                : local.policyRuleID,
+'''
+          if old_rule not in text:
+              raise SystemExit('policy rule label block not found')
+          text = text.replace(old_rule, new_rule, 1)
+          path.write_text(text)
           PY
 
+          rm -f swift-policy-diagnostic.txt
+          rm -f .github/workflows/swift-policy-diagnostic.yml
+
+          git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add swift-policy-diagnostic.txt
-          git commit -m 'chore: capture Swift policy diagnostics [policy-diag-result]'
+          git add -A
+          git commit -m 'fix: label only semantic authorization decisions [policy-diag-fix]'
           git push
