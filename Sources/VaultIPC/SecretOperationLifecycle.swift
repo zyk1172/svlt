@@ -1,5 +1,6 @@
 import Foundation
 import VaultCore
+import VaultExecution
 
 public enum SecretOperationState: String, Codable, Equatable, Sendable {
     case queued
