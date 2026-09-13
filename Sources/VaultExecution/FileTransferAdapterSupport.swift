@@ -24,6 +24,9 @@ struct FileTransferPlan: Sendable {
 }
 
 public enum FileTransferAdapterSupport {
+    /// Used only as the convenience destination when a download does not
+    /// provide an explicit local path. Explicit upload sources and download
+    /// destinations are not confined to this directory.
     public static let defaultTransferRoot = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/AgentSecretVault/Downloads", isDirectory: true)
         .standardizedFileURL
@@ -51,8 +54,7 @@ public enum FileTransferAdapterSupport {
               operation.username.map(isSafeUsername) ?? true,
               operation.usernameReference.map(descriptor.secretReferences.contains) ?? true,
               operation.usernameReference != passwordReference,
-              isSafeRemotePath(operation.remotePath),
-              operation.localFileGrantID == nil else {
+              isValidRemotePath(operation.remotePath) else {
             throw FileTransferAdapterError.invalidParameter
         }
 
@@ -179,14 +181,15 @@ public enum FileTransferAdapterSupport {
         }
 
         guard needsLocalFile else { return nil }
-        let root = localRoot.standardizedFileURL
         let rawPath: String
         if let localPath = operation.localPath {
             rawPath = localPath
         } else if operation.operation == .download,
                   let lastComponent = operation.remotePath.split(separator: "/").last,
                   isSafeLocalComponent(String(lastComponent)) {
-            rawPath = root.appendingPathComponent(String(lastComponent)).path
+            rawPath = localRoot.standardizedFileURL
+                .appendingPathComponent(String(lastComponent))
+                .path
         } else {
             throw FileTransferAdapterError.invalidLocalPath
         }
@@ -195,11 +198,10 @@ public enum FileTransferAdapterSupport {
               rawPath.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) else {
             throw FileTransferAdapterError.invalidLocalPath
         }
+
         let candidate = URL(fileURLWithPath: rawPath).standardizedFileURL
-        guard candidate.deletingLastPathComponent().path == root.path,
-              candidate.path != root.path,
-              isSafeLocalComponent(candidate.lastPathComponent),
-              root.resolvingSymlinksInPath().standardizedFileURL.path == root.path else {
+        guard candidate.path != "/",
+              isSafeLocalComponent(candidate.lastPathComponent) else {
             throw FileTransferAdapterError.invalidLocalPath
         }
         return candidate
@@ -248,14 +250,13 @@ public enum FileTransferAdapterSupport {
             && !username.contains("/")
     }
 
-    private static func isSafeRemotePath(_ path: String) -> Bool {
-        guard (1...4_096).contains(path.utf8.count),
-              path.hasPrefix("/"),
-              !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else {
-            return false
-        }
-        let components = path.split(separator: "/", omittingEmptySubsequences: false)
-        return !components.contains { $0 == "." || $0 == ".." }
+    /// Remote file locations are intentionally not sandboxed to a particular
+    /// directory. The protocol adapter quotes/encodes the path; this layer only
+    /// rejects an empty/control-character path that cannot be represented safely.
+    private static func isValidRemotePath(_ path: String) -> Bool {
+        !path.isEmpty
+            && path.utf8.count <= 4_096
+            && path.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7F }
     }
 
     private static func isSafeLocalComponent(_ component: String) -> Bool {
