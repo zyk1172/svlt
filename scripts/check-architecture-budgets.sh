@@ -50,7 +50,6 @@ readonly extracted_catalog_symbols=(
   "listCatalogEntries"
   "applyCatalogBatch"
   "createCatalogIndex"
-  "catalogSnapshotForAgent"
 )
 
 if [[ ! -f "$catalog_slice" ]]; then
