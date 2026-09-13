@@ -129,12 +129,6 @@ private enum SecretOperationAuthorizationPath: Sendable {
     }
 }
 
-private struct ExecutionApprovalFlight {
-    let id: UUID
-    let generation: UInt64
-    let task: Task<LocalAuthenticationContext?, Error>
-}
-
 private enum ExecutionAuthorizationCommit: Equatable, Sendable {
     case leaseEstablished
     case leaseReused
@@ -204,7 +198,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var pendingCatalogDraftDocumentPaths: [String: String] = [:]
     private var catalogFormatRepairDocumentPaths: [String: String] = [:]
     private var secureInputCatalogOperations: [UUID: CatalogDocumentOperation] = [:]
-    private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
     private var securityGeneration: UInt64 = 0
     private var secureInputLifecycle = CatalogSecureInputLifecycle()
     /// Keep cancellation/expiry latched during suspended submission so a late
@@ -420,10 +413,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // requests that have not crossed the commit linearization point cannot
         // outlive the security-state invalidation.
         securityGeneration &+= 1
-        for flight in executionApprovalFlights.values {
-            flight.task.cancel()
-        }
-        executionApprovalFlights.removeAll()
         await secretOperationService.invalidateAllCoordination()
         await scopedMasterKeyCoordinator.invalidateAll()
         await cancelAllSecureInputRequests()
@@ -4203,7 +4192,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .executionWindowReuse
         }
 
-        if let flight = executionApprovalFlights[scope] {
+        if let flight = await secretOperationService.executionApprovalFlight(for: scope) {
             return try await waitForExecutionApprovalFlight(
                 flight,
                 scope: scope,
@@ -4211,10 +4200,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
         }
 
-        // The actor may have been re-entered while the first active-lease
-        // check was awaiting AuthorizationSession. Recheck immediately before
-        // creating a new flight so a concurrent commit cannot be followed by
-        // a redundant Touch ID prompt.
+        // AuthorizationSession is a separate actor. Recheck before asking the
+        // SecretOperationService to atomically join-or-create the shared
+        // approval flight. The second check plus atomic insert prevents
+        // duplicate owner prompts under actor reentrancy.
         if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
             guard generation == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
@@ -4222,54 +4211,48 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .executionWindowReuse
         }
 
-        // The second await above can resume multiple callers in turn. A
-        // caller that observed no lease must still join a flight created by a
-        // peer before it attempts to create its own flight.
-        if let flight = executionApprovalFlights[scope] {
+        let acquisition = await secretOperationService.joinOrCreateExecutionApprovalFlight(
+            scope: scope,
+            generation: generation,
+            create: { [weak self] in
+                guard let self else {
+                    throw OperationAuthorizationError.cancelled
+                }
+                return try await self.performFreshExecutionApproval(
+                    descriptor: descriptor,
+                    metadata: metadata,
+                    decision: decision,
+                    generation: generation,
+                    hostKeyReview: hostKeyReview
+                )
+            }
+        )
+        let flight = acquisition.flight
+        if !acquisition.created {
             return try await waitForExecutionApprovalFlight(
                 flight,
                 scope: scope,
                 generation: generation
             )
         }
-
-        let approvalID = UUID()
-        let task = Task { [weak self] () throws -> LocalAuthenticationContext? in
-            guard let self else {
-                throw OperationAuthorizationError.cancelled
-            }
-            return try await self.performFreshExecutionApproval(
-                descriptor: descriptor,
-                metadata: metadata,
-                decision: decision,
-                generation: generation,
-                hostKeyReview: hostKeyReview
-            )
-        }
-        executionApprovalFlights[scope] = ExecutionApprovalFlight(
-            id: approvalID,
-            generation: generation,
-            task: task
-        )
-        await secretOperationService.beginApproval(id: approvalID)
         await statusObserver?(status())
 
         do {
-            let authenticationContext = try await task.value
-            await markExecutionApprovalCompleted(approvalID)
+            let authenticationContext = try await flight.task.value
+            await markExecutionApprovalCompleted(flight.id)
             return .freshLocalApproval(authenticationContext)
         } catch {
             await finishExecutionApprovalFlight(
                 scope: scope,
-                approvalID: approvalID,
-                generation: generation
+                approvalID: flight.id,
+                generation: flight.generation
             )
             throw mappedSecretOperationError(error)
         }
     }
 
     private func waitForExecutionApprovalFlight(
-        _ flight: ExecutionApprovalFlight,
+        _ flight: SecretOperationService.ExecutionApprovalFlight,
         scope: ExecutionAuthorizationScope,
         generation: UInt64
     ) async throws -> SecretOperationAuthorizationPath {
@@ -4462,18 +4445,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approvalID: UUID,
         generation: UInt64
     ) async {
-        guard let flight = executionApprovalFlights[scope],
-              flight.id == approvalID,
-              flight.generation == generation
-        else {
-            if await secretOperationService.finishApproval(id: approvalID) {
-                await statusObserver?(status())
-            }
-            return
-        }
-        flight.task.cancel()
-        executionApprovalFlights.removeValue(forKey: scope)
-        if await secretOperationService.finishApproval(id: approvalID) {
+        if await secretOperationService.finishExecutionApprovalFlight(
+            scope: scope,
+            approvalID: approvalID,
+            generation: generation
+        ) {
             await statusObserver?(status())
         }
     }
@@ -4499,14 +4475,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 await authorizationSession.invalidateExecutionAuthorization(for: scope)
                 return .needsFreshApproval
             }
-            if let flight = executionApprovalFlights.removeValue(forKey: scope),
-               await secretOperationService.finishApproval(id: flight.id) {
+            if await secretOperationService.removeExecutionApprovalFlight(scope: scope) {
                 await statusObserver?(status())
             }
             return .leaseReused
         }
 
-        guard let flight = executionApprovalFlights[scope],
+        guard let flight = await secretOperationService.executionApprovalFlight(for: scope),
               flight.generation == generation
         else {
             return .needsFreshApproval
@@ -4527,24 +4502,21 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        // A concurrent request may have won the commit while this flight was
-        // suspended. Reuse that exact scoped lease instead of authorizing it
-        // again.
         if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
             guard await scopedMasterKeyCoordinator.hasAuthorization(for: scope) else {
                 await authorizationSession.invalidateExecutionAuthorization(for: scope)
                 return .needsFreshApproval
             }
-            if executionApprovalFlights[scope]?.id == flight.id {
-                executionApprovalFlights.removeValue(forKey: scope)
-                if await secretOperationService.finishApproval(id: flight.id) {
-                    await statusObserver?(status())
-                }
+            if await secretOperationService.removeExecutionApprovalFlight(
+                scope: scope,
+                matching: flight.id
+            ) {
+                await statusObserver?(status())
             }
             return .leaseReused
         }
 
-        guard executionApprovalFlights[scope]?.id == flight.id else {
+        guard await secretOperationService.executionApprovalFlight(for: scope)?.id == flight.id else {
             return .needsFreshApproval
         }
 
@@ -4566,8 +4538,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             duration: executionWindowDuration
         )
 
-        executionApprovalFlights.removeValue(forKey: scope)
-        if await secretOperationService.finishApproval(id: flight.id) {
+        if await secretOperationService.removeExecutionApprovalFlight(
+            scope: scope,
+            matching: flight.id
+        ) {
             await statusObserver?(status())
         }
         return expiresAt == nil ? .approvedWithoutLease : .leaseEstablished
@@ -4579,11 +4553,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         guard let scope else {
             return
         }
-        if let flight = executionApprovalFlights.removeValue(forKey: scope) {
-            flight.task.cancel()
-            if await secretOperationService.finishApproval(id: flight.id) {
-                await statusObserver?(status())
-            }
+        if await secretOperationService.removeExecutionApprovalFlight(
+            scope: scope,
+            cancelTask: true
+        ) {
+            await statusObserver?(status())
         }
         await scopedMasterKeyCoordinator.abandon(scope: scope)
     }
