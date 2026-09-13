@@ -1,0 +1,104 @@
+name: Fix PR 85 review findings v2
+
+on:
+  push:
+    branches: [codex/approval-2m-unbounded-execution]
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-verify:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/approval-2m-unbounded-execution
+          fetch-depth: 0
+
+      - name: Apply review fixes and regression tests
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/fix-pr85-review.yml').read_text()
+          marker = "python3 <<'PY'\n"
+          start = workflow.index(marker) + len(marker)
+          end = workflow.index("\n          PY\n", start)
+          script = textwrap.dedent(workflow[start:end])
+
+          bad_start = script.index("replace_once(\n    ftp,\n    '''private func runFTPStage<T: Sendable>(")
+          bad_end = script.index("\n\n# Swift regression tests", bad_start)
+          replacement = '''replace_once(
+              ftp,
+              "private func runFTPStage<T: Sendable>(\\n    operation: @escaping @Sendable () async throws -> T\\n) async throws -> T {\\n    try Task.checkCancellation()\\n    return try await operation()\\n}",
+              "func runFTPStage<T: Sendable>(\\n    operation: @escaping @Sendable () async throws -> T\\n) async throws -> T {\\n    try Task.checkCancellation()\\n    do {\\n        let result = try await operation()\\n        try Task.checkCancellation()\\n        return result\\n    } catch {\\n        try Task.checkCancellation()\\n        throw error\\n    }\\n}",
+          )'''
+          script = script[:bad_start] + textwrap.dedent(replacement) + script[bad_end:]
+          exec(compile(script, '<pr85-review-fix>', 'exec'), {'__name__': '__main__'})
+          PY
+
+      - name: Check architecture budget and whitespace
+        run: |
+          bash scripts/check-architecture-budgets.sh
+          git diff --check
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+
+      - name: Verify MCP
+        working-directory: mcp-server
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Verify Swift suite
+        run: |
+          xcodebuild_log="$RUNNER_TEMP/svlt-pr85-xcodebuild.log"
+          set -o pipefail
+          set +e
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/svlt-pr85-derived" \
+            -parallel-testing-enabled NO \
+            -retry-tests-on-failure \
+            -test-iterations 3 \
+            -test-repetition-relaunch-enabled YES \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$xcodebuild_log"
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo '::group::xcodebuild diagnostics'
+            grep -nE '(^|[[:space:]])(fatal )?error:' "$xcodebuild_log" || true
+            echo '::endgroup::'
+          fi
+          exit "$status"
+
+      - name: Commit verified fixes and clean temporary workflows
+        run: |
+          git rm .github/workflows/fix-pr85-review.yml \
+            .github/workflows/repair-pr85-workflow.yml \
+            .github/workflows/fix-pr85-review-v2.yml
+          git add Sources/VaultExecution/SSHSessionManager.swift \
+            Sources/VaultExecution/FTPSecretOperationAdapter.swift \
+            Tests/VaultExecutionTests/SSHSessionManagerTests.swift \
+            Tests/VaultExecutionTests/FileTransferAdapterTests.swift \
+            mcp-server/src/server.ts \
+            mcp-server/test/legacy-timeout-compat.test.ts
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix: address PR 85 review findings'
+          git push origin HEAD:codex/approval-2m-unbounded-execution
