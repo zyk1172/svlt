@@ -1,0 +1,69 @@
+name: Operation lifecycle diagnostic
+
+on:
+  push:
+    branches:
+      - codex/operation-id-lifecycle
+    paths:
+      - 'scripts/operation-lifecycle-diagnostic.trigger*'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply deterministic refactor
+        run: |
+          python3 scripts/prepare-operation-lifecycle-refactor.py
+          python3 scripts/apply-operation-lifecycle-refactor.py
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+      - name: Regenerate project
+        run: xcodegen generate
+      - name: Validate architecture and whitespace
+        run: |
+          bash scripts/check-architecture-budgets.sh
+          git diff --check
+      - name: Capture macOS test diagnostics
+        id: test
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          log="$RUNNER_TEMP/operation-lifecycle-xcodebuild.log"
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          {
+            echo "xcodebuild_status=$status"
+            echo "=== explicit compiler diagnostics ==="
+            grep -nE '(^|[[:space:]])(fatal )?error:' "$log" || true
+            echo "=== testing failures ==="
+            grep -nE 'Test Case .*failed|#expect|Testing failed|TEST FAILED|The following build commands failed' "$log" | tail -n 120 || true
+            echo "=== final log tail ==="
+            tail -n 260 "$log"
+          } > .github/operation-lifecycle-diagnostics.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Commit diagnostics
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/operation-lifecycle-diagnostics.txt
+          git commit -m 'chore: capture operation lifecycle diagnostics' || true
+          git push
+      - name: Fail after diagnostics
+        if: steps.test.outputs.status != '0'
+        run: exit 1
