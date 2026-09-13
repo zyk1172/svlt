@@ -1,5 +1,6 @@
 import Foundation
 import VaultCore
+import VaultExecution
 import VaultIPC
 
 private enum SecretOperationLifecycleContext {
@@ -90,8 +91,6 @@ actor SecretOperationCoordinator {
         case .queued, .awaitingApproval:
             record.state = .cancelled
         case .running:
-            // Once execution has started, cancellation cannot prove that the
-            // remote/local side effect did not already cross its commit point.
             record.state = .outcomeUnknown
         case .succeeded, .failed, .cancelled, .outcomeUnknown:
             break
