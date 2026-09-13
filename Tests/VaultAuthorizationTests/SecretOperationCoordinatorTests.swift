@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import VaultAuthorization
 import VaultCore
 import VaultExecution
 import VaultIPC
@@ -124,18 +125,67 @@ import VaultIPC
     let first = await service.beginApproval()
     let second = await service.beginApproval()
 
-    let initiallyPending = await service.approvalPending
-    #expect(initiallyPending)
+    #expect(await service.approvalPending)
 
     let removedFirst = await service.finishApproval(id: first)
-    let stillPending = await service.approvalPending
     #expect(removedFirst)
-    #expect(stillPending)
+    #expect(await service.approvalPending)
 
     let removedSecond = await service.finishApproval(id: second)
-    let finallyPending = await service.approvalPending
     #expect(removedSecond)
-    #expect(!finallyPending)
+    #expect(!(await service.approvalPending))
+}
+
+@Test func executionApprovalFlightJoinIsAtomicPerScope() async {
+    let service = SecretOperationService()
+    let probe = InvocationProbe()
+    let scope = ExecutionAuthorizationScope(
+        principal: "pid:100",
+        secretReferenceIDs: ["secret://fixture"],
+        normalizedDestination: "example.com",
+        port: 22,
+        username: "tester",
+        protocolType: "ssh",
+        actionFamily: "sshCommand",
+        generation: 7
+    )
+
+    let first = await service.joinOrCreateExecutionApprovalFlight(
+        scope: scope,
+        generation: 7,
+        create: {
+            await probe.increment()
+            try await Task.sleep(for: .seconds(60))
+            return nil
+        }
+    )
+    let second = await service.joinOrCreateExecutionApprovalFlight(
+        scope: scope,
+        generation: 7,
+        create: {
+            await probe.increment()
+            return nil
+        }
+    )
+
+    #expect(first.created)
+    #expect(!second.created)
+    #expect(first.flight.id == second.flight.id)
+    #expect(await service.approvalPending)
+
+    for _ in 0..<200 {
+        if await probe.count() > 0 { break }
+        await Task.yield()
+    }
+    #expect(await probe.count() == 1)
+
+    let removed = await service.removeExecutionApprovalFlight(
+        scope: scope,
+        matching: first.flight.id,
+        cancelTask: true
+    )
+    #expect(removed)
+    #expect(!(await service.approvalPending))
 }
 
 @Test func lifecycleCancellationReachesRegisteredExecutorTask() async {
@@ -215,6 +265,18 @@ private actor CancellationProbe {
 
     func wasCancelled() -> Bool {
         cancelled
+    }
+}
+
+private actor InvocationProbe {
+    private var invocationCount = 0
+
+    func increment() {
+        invocationCount += 1
+    }
+
+    func count() -> Int {
+        invocationCount
     }
 }
 
