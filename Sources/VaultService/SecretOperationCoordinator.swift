@@ -169,7 +169,6 @@ public extension VaultAppServices {
         let task = Task { [weak self] in
             guard let self else { return }
             await SecretOperationLifecycleContext.$operationID.withValue(operationID) {
-                await coordinator.transition(operationID: operationID, to: .running)
                 do {
                     try Task.checkCancellation()
                     let output = try await self.performSecretOperation(descriptor)

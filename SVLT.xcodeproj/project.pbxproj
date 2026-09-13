@@ -111,6 +111,7 @@
 		567FEC59BBA95DF764D102CD /* MenuBarPanelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83515BB865B0C48959133C6D /* MenuBarPanelTests.swift */; };
 		56D9ED1646C1034C55B969C0 /* CatalogAgentSecureInputNotifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A5C59930BDC0496260D5F19 /* CatalogAgentSecureInputNotifier.swift */; };
 		5746C5B832CB59A24C85B10C /* SecretOperationExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EF107ADF182FED721882F63 /* SecretOperationExecutor.swift */; };
+		5A2F6BB9AB2A327610F80937 /* SecretOperationLifecycleMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA9E1F990FCC7013C795EF95 /* SecretOperationLifecycleMessageTests.swift */; };
 		5A9E67B42D746A5311486F42 /* CatalogWriteAccessLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB261D5D36397640C8BB8A79 /* CatalogWriteAccessLifecycleTests.swift */; };
 		5D269A36C3A54A01896A8C11 /* SetupGuideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 808B211D9D0B0CAECEEE707F /* SetupGuideView.swift */; };
 		5D8C0DB8724D081EAD209385 /* VaultDaemonCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 114E878E0FB68A4D79741DB1 /* VaultDaemonCore.swift */; };
@@ -139,6 +140,7 @@
 		750415C8AE02C72869F5C252 /* VaultCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 869C6FAE8B4BDF3BF292E96C /* VaultCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		75382AF607CE48DAB8135325 /* SensitiveCatalogDocumentStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */; };
 		75B2FA78CCAADB3400D6FF82 /* CatalogAgentWriteAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B4B4A8BB2AD0189E518014F /* CatalogAgentWriteAuthorizationTests.swift */; };
+		76DA6FEAF2EA0FA98BAB531D /* SecretOperationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9D681750A21DA655B21544 /* SecretOperationCoordinatorTests.swift */; };
 		77976A8E1EEC1B497AD196BD /* AppControlRequestHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53EBE50EB33FDB178CFD325E /* AppControlRequestHandler.swift */; };
 		7824A95C77C935F45CAC0B77 /* OrphanScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAD814C06819A25668968DB7 /* OrphanScanner.swift */; };
 		7897422864DA5E296506760F /* ConnectionStatusCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AEA9B3507C70F5ABD001AEE /* ConnectionStatusCard.swift */; };
@@ -201,6 +203,7 @@
 		AD5AB68323BF4CCFE62F0D3D /* AppControlIPCController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9ADC02DFF62DE410421C5 /* AppControlIPCController.swift */; };
 		AD6801FF131A749C0424917F /* AuditEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6864D2EAFFED8471B0B7CCA /* AuditEventTests.swift */; };
 		AD6B6DA95EB7CC299C682AA5 /* VaultAppServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D3AAEC8E0FDA3FAF8C10253 /* VaultAppServices.swift */; };
+		AF1E002158A218586B796533 /* SecretOperationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 770AC7FF5754FF7C5CAEDCFD /* SecretOperationCoordinator.swift */; };
 		AF73004AC99C8E05F6841A60 /* AuditAuthorizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B7D2AF94BD844E8ACF7B67D /* AuditAuthorizationTests.swift */; };
 		AFCAA8BA42B385BB6C26A35A /* VaultService.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A88DC2E8EE11BA80C5907DA5 /* VaultService.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AFD2BA99ACDA541FB34575F3 /* RevealSessionWindowLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C70475F3C768E420438AC57 /* RevealSessionWindowLayoutTests.swift */; };
@@ -217,6 +220,7 @@
 		BDA0C8CB3215A295FE6B9F6C /* VaultExecution.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3344061D1CB333FC44C63D40 /* VaultExecution.framework */; };
 		BF4ECCD5DD42D59FD701056E /* SensitiveInformationScannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAD73FFDABD6B405BB48E189 /* SensitiveInformationScannerTests.swift */; };
 		C1235ABFAA023F59CB59A04D /* VaultIPC.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 892621C9C26F5216B8775FB1 /* VaultIPC.framework */; };
+		C1A57D1A342CF5CB3EB7FC8D /* SecretOperationLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C693CC6CE572AB1960A203E2 /* SecretOperationLifecycle.swift */; };
 		C28A1274D281BA15E7BF137C /* SecretCatalogMutation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7727CE9668BF5CB515AC8D33 /* SecretCatalogMutation.swift */; };
 		C33956EA88A832DB6887C9B1 /* ScopedMasterKeyCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7F163B818A6BC5C68AACD0 /* ScopedMasterKeyCoordinatorTests.swift */; };
 		C6BCEC7AF43A86DD61FD749A /* AppControlMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4788474AB5C8BDC376311F3E /* AppControlMessageTests.swift */; };
@@ -744,6 +748,7 @@
 		58DA1CAD3EBE683A67D491D6 /* LocalSensitiveInformationScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSensitiveInformationScanner.swift; sourceTree = "<group>"; };
 		5CBE24E06397F99B184565A3 /* SecretOperationPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationPayloadTests.swift; sourceTree = "<group>"; };
 		5E6B1CFA81D6AAA0D3E38BDE /* LeakTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LeakTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5E9D681750A21DA655B21544 /* SecretOperationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationCoordinatorTests.swift; sourceTree = "<group>"; };
 		5EB8385288480D0733198D65 /* SensitiveCatalogTemplateStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogTemplateStoreTests.swift; sourceTree = "<group>"; };
 		5EF107ADF182FED721882F63 /* SecretOperationExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationExecutor.swift; sourceTree = "<group>"; };
 		5EF3C000F6FABAA6BA95BA02 /* FoundationProcessRunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationProcessRunnerTests.swift; sourceTree = "<group>"; };
@@ -765,6 +770,7 @@
 		736DED4C825BC0FC40E62261 /* FileRecordStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRecordStore.swift; sourceTree = "<group>"; };
 		75703E0755FD23FC27F695C0 /* AgentServiceStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentServiceStatusView.swift; sourceTree = "<group>"; };
 		768013F2F7664CD707423121 /* EncryptedRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedRecord.swift; sourceTree = "<group>"; };
+		770AC7FF5754FF7C5CAEDCFD /* SecretOperationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationCoordinator.swift; sourceTree = "<group>"; };
 		7727CE9668BF5CB515AC8D33 /* SecretCatalogMutation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretCatalogMutation.swift; sourceTree = "<group>"; };
 		789685CA898EE7C3A92A1E10 /* SensitiveCatalogEditorPresetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogEditorPresetTests.swift; sourceTree = "<group>"; };
 		78BBA1FE6BD05465B9F51546 /* ExecutionBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionBroker.swift; sourceTree = "<group>"; };
@@ -805,6 +811,7 @@
 		A9102C620288830743DCE954 /* SecureExportWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureExportWriter.swift; sourceTree = "<group>"; };
 		A941FC5F0B527D53FDB107C6 /* TemplateValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateValidator.swift; sourceTree = "<group>"; };
 		A9D7EEC7624A5B4FF736B1B2 /* VaultWorkbenchCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultWorkbenchCopyTests.swift; sourceTree = "<group>"; };
+		AA9E1F990FCC7013C795EF95 /* SecretOperationLifecycleMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationLifecycleMessageTests.swift; sourceTree = "<group>"; };
 		AB247B671C7247BC3CA67F04 /* ApprovalTicket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalTicket.swift; sourceTree = "<group>"; };
 		AB261D5D36397640C8BB8A79 /* CatalogWriteAccessLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogWriteAccessLifecycleTests.swift; sourceTree = "<group>"; };
 		AC75A0E073430A5028459437 /* CatalogAgentWriteAuthorization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogAgentWriteAuthorization.swift; sourceTree = "<group>"; };
@@ -831,6 +838,7 @@
 		C4DE421C1C0CE508E7B7D7D7 /* FileRecordStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileRecordStoreTests.swift; sourceTree = "<group>"; };
 		C57900364CC3D3FDE0F6F816 /* IPCWorkbenchMessageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPCWorkbenchMessageTests.swift; sourceTree = "<group>"; };
 		C6864D2EAFFED8471B0B7CCA /* AuditEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuditEventTests.swift; sourceTree = "<group>"; };
+		C693CC6CE572AB1960A203E2 /* SecretOperationLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationLifecycle.swift; sourceTree = "<group>"; };
 		C831FC6FF58F27B2ADDDBCF2 /* SecretCatalogV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretCatalogV2Tests.swift; sourceTree = "<group>"; };
 		C9E33D87994777717C0756B3 /* CatalogAuditPersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CatalogAuditPersistenceCoordinator.swift; sourceTree = "<group>"; };
 		C9FD3186AB5A46DC15F319FF /* MenuBarLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarLifecycleTests.swift; sourceTree = "<group>"; };
@@ -1120,6 +1128,7 @@
 				342993AB4989000F0487F32B /* RevealSessionStore.swift */,
 				E11BCA848A8DC9F55C6927BB /* ScopedMasterKeyCoordinator.swift */,
 				3A6300F93F6DE1FCF5878A1B /* SecretCatalogEntrySearchService.swift */,
+				770AC7FF5754FF7C5CAEDCFD /* SecretOperationCoordinator.swift */,
 				A9102C620288830743DCE954 /* SecureExportWriter.swift */,
 				2EFA1BB5A9BA6A905587BD89 /* SelectionReplacing.swift */,
 				78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */,
@@ -1167,6 +1176,7 @@
 				F8238AE12E4E2D7E38790E52 /* IPCMessageTests.swift */,
 				6C5BD05DF1364C4720EBCEA9 /* IPCRequestHandlerTests.swift */,
 				C57900364CC3D3FDE0F6F816 /* IPCWorkbenchMessageTests.swift */,
+				AA9E1F990FCC7013C795EF95 /* SecretOperationLifecycleMessageTests.swift */,
 			);
 			name = VaultIPCTests;
 			path = Tests/VaultIPCTests;
@@ -1184,6 +1194,7 @@
 				4A67AB25F8A0E00F4C6FCB3C /* IPCRequestHandler.swift */,
 				4F4CD75FB3059EB3A15123A2 /* RestoredParagraph.swift */,
 				B55A027DFBBD56F822EC6072 /* RevealContext.swift */,
+				C693CC6CE572AB1960A203E2 /* SecretOperationLifecycle.swift */,
 				8FED4229FF2398AD8474E676 /* UnixSocketServer.swift */,
 				7949F97D51F7993375EDB3D4 /* VaultIPC.swift */,
 				6C919DF30F7F12FA774E1E9B /* VaultIPCClient.swift */,
@@ -1270,6 +1281,7 @@
 				1C7F163B818A6BC5C68AACD0 /* ScopedMasterKeyCoordinatorTests.swift */,
 				3BC4679DB9338A23E05488B7 /* SecretCatalogEntrySearchServiceTests.swift */,
 				42C26AA6A43AA3C56E679036 /* SecretOperationApprovalSummaryTests.swift */,
+				5E9D681750A21DA655B21544 /* SecretOperationCoordinatorTests.swift */,
 				E462546702466271D1A2EF45 /* SecretOperationPolicyEngineTests.swift */,
 				7D8BCEF42A6234D794F55BE2 /* SecretOperationServiceTests.swift */,
 				272FCB8BE10DF408521235BC /* SecureExportWriterTests.swift */,
@@ -1842,20 +1854,20 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				5248DC09F2511964B47BA1C6 /* AgentSecretVault */,
-				BE4703D12B227579B175C972 /* AgentSecretVaultApp */,
-				11FA050282C48DA372F026A5 /* AgentSecretVaultAppTests */,
-				9B25E141FA32BA15CC63CDBD /* LeakTests */,
-				518A74E184DD0753026716CD /* SVLTAgent */,
-				839BA397656D992385802D9A /* VaultAuthorization */,
-				B1504E1197E69DE63A69534C /* VaultAuthorizationTests */,
 				220CDA200412FA123E185C24 /* VaultCore */,
 				561F723C545CFF984CFD7A7D /* VaultCoreTests */,
+				839BA397656D992385802D9A /* VaultAuthorization */,
 				160319EC3D54A6D48327EF69 /* VaultExecution */,
-				579CF4058E72E253F0EA1615 /* VaultExecutionTests */,
-				4D4AAA86B56416ED476802A7 /* VaultIPC */,
-				A2D83343D01B65E759D05B81 /* VaultIPCTests */,
 				B74A522843B3D6B8F8D2D0F6 /* VaultService */,
+				4D4AAA86B56416ED476802A7 /* VaultIPC */,
+				BE4703D12B227579B175C972 /* AgentSecretVaultApp */,
+				518A74E184DD0753026716CD /* SVLTAgent */,
+				5248DC09F2511964B47BA1C6 /* AgentSecretVault */,
+				11FA050282C48DA372F026A5 /* AgentSecretVaultAppTests */,
+				B1504E1197E69DE63A69534C /* VaultAuthorizationTests */,
+				579CF4058E72E253F0EA1615 /* VaultExecutionTests */,
+				A2D83343D01B65E759D05B81 /* VaultIPCTests */,
+				9B25E141FA32BA15CC63CDBD /* LeakTests */,
 			);
 		};
 /* End PBXProject section */
@@ -1936,6 +1948,7 @@
 				E82A117A3DEEF975EA9E0EB9 /* IPCRequestHandler.swift in Sources */,
 				44C5AD6B2468DF14B4CC077A /* RestoredParagraph.swift in Sources */,
 				8F9C066CDEA24FFE5E9BF2D1 /* RevealContext.swift in Sources */,
+				C1A57D1A342CF5CB3EB7FC8D /* SecretOperationLifecycle.swift in Sources */,
 				9F332847C7CDF50B0ECFBDE7 /* UnixSocketServer.swift in Sources */,
 				03B37392D9683727CF41933C /* VaultIPC.swift in Sources */,
 				60B0B869A47C12DF9DBFBDD9 /* VaultIPCClient.swift in Sources */,
@@ -1995,6 +2008,7 @@
 				37FD673A6A5DDD8D88187702 /* IPCMessageTests.swift in Sources */,
 				68230A47F34B5E306EF36174 /* IPCRequestHandlerTests.swift in Sources */,
 				0E86FCB4B2F9D53F20402DA3 /* IPCWorkbenchMessageTests.swift in Sources */,
+				5A2F6BB9AB2A327610F80937 /* SecretOperationLifecycleMessageTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2117,6 +2131,7 @@
 				FED7F608F0C11A67C05C6ED0 /* SVLTPosixFileReader.c in Sources */,
 				4D92ABAD9A4BD9B43270811B /* ScopedMasterKeyCoordinator.swift in Sources */,
 				7FAB5EC4851D3FCD9AABC450 /* SecretCatalogEntrySearchService.swift in Sources */,
+				AF1E002158A218586B796533 /* SecretOperationCoordinator.swift in Sources */,
 				CE9D716F6E22883FE8DC29BD /* SecureExportWriter.swift in Sources */,
 				FF3AAEA2FFE618B22AB224C9 /* SelectionReplacing.swift in Sources */,
 				61D65BE67C6D3C352B19CBA0 /* SensitiveCatalogDocumentStore+UIProbe.swift in Sources */,
@@ -2159,6 +2174,7 @@
 				C33956EA88A832DB6887C9B1 /* ScopedMasterKeyCoordinatorTests.swift in Sources */,
 				80A7EBE1C860FB7F77058F2C /* SecretCatalogEntrySearchServiceTests.swift in Sources */,
 				F0064D4534E6E7213DB330F5 /* SecretOperationApprovalSummaryTests.swift in Sources */,
+				76DA6FEAF2EA0FA98BAB531D /* SecretOperationCoordinatorTests.swift in Sources */,
 				CABB655945D94FAECF1968D7 /* SecretOperationPolicyEngineTests.swift in Sources */,
 				9970FC316B0F868C715EAFDB /* SecretOperationServiceTests.swift in Sources */,
 				2649F94FD813EDC1B280BE95 /* SecureExportWriterTests.swift in Sources */,
