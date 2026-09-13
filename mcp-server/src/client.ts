@@ -3,15 +3,25 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import { z } from "zod";
+
 import {
-  AuthenticatedIpcRequest,
   AgentCallerIdentity,
   CapabilityToken,
   IpcFrameCodec,
-  IpcRequest,
-  IpcResponse,
+  IpcRequest as BaseIpcRequest,
+  IpcResponse as BaseIpcResponse,
   MAX_FRAME_BYTES
 } from "./protocol.js";
+import {
+  executeTrackedOperation,
+  isSecretOperationOutput
+} from "./secretOperations/index.js";
+import type { SecretOperationIpcClient } from "./secretOperations/client.js";
+import {
+  IpcRequest as LifecycleIpcRequest,
+  IpcResponse as LifecycleIpcResponse
+} from "./secretOperations/protocol.js";
 import { applyContextBoundedRiskJudge } from "./risk-judge.js";
 
 export interface IpcPaths {
@@ -29,11 +39,18 @@ export interface LocalIpcClientOptions {
   declaredCaller?: AgentCallerIdentity;
 }
 
+const AuthenticatedIpcRequest = z.object({
+  capabilityToken: CapabilityToken,
+  caller: AgentCallerIdentity.optional(),
+  request: LifecycleIpcRequest
+}).strict();
+
 const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
 const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
-// This is only a control-request timeout. Secret operations have their own
-// adapter-owned execution timeout, which starts after any device-owner
-// approval completes, so the MCP transport must not reuse this deadline.
+// This is only a control-request timeout. Secret-operation execution now runs
+// behind operationID, so start/status/cancel remain bounded control requests.
+// The legacy executeSecretOperation compatibility request is translated to
+// that lifecycle before a frame is written to the daemon.
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const FRAME_HEADER_BYTES = 4;
 const MAX_WIRE_FRAME_BYTES = FRAME_HEADER_BYTES + MAX_FRAME_BYTES;
@@ -87,17 +104,43 @@ export class LocalIpcClient {
     return CapabilityToken.parse(token);
   }
 
-  async request(request: IpcRequest, caller?: AgentCallerIdentity): Promise<IpcResponse> {
-    // A configured judge is invoked here, after the MCP tool has constructed
-    // the exact operation but before the descriptor enters the daemon. Each
-    // invocation is a fresh stateless model call. It receives only the main
-    // agent's short intendedEffect (used as the problem statement) plus the
-    // canonical operation fields; chat history and the agent's risk rationale
-    // are intentionally excluded.
+  // Preserve the established MCP-facing contract. Lifecycle-aware request and
+  // response unions are an internal transport detail until server.ts handlers
+  // are fully migrated; callers that already speak the legacy contract do not
+  // need to widen their types in the same release.
+  async request(request: BaseIpcRequest, caller?: AgentCallerIdentity): Promise<BaseIpcResponse> {
     const riskJudgedRequest = await applyContextBoundedRiskJudge(request);
-    const parsedRequest = IpcRequest.parse(riskJudgedRequest);
+    const parsedRequest = LifecycleIpcRequest.parse(riskJudgedRequest);
+    const effectiveCaller = caller ?? this.declaredCaller;
+
+    // Keep the old public request shape for in-process compatibility while
+    // removing it from the MCP↔daemon execution path. Existing server handlers
+    // may still construct executeSecretOperation, but LocalIpcClient converts
+    // that one call into start/status/cancel control requests and then maps the
+    // terminal result back to the legacy response shape.
+    if (parsedRequest.type === "executeSecretOperation") {
+      const rawLifecycleClient: SecretOperationIpcClient = {
+        request: (lifecycleRequest) => this.requestRaw(lifecycleRequest, effectiveCaller)
+      };
+      const result = await executeTrackedOperation(rawLifecycleClient, parsedRequest.descriptor);
+      return isSecretOperationOutput(result)
+        ? { type: "secretOperation", output: result }
+        : { type: "failure", code: result.status };
+    }
+
+    const response = await this.requestRaw(parsedRequest, effectiveCaller);
+    // A base request other than executeSecretOperation cannot legitimately
+    // produce a lifecycle-only response. Parsing here turns any accidental
+    // cross-protocol response into an immediate contract failure.
+    return BaseIpcResponse.parse(response);
+  }
+
+  private async requestRaw(
+    parsedRequest: LifecycleIpcRequest,
+    caller?: AgentCallerIdentity
+  ): Promise<LifecycleIpcResponse> {
     for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
-      const response = await this.requestOnce(parsedRequest, caller ?? this.declaredCaller);
+      const response = await this.requestOnce(parsedRequest, caller);
       if (
         response.type !== "failure" ||
         response.code !== "APP_UNAVAILABLE" ||
@@ -112,9 +155,9 @@ export class LocalIpcClient {
   }
 
   private async requestOnce(
-    parsedRequest: IpcRequest,
+    parsedRequest: LifecycleIpcRequest,
     caller?: AgentCallerIdentity
-  ): Promise<IpcResponse> {
+  ): Promise<LifecycleIpcResponse> {
     let token: CapabilityToken;
     try {
       token = await LocalIpcClient.readCapabilityToken(this.tokenPath);
@@ -135,9 +178,9 @@ export class LocalIpcClient {
       const responseFrame = await sendFramedRequest(
         this.socketPath,
         IpcFrameCodec.encode(authenticatedRequest),
-        parsedRequest.type === "executeSecretOperation" ? undefined : this.requestTimeoutMs
+        this.requestTimeoutMs
       );
-      return IpcFrameCodec.decode(responseFrame, IpcResponse);
+      return IpcFrameCodec.decode(responseFrame, LifecycleIpcResponse);
     } catch (error) {
       if (isUnavailableError(error)) {
         return { type: "failure", code: "APP_UNAVAILABLE" };

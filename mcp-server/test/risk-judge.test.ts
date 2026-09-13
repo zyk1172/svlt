@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { IpcRequest } from "../src/protocol.js";
+import type { IpcRequest } from "../src/secretOperations/protocol.js";
 import {
   applyContextBoundedRiskJudge,
   isIndependentRiskJudgeAssessment,
@@ -34,7 +34,18 @@ function operationRequest(): IpcRequest {
         intendedEffect: "Check free space on the NAS before copying backups"
       }
     }
-  } as IpcRequest;
+  };
+}
+
+function lifecycleStartRequest(): IpcRequest {
+  const request = operationRequest();
+  if (request.type !== "executeSecretOperation") {
+    throw new Error("unexpected request type");
+  }
+  return {
+    type: "startSecretOperation",
+    descriptor: request.descriptor
+  };
 }
 
 function transportReturning(result: Record<string, unknown>, capture?: (body: string) => void): RiskJudgeTransport {
@@ -102,6 +113,28 @@ describe("context-bounded risk judge", () => {
     expect(judged.descriptor.agentAssessment.reason).toContain("risk=readOnly");
     expect(judged.descriptor.agentAssessment.reason).toContain("automatic=true");
     expect(judged.descriptor.agentAssessment.reason).toContain("approval=none");
+  });
+
+  it("applies the same independent judge to operationID start requests", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      lifecycleStartRequest(),
+      configuration,
+      transportReturning({
+        secretSensitivity: "important",
+        operationRisk: "readOnly",
+        impact: "limited",
+        automaticExecution: true,
+        approval: "none",
+        confidence: 0.97,
+        reason: "Reads filesystem capacity only"
+      })
+    );
+
+    if (judged.type !== "startSecretOperation") {
+      throw new Error("unexpected request type");
+    }
+    expect(judged.descriptor.agentAssessment.declaredRisk).toBe("silent");
+    expect(isIndependentRiskJudgeAssessment(judged.descriptor.agentAssessment.reason)).toBe(true);
   });
 
   it("forces destructive or low-confidence model outputs to fresh approval", async () => {

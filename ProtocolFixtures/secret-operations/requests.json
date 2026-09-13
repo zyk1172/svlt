@@ -1,0 +1,38 @@
+{
+  "executeSecretOperation": {
+    "type": "executeSecretOperation",
+    "descriptor": {
+      "actionType": "vaultStatus",
+      "secretReferences": [],
+      "requestedEffects": [],
+      "parameters": {},
+      "agentAssessment": {
+        "declaredRisk": "silent",
+        "reason": "Agent did not provide a risk assessment",
+        "intendedEffect": "unspecified"
+      }
+    }
+  },
+  "startSecretOperation": {
+    "type": "startSecretOperation",
+    "descriptor": {
+      "actionType": "vaultStatus",
+      "secretReferences": [],
+      "requestedEffects": [],
+      "parameters": {},
+      "agentAssessment": {
+        "declaredRisk": "silent",
+        "reason": "Agent did not provide a risk assessment",
+        "intendedEffect": "unspecified"
+      }
+    }
+  },
+  "secretOperationStatus": {
+    "type": "secretOperationStatus",
+    "operationID": "00000000-0000-4000-8000-000000000001"
+  },
+  "cancelSecretOperation": {
+    "type": "cancelSecretOperation",
+    "operationID": "00000000-0000-4000-8000-000000000001"
+  }
+}

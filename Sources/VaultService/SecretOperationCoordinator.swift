@@ -90,8 +90,10 @@ actor SecretOperationCoordinator {
         switch record.state {
         case .queued, .awaitingApproval:
             record.state = .cancelled
+            record.errorCode = SecretOperationLifecycleErrorCode.cancelled
         case .running:
             record.state = .outcomeUnknown
+            record.errorCode = SecretOperationLifecycleErrorCode.outcomeUnknown
         case .succeeded, .failed, .cancelled, .outcomeUnknown:
             break
         }
@@ -109,8 +111,10 @@ actor SecretOperationCoordinator {
             switch record.state {
             case .queued, .awaitingApproval:
                 record.state = .cancelled
+                record.errorCode = SecretOperationLifecycleErrorCode.cancelled
             case .running:
                 record.state = .outcomeUnknown
+                record.errorCode = SecretOperationLifecycleErrorCode.outcomeUnknown
             case .succeeded, .failed, .cancelled, .outcomeUnknown:
                 break
             }
@@ -198,7 +202,14 @@ public extension VaultAppServices {
             operationID: operationID,
             principal: principal
         ) else {
-            throw VaultCore.SecretOperationError.invalidOperationParameters
+            // Unknown and foreign-principal IDs are intentionally
+            // indistinguishable at the IPC boundary so status probing cannot
+            // become an operation-existence oracle.
+            return SecretOperationStatus(
+                operationID: operationID,
+                state: .failed,
+                errorCode: SecretOperationLifecycleErrorCode.operationNotFound
+            )
         }
         return status
     }
@@ -209,7 +220,14 @@ public extension VaultAppServices {
             operationID: operationID,
             principal: principal
         ) else {
-            throw VaultCore.SecretOperationError.invalidOperationParameters
+            // Match status lookup: callers cannot distinguish a missing ID
+            // from an operation owned by another principal. Crucially, do not
+            // touch the executor map in this path.
+            return SecretOperationStatus(
+                operationID: operationID,
+                state: .failed,
+                errorCode: SecretOperationLifecycleErrorCode.operationNotFound
+            )
         }
         inFlightSecretOperations[operationID]?.cancel()
         return status

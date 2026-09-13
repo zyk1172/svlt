@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "bin": {
-    "svlt-mcp": "./dist/server.js"
+    "svlt-mcp": "./dist/runtime.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node dist/runtime.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

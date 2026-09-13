@@ -897,22 +897,30 @@ describe("local IPC client", () => {
     });
   });
 
-  it("does not apply the control timeout to a secret operation response", async () => {
+  it("applies the control timeout to lifecycle start instead of holding one long execution IPC", async () => {
     const directory = await makeTempDirectory();
     const socketPath = path.join(directory, "agent-secret-vault.sock");
     const tokenPath = path.join(directory, "capability.token");
     await writeFile(tokenPath, validToken, { mode: 0o600 });
     await chmod(tokenPath, 0o600);
 
+    let receivedRequestType: string | undefined;
     const server = net.createServer({ allowHalfOpen: true }, (socket) => {
-      socket.on("data", () => {
-        setTimeout(() => {
-          socket.end(IpcFrameCodec.encode({
-            type: "secretOperation",
-            output: { status: "COMPLETED", redacted: true }
-          }));
-          server.close();
-        }, 50);
+      socket.setTimeout(25, () => socket.destroy());
+      const chunks: Buffer[] = [];
+      socket.on("data", (chunk) => chunks.push(chunk));
+      socket.on("end", () => {
+        const frame = Buffer.concat(chunks);
+        const declaredLength = frame.readUInt32BE(0);
+        expect(frame.byteLength - 4).toBe(declaredLength);
+        const envelope = JSON.parse(frame.subarray(4).toString("utf8")) as {
+          request?: { type?: string };
+        };
+        receivedRequestType = envelope.request?.type;
+        // Deliberately do not reply. A lifecycle start/status/cancel request is
+        // a bounded control request; if the daemon does not acknowledge it in
+        // time the caller must surface uncertainty rather than hold one long
+        // execution socket open or retry the side effect.
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -924,9 +932,10 @@ describe("local IPC client", () => {
     const client = new LocalIpcClient({
       socketPath,
       tokenPath,
-      requestTimeoutMs: 10
+      requestTimeoutMs: 10,
+      unavailableRetryCount: 0
     });
-    await expect(client.request({
+    const result = await client.request({
       type: "executeSecretOperation",
       descriptor: {
         actionType: "sshCommand",
@@ -946,10 +955,14 @@ describe("local IPC client", () => {
           intendedEffect: "read status"
         }
       }
-    })).resolves.toEqual({
-      type: "secretOperation",
-      output: { status: "COMPLETED", redacted: true }
     });
+
+    expect(receivedRequestType).toBe("startSecretOperation");
+    expect(result).toEqual({
+      type: "failure",
+      code: "OPERATION_OUTCOME_UNKNOWN"
+    });
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 });
 

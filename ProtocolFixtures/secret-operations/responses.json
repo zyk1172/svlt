@@ -1,0 +1,100 @@
+{
+  "legacyOutput": {
+    "type": "secretOperation",
+    "output": {
+      "status": "COMPLETED",
+      "redacted": true
+    }
+  },
+  "legacyFailure": {
+    "type": "failure",
+    "code": "ACTION_EXECUTION_FAILED"
+  },
+  "handleQueued": {
+    "type": "secretOperationHandle",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "queued"
+    }
+  },
+  "statusQueued": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "queued"
+    }
+  },
+  "statusAwaitingApproval": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "awaitingApproval"
+    }
+  },
+  "statusRunning": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "running"
+    }
+  },
+  "statusSucceeded": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "succeeded",
+      "output": {
+        "status": "COMPLETED",
+        "redacted": true
+      }
+    }
+  },
+  "statusInvalidParameters": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "failed",
+      "errorCode": "ARGUMENT_VALIDATION"
+    }
+  },
+  "statusAuthorizationCancelled": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "failed",
+      "errorCode": "AUTHORIZATION_CANCELLED"
+    }
+  },
+  "statusExecutionFailed": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "failed",
+      "errorCode": "ACTION_EXECUTION_FAILED"
+    }
+  },
+  "statusNotFoundOrForeignPrincipal": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "failed",
+      "errorCode": "OPERATION_NOT_FOUND"
+    }
+  },
+  "statusCancelled": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "cancelled",
+      "errorCode": "OPERATION_CANCELLED"
+    }
+  },
+  "statusOutcomeUnknown": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "outcomeUnknown",
+      "errorCode": "OPERATION_OUTCOME_UNKNOWN"
+    }
+  }
+}
