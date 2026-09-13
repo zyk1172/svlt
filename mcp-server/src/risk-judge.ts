@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import type { IpcRequest, SecretOperationDescriptor } from "./protocol.js";
+import type { SecretOperationDescriptor } from "./protocol.js";
+import type { IpcRequest } from "./secretOperations/protocol.js";
 
 const JUDGE_MARKER = "SVLT_JUDGE_V1";
 const DEFAULT_TIMEOUT_MS = 3_500;
@@ -91,7 +92,7 @@ export async function applyContextBoundedRiskJudge(
   configuration: RiskJudgeConfiguration | undefined = riskJudgeConfigurationFromEnvironment(),
   transport: RiskJudgeTransport = defaultTransport
 ): Promise<IpcRequest> {
-  if (request.type !== "executeSecretOperation") {
+  if (request.type !== "executeSecretOperation" && request.type !== "startSecretOperation") {
     return request;
   }
 
