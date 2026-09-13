@@ -14,7 +14,10 @@ export function terminalSecretOperationResult(
 ): SecretOperationExecutionResult {
   switch (status.state) {
     case "succeeded":
-      return status.output ?? { status: "UNEXPECTED_RESPONSE" };
+      // A succeeded operation may already have produced its external side
+      // effect. If the result payload is missing, never turn that protocol
+      // invariant violation into a generic retryable-looking failure.
+      return status.output ?? { status: OPERATION_OUTCOME_UNKNOWN };
     case "failed":
       // Preserve the daemon's stable failure code verbatim. The MCP layer must
       // not invent a second vocabulary for authorization or executor errors.
