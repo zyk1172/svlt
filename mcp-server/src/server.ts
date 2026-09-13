@@ -1904,7 +1904,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "sftp_transfer_with_secret",
       title: "SFTP/SCP Transfer With Secret",
       description:
-        "Capability-gated SFTP/SCP descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Local upload sources and download destinations may use any absolute path; remote transfer paths are not confined to an SVLT directory. Plaintext is never returned.",
+        "Capability-gated SFTP/SCP. Local absolute paths and remote paths are not directory-restricted by SVLT. Plaintext is never returned.",
       inputSchema: FileTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
@@ -1915,7 +1915,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ftp_transfer_with_secret",
       title: "FTP Transfer With Secret",
       description:
-        "Capability-gated plaintext FTP descriptor. Only loopback/private destinations are supported and every request requires fresh device-owner authentication. Local upload sources and download destinations may use any absolute path; remote transfer paths are not confined to an SVLT directory. Plaintext is never returned.",
+        "Capability-gated plaintext FTP for loopback/private destinations with fresh owner authentication. Local absolute paths and remote paths are not directory-restricted by SVLT. Plaintext is never returned.",
       inputSchema: FTPTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
@@ -2890,7 +2890,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Authenticated HTTP responses are metadata-only by default. An explicit includeBodyPreview request may return at most 16 KiB of valid JSON only when it contains no sensitive response field names or secret:// references; body, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
       "The generic localExecution action is a very-high-risk, fresh owner-approval boundary and is audited as userApprovedSecretRelease. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
       "Use database_query_with_secret only when vault_capabilities advertises a real PostgreSQL/MySQL adapter; otherwise stop with ACTION_EXECUTOR_UNAVAILABLE. Never simulate database execution with a shell client, password argv/env, or a connection URI.",
-      "Use sftp_transfer_with_secret only when vault_capabilities advertises a real SFTP/SCP adapter; otherwise stop. Local upload sources and download destinations may use any absolute local path, and remote transfer paths are not directory-scoped by SVLT. Do not substitute shell or raw scp.",
+      "Use sftp_transfer_with_secret only when the SFTP/SCP capability is advertised. SVLT does not directory-restrict local absolute paths or remote paths. Do not substitute shell or raw scp.",
       "Use ftp_transfer_with_secret only when vault_capabilities advertises the real FTP adapter. FTP is plaintext: restrict it to loopback/private destinations and let local policy require fresh device-owner authentication on every request. Do not substitute shell, curl, or another unreviewed FTP client.",
       "Use browser_web_login_with_secret only when a signed native-messaging browser adapter is advertised; never use AppleScript, clipboard, or injected page JavaScript for SVLT plaintext.",
       "Use local_app_form_fill_with_secret only when a signed Accessibility adapter is advertised and the target bundle is verified; never use clipboard or generic scripting as a fallback.",
