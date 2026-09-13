@@ -8,9 +8,9 @@ import { z } from "zod";
 
 import { LocalIpcClient } from "./client.js";
 import { credentialSourcePriority } from "./credential-scope.js";
+import { AgentRiskProposal, agentAssessment } from "./agent-assessment.js";
 import {
   AgentCallerIdentity,
-  AgentRiskAssessment,
   CatalogCreateEntryRequest,
   CatalogCreateStructureRequest,
   CatalogBatchMutation,
@@ -48,7 +48,7 @@ import {
   SSHSessionStatus
 } from "./protocol.js";
 
-const optionalAgentRiskAssessment = AgentRiskAssessment.optional();
+const optionalAgentRiskAssessment = AgentRiskProposal.optional();
 
 // Keep this text aligned with SVLTAgentCatalogPolicy.text.  The Swift value
 // is the App's embedded source of truth; this copy is returned by the
@@ -1248,9 +1248,20 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
             template: revealRequest.context.template,
             ranges: revealRequest.context.ranges,
             agentAssessment: {
-              declaredRisk: "silent",
+              source: "mainAgent",
+              declaredRisk: "approvalRequired",
               reason: "Automatic local reveal request",
-              intendedEffect: "display to local user"
+              userGoal: "Display the requested Secret to the local device owner",
+              taskContext: "Local explicit reveal flow",
+              intendedEffect: "display to local user",
+              expectedEffect: "Render plaintext only in the protected local reveal surface",
+              expectedResult: "The local user can view the requested value",
+              intentAlignment: "direct",
+              effectSeverity: "bounded",
+              reversibility: "readOnly",
+              secretHandling: "userVisibleSensitiveData",
+              executionRecommendation: "freshApproval",
+              confidence: 1
             }
           }
         });
@@ -1747,11 +1758,9 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
             reason: parsed.reason,
             template: "{{0}}",
             ranges: [{ index: 0, placeholder: "{{0}}" }],
-            agentAssessment: parsed.agentAssessment ?? {
-              declaredRisk: "silent",
-              reason: "Local reveal request",
-              intendedEffect: "display to local user"
-            }
+            agentAssessment: parsed.agentAssessment === undefined
+              ? agentAssessment({})
+              : agentAssessment({ agentAssessment: parsed.agentAssessment })
           }
         });
         if (response.type === "revealSessionOpened") {
@@ -1777,11 +1786,9 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
             reason: parsed.reason,
             template: revealRequest.context.template,
             ranges: revealRequest.context.ranges,
-            agentAssessment: parsed.agentAssessment ?? {
-              declaredRisk: "silent",
-              reason: "Local reveal request",
-              intendedEffect: "display to local user"
-            }
+            agentAssessment: parsed.agentAssessment === undefined
+              ? agentAssessment({})
+              : agentAssessment({ agentAssessment: parsed.agentAssessment })
           }
         });
         if (response.type === "revealSessionOpened") {
@@ -2173,11 +2180,9 @@ async function handleExportResolvedText(
       reason: parsed.reason,
       template: revealRequest.context.template,
       ranges: revealRequest.context.ranges,
-      agentAssessment: parsed.agentAssessment ?? {
-        declaredRisk: "silent",
-        reason: "Local file export request",
-        intendedEffect: "write local file"
-      }
+      agentAssessment: parsed.agentAssessment === undefined
+        ? agentAssessment({})
+        : agentAssessment({ agentAssessment: parsed.agentAssessment })
     }
   });
   if (response.type === "exported") {
@@ -2186,15 +2191,6 @@ async function handleExportResolvedText(
   return structuredResult(statusOnly(response));
 }
 
-type AgentRiskInput = { agentAssessment?: z.infer<typeof AgentRiskAssessment> };
-
-function agentAssessment(input: AgentRiskInput): z.infer<typeof AgentRiskAssessment> {
-  return input.agentAssessment ?? {
-    declaredRisk: "silent",
-    reason: "No additional agent risk hint",
-    intendedEffect: "purpose-built local secret operation"
-  };
-}
 
 async function ensureSecretOperationCapability(
   client: VaultIpcClient,

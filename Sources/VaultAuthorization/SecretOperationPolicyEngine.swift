@@ -1,21 +1,13 @@
 import Foundation
 import VaultCore
 
-/// SVLT combines deterministic policy with an optional context-bounded
-/// semantic risk judge.
-///
-/// The deterministic classifiers remain the security floor: malformed,
-/// contradictory, identity-invalid, and explicitly unsafe transport requests
-/// are denied, while destructive/high-impact rules still require one-shot
-/// fresh approval. A semantic judge may escalate any ordinary operation. It
-/// may lower a normal reusable operation to automatic execution, and may
-/// relax the generic HTTPS credential-send baseline only when the independent
-/// judge supplies a high-confidence low-risk result.
-///
-/// The judge is intentionally not given conversation history. The MCP boundary
-/// supplies only the main agent's short problem statement plus the canonical
-/// operation. Legacy AgentRiskAssessment values remain display/audit metadata
-/// and cannot affect authorization.
+/// SVLT uses intent-first authorization. The main Agent is the default
+/// semantic decision-maker for ordinary user-aligned work. Deterministic
+/// policy remains authoritative only for malformed/identity-invalid requests,
+/// explicit Secret plaintext exposure, and a small set of genuinely
+/// destructive high-impact operations. An independent judge is called by the
+/// MCP boundary only for semantic gray zones and arrives here as a structured
+/// `AgentRiskAssessment` with `source == .independentJudge`.
 public struct SecretOperationPolicyEngine: Sendable {
     public struct Configuration: Sendable {
         public let maxCommandLength: Int
@@ -30,32 +22,6 @@ public struct SecretOperationPolicyEngine: Sendable {
                 ?? FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent("Library/Application Support/AgentSecretVault/Downloads", isDirectory: true))
                 .standardizedFileURL
-        }
-    }
-
-    private struct IndependentJudgeAssessment: Sendable {
-        enum SemanticRisk: String, Sendable {
-            case readOnly
-            case mutating
-            case destructive
-            case catastrophic
-            case unknown
-        }
-
-        enum Approval: String, Sendable {
-            case none
-            case reusable
-            case fresh
-        }
-
-        let semanticRisk: SemanticRisk
-        let automaticExecution: Bool
-        let approval: Approval
-        let confidence: Double
-        let reason: String
-
-        var isHighConfidenceOrdinaryRisk: Bool {
-            confidence >= 0.80 && (semanticRisk == .readOnly || semanticRisk == .mutating)
         }
     }
 
@@ -92,76 +58,23 @@ public struct SecretOperationPolicyEngine: Sendable {
 
         var effectiveRequirement = local.authorizationRequirement
         var reasons = local.reasons
-        let independentJudge = Self.independentJudgeAssessment(from: descriptor.agentAssessment)
+        let semantic = descriptor.agentAssessment
 
-        if let independentJudge,
-           !descriptor.secretReferences.isEmpty,
-           local.authorizationRequirement != .denied,
-           !local.technicalFailure {
-            switch local.authorizationRequirement {
-            case .freshApprovalRequired:
-                // Fixed destructive/transport/security fresh rules are a
-                // non-downgradable floor. The one exception is the generic
-                // HTTPS credential-send baseline: without a judge it remains
-                // fresh exactly as before, but a high-confidence independent
-                // low-risk assessment may relax it for ordinary API use.
-                guard local.policyRuleID == HTTPFreshRules.secretNetworkSend else { break }
-                switch independentJudge.approval {
-                case .fresh:
-                    effectiveRequirement = .freshApprovalRequired
-                case .reusable:
-                    effectiveRequirement = independentJudge.isHighConfidenceOrdinaryRisk
-                        ? .reusableApproval
-                        : .freshApprovalRequired
-                case .none:
-                    let safeForAutomatic = independentJudge.automaticExecution
-                        && independentJudge.isHighConfidenceOrdinaryRisk
-                    effectiveRequirement = safeForAutomatic ? .none : .freshApprovalRequired
-                }
-            case .reusableApproval:
-                switch independentJudge.approval {
-                case .fresh:
-                    effectiveRequirement = .freshApprovalRequired
-                case .reusable:
-                    effectiveRequirement = .reusableApproval
-                case .none:
-                    let safeForAutomatic = independentJudge.automaticExecution
-                        && independentJudge.isHighConfidenceOrdinaryRisk
-                    effectiveRequirement = safeForAutomatic ? .none : .reusableApproval
-                }
-            case .none:
-                // A judge may escalate even when the deterministic layer has
-                // no approval requirement; it never turns a technical deny
-                // into an allow.
-                switch independentJudge.approval {
-                case .fresh: effectiveRequirement = .freshApprovalRequired
-                case .reusable: effectiveRequirement = .reusableApproval
-                case .none: break
-                }
-            case .denied:
-                break
+        if local.authorizationRequirement != .denied,
+           !local.technicalFailure,
+           !descriptor.secretReferences.isEmpty {
+            if local.authorizationRequirement == .freshApprovalRequired,
+               Self.isNonDowngradableFreshRule(local.policyRuleID) {
+                effectiveRequirement = .freshApprovalRequired
+            } else {
+                effectiveRequirement = semantic.executionRecommendation.authorizationRequirement
             }
 
             reasons.append(
-                "独立风险裁判：\(independentJudge.semanticRisk.rawValue)，置信度 \(String(format: "%.2f", independentJudge.confidence))，建议 \(independentJudge.approval.rawValue)"
+                "语义判断（\(semantic.source.rawValue)）：目标 \(semantic.intentAlignment.rawValue)，影响 \(semantic.effectSeverity.rawValue)，可逆性 \(semantic.reversibility.rawValue)，Secret \(semantic.secretHandling.rawValue)，建议 \(semantic.executionRecommendation.rawValue)，置信度 \(String(format: "%.2f", semantic.confidence))"
             )
-            if !independentJudge.reason.isEmpty {
-                reasons.append("裁判原因：\(independentJudge.reason)")
-            }
-        } else {
-            // Unattested legacy main-agent hints remain display/audit metadata
-            // only. They can never lower or raise authorization requirements.
-            let agentRisk = descriptor.agentAssessment.declaredRisk
-            if agentRisk != .silent {
-                if agentRisk == .denied {
-                    reasons.append("⚠️ Agent 自身认为此操作风险很高；最终是否执行由设备所有者决定")
-                } else {
-                    reasons.append("Agent 提示此操作需要审批（\(agentRisk.rawValue)）")
-                }
-                let agentReason = descriptor.agentAssessment.reason
-                if !agentReason.isEmpty {
-                    reasons.append("Agent 原因：\(agentReason)")
-                }
+            if !semantic.reason.isEmpty {
+                reasons.append("语义原因：\(semantic.reason)")
             }
         }
 
@@ -178,9 +91,9 @@ public struct SecretOperationPolicyEngine: Sendable {
             reasons: reasons.map(Self.sanitizeReason),
             normalizedDestination: normalizedDestination,
             requiredApproval: effectiveRequirement.requiresApproval,
-            policyRuleID: independentJudge == nil
+            policyRuleID: descriptor.secretReferences.isEmpty
                 ? local.policyRuleID
-                : "\(local.policyRuleID)+semantic-judge",
+                : "\(local.policyRuleID)+intent-first",
             authorizationRequirement: effectiveRequirement,
             requiresFreshApprovalOnFirstUse: false,
             technicalFailure: local.technicalFailure
@@ -906,48 +819,33 @@ public struct SecretOperationPolicyEngine: Sendable {
         )
     }
 
-    private static func independentJudgeAssessment(
-        from assessment: AgentRiskAssessment
-    ) -> IndependentJudgeAssessment? {
-        let marker = "SVLT_JUDGE_V1|"
-        guard assessment.reason.hasPrefix(marker) else { return nil }
-
-        var values: [String: String] = [:]
-        for component in assessment.reason.split(separator: "|", omittingEmptySubsequences: true).dropFirst() {
-            let parts = component.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard parts.count == 2 else { continue }
-            values[String(parts[0])] = String(parts[1])
+    private static func isNonDowngradableFreshRule(_ ruleID: String) -> Bool {
+        if ruleID == "sensitive-control.fresh-approval"
+            || ruleID == "local-execution.fresh.arbitrary-secret-release"
+            || ruleID == FTPFreshRules.plaintextTransport {
+            return true
         }
-        guard let rawRisk = values["risk"],
-              let semanticRisk = IndependentJudgeAssessment.SemanticRisk(rawValue: rawRisk),
-              let rawApproval = values["approval"],
-              let approval = IndependentJudgeAssessment.Approval(rawValue: rawApproval),
-              let rawAutomatic = values["automatic"],
-              let automaticExecution = Bool(rawAutomatic),
-              let rawConfidence = values["confidence"],
-              let confidence = Double(rawConfidence),
-              (0...1).contains(confidence)
-        else {
-            return nil
+        if [
+            SSHFreshRules.powerControl,
+            SSHFreshRules.blockDeviceFilesystem,
+            SSHFreshRules.storageRaidDestruction
+        ].contains(ruleID) {
+            return true
         }
-
-        if semanticRisk == .destructive || semanticRisk == .catastrophic || semanticRisk == .unknown {
-            guard approval == .fresh, !automaticExecution else { return nil }
+        if [
+            HTTPFreshRules.insecureSecretTransport,
+            HTTPFreshRules.credentialInURL,
+            HTTPFreshRules.explicitSecretRelease
+        ].contains(ruleID) {
+            return true
         }
-        if confidence < 0.65 {
-            guard approval == .fresh, !automaticExecution else { return nil }
+        if [
+            DatabaseFreshRules.destructiveStructure,
+            DatabaseFreshRules.privilegeAccountAdmin
+        ].contains(ruleID) {
+            return true
         }
-        if approval != .none && automaticExecution {
-            return nil
-        }
-
-        return IndependentJudgeAssessment(
-            semanticRisk: semanticRisk,
-            automaticExecution: automaticExecution,
-            approval: approval,
-            confidence: confidence,
-            reason: values["reason"] ?? ""
-        )
+        return false
     }
 
     private static func sanitizeReason(_ reason: String) -> String {

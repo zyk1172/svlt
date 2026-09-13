@@ -7,9 +7,20 @@
       "requestedEffects": [],
       "parameters": {},
       "agentAssessment": {
-        "declaredRisk": "silent",
-        "reason": "Agent did not provide a risk assessment",
-        "intendedEffect": "unspecified"
+        "source": "mainAgent",
+        "declaredRisk": "approvalRequired",
+        "reason": "No semantic Agent assessment was supplied",
+        "userGoal": "Complete the requested operation",
+        "taskContext": "No additional task context supplied",
+        "intendedEffect": "unspecified",
+        "expectedEffect": "Unknown until reviewed",
+        "expectedResult": "Complete the requested task",
+        "intentAlignment": "unclear",
+        "effectSeverity": "unknown",
+        "reversibility": "unknown",
+        "secretHandling": "unknown",
+        "executionRecommendation": "reusableApproval",
+        "confidence": 0
       }
     }
   },
@@ -21,9 +32,20 @@
       "requestedEffects": [],
       "parameters": {},
       "agentAssessment": {
-        "declaredRisk": "silent",
-        "reason": "Agent did not provide a risk assessment",
-        "intendedEffect": "unspecified"
+        "source": "mainAgent",
+        "declaredRisk": "approvalRequired",
+        "reason": "No semantic Agent assessment was supplied",
+        "userGoal": "Complete the requested operation",
+        "taskContext": "No additional task context supplied",
+        "intendedEffect": "unspecified",
+        "expectedEffect": "Unknown until reviewed",
+        "expectedResult": "Complete the requested task",
+        "intentAlignment": "unclear",
+        "effectSeverity": "unknown",
+        "reversibility": "unknown",
+        "secretHandling": "unknown",
+        "executionRecommendation": "reusableApproval",
+        "confidence": 0
       }
     }
   },

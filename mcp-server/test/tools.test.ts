@@ -916,9 +916,18 @@ describe("MCP tool contracts", () => {
       passwordRef: reference,
       command: "hostname",
       agentAssessment: {
-        declaredRisk: "silent",
         reason: "read QNAP status",
-        intendedEffect: "read-only"
+        userGoal: "Inspect QNAP status",
+        taskContext: "The requested step is a read-only host diagnostic",
+        intendedEffect: "read-only",
+        expectedEffect: "No persistent change",
+        expectedResult: "Return the host name",
+        intentAlignment: "direct",
+        effectSeverity: "none",
+        reversibility: "readOnly",
+        secretHandling: "credentialUse",
+        executionRecommendation: "automatic",
+        confidence: 0.98
       }
     });
 
@@ -932,7 +941,12 @@ describe("MCP tool contracts", () => {
       destination: "qnap.local",
       command: "hostname",
       protocolType: "ssh",
-      agentAssessment: { declaredRisk: "silent" }
+      agentAssessment: {
+        source: "mainAgent",
+        declaredRisk: "silent",
+        executionRecommendation: "automatic",
+        intentAlignment: "direct"
+      }
     });
     expect(JSON.stringify(request)).not.toContain("plaintext-secret-value");
     expect(JSON.stringify(request)).not.toContain("restoreReferences");
@@ -946,9 +960,18 @@ describe("MCP tool contracts", () => {
       passwordRef: reference,
       command: "mkdir /share/svlt-test",
       agentAssessment: {
-        declaredRisk: "approvalRequired",
         reason: "creates a directory",
-        intendedEffect: "remote write"
+        userGoal: "Create the requested remote working directory",
+        taskContext: "Bounded reversible filesystem setup",
+        intendedEffect: "remote write",
+        expectedEffect: "Create one directory",
+        expectedResult: "The requested directory exists",
+        intentAlignment: "direct",
+        effectSeverity: "minor",
+        reversibility: "easy",
+        secretHandling: "credentialUse",
+        executionRecommendation: "automatic",
+        confidence: 0.96
       }
     });
 
@@ -956,12 +979,18 @@ describe("MCP tool contracts", () => {
     const request = client.requests[0];
     expect(request.type).toBe("executeSecretOperation");
     if (request.type !== "executeSecretOperation") return;
-    // The Swift policy engine merges this hint with the local requirement;
-    // the wire contract must preserve it verbatim instead of downgrading it.
-    expect(request.descriptor.agentAssessment).toEqual({
-      declaredRisk: "approvalRequired",
+    // MCP owns provenance/coarse risk and forwards the main Agent's structured semantics.
+    expect(request.descriptor.agentAssessment).toMatchObject({
+      source: "mainAgent",
+      declaredRisk: "silent",
       reason: "creates a directory",
-      intendedEffect: "remote write"
+      userGoal: "Create the requested remote working directory",
+      intendedEffect: "remote write",
+      effectSeverity: "minor",
+      reversibility: "easy",
+      secretHandling: "credentialUse",
+      executionRecommendation: "automatic",
+      confidence: 0.96
     });
   });
 
@@ -978,9 +1007,20 @@ describe("MCP tool contracts", () => {
     expect(request.type).toBe("executeSecretOperation");
     if (request.type !== "executeSecretOperation") return;
     expect(request.descriptor.agentAssessment).toEqual({
-      declaredRisk: "silent",
-      reason: "No additional agent risk hint",
-      intendedEffect: "purpose-built local secret operation"
+      source: "mainAgent",
+      declaredRisk: "approvalRequired",
+      reason: "Main Agent did not provide a semantic assessment",
+      userGoal: "Complete the requested Secret-backed operation",
+      taskContext: "No additional task context supplied",
+      intendedEffect: "Perform the requested operation",
+      expectedEffect: "Unknown until independently reviewed",
+      expectedResult: "Complete the user's requested task",
+      intentAlignment: "unclear",
+      effectSeverity: "unknown",
+      reversibility: "unknown",
+      secretHandling: "unknown",
+      executionRecommendation: "uncertain",
+      confidence: 0
     });
   });
 
@@ -1116,9 +1156,18 @@ describe("MCP tool contracts", () => {
       passwordRef: reference,
       command: "rm -rf /volume1/@tmp",
       agentAssessment: {
-        declaredRisk: "silent",
         reason: "maintenance",
-        intendedEffect: "read-only"
+        userGoal: "Perform the requested maintenance",
+        taskContext: "The command deletes a remote directory tree and therefore needs semantic review",
+        intendedEffect: "delete a remote directory tree",
+        expectedEffect: "Remove /volume1/@tmp recursively",
+        expectedResult: "Temporary data is removed",
+        intentAlignment: "direct",
+        effectSeverity: "broad",
+        reversibility: "irreversible",
+        secretHandling: "credentialUse",
+        executionRecommendation: "freshApproval",
+        confidence: 0.98
       }
     });
 
@@ -1506,9 +1555,20 @@ describe("MCP tool contracts", () => {
         template: "Token: {{0}}",
         ranges: [{ index: 0, placeholder: "{{0}}" }],
         agentAssessment: {
-          declaredRisk: "silent",
-          reason: "Local file export request",
-          intendedEffect: "write local file"
+          source: "mainAgent",
+          declaredRisk: "approvalRequired",
+          reason: "Main Agent did not provide a semantic assessment",
+          userGoal: "Complete the requested Secret-backed operation",
+          taskContext: "No additional task context supplied",
+          intendedEffect: "Perform the requested operation",
+          expectedEffect: "Unknown until independently reviewed",
+          expectedResult: "Complete the user's requested task",
+          intentAlignment: "unclear",
+          effectSeverity: "unknown",
+          reversibility: "unknown",
+          secretHandling: "unknown",
+          executionRecommendation: "uncertain",
+          confidence: 0
         }
       }
     }]);

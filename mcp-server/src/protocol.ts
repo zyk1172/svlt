@@ -57,11 +57,43 @@ export type SecretCatalogField = z.infer<typeof SecretCatalogField>;
 export const OperationRisk = z.enum(["silent", "approvalRequired", "denied"]);
 export type OperationRisk = z.infer<typeof OperationRisk>;
 
+export const AgentAssessmentSource = z.enum(["mainAgent", "independentJudge"]);
+export type AgentAssessmentSource = z.infer<typeof AgentAssessmentSource>;
+
+export const AgentIntentAlignment = z.enum(["direct", "supporting", "unclear", "unrelated"]);
+export const AgentEffectSeverity = z.enum(["none", "minor", "bounded", "broad", "systemic", "unknown"]);
+export const AgentReversibility = z.enum(["readOnly", "easy", "recoverable", "difficult", "irreversible", "unknown"]);
+export const AgentSecretHandling = z.enum([
+  "none",
+  "credentialUse",
+  "userVisibleSensitiveData",
+  "thirdPartyExposure",
+  "plaintextSecretExposure",
+  "unknown"
+]);
+export const AgentExecutionRecommendation = z.enum([
+  "automatic",
+  "reusableApproval",
+  "freshApproval",
+  "uncertain"
+]);
+
 export const AgentRiskAssessment = z
   .object({
+    source: AgentAssessmentSource,
     declaredRisk: OperationRisk,
-    reason: z.string().min(1).max(512),
-    intendedEffect: z.string().min(1).max(256)
+    reason: z.string().min(1).max(4_096),
+    userGoal: z.string().min(1).max(8_192),
+    taskContext: z.string().min(1).max(16_384),
+    intendedEffect: z.string().min(1).max(8_192),
+    expectedEffect: z.string().min(1).max(8_192),
+    expectedResult: z.string().min(1).max(8_192),
+    intentAlignment: AgentIntentAlignment,
+    effectSeverity: AgentEffectSeverity,
+    reversibility: AgentReversibility,
+    secretHandling: AgentSecretHandling,
+    executionRecommendation: AgentExecutionRecommendation,
+    confidence: z.number().min(0).max(1)
   })
   .strict();
 export type AgentRiskAssessment = z.infer<typeof AgentRiskAssessment>;

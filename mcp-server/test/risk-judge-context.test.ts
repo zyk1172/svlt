@@ -1,20 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { IpcRequest } from "../src/secretOperations/protocol.js";
+import { applyContextBoundedRiskJudge, type RiskJudgeConfiguration, type RiskJudgeTransport } from "../src/risk-judge.js";
 
-import type { IpcRequest } from "../src/protocol.js";
-import {
-  applyContextBoundedRiskJudge,
-  type RiskJudgeConfiguration,
-  type RiskJudgeTransport
-} from "../src/risk-judge.js";
+const configuration: RiskJudgeConfiguration = { endpoint: "https://judge.example/v1/chat/completions", model: "risk-model", timeoutMs: 2_000 };
 
-const configuration: RiskJudgeConfiguration = {
-  endpoint: "https://judge.example/v1/chat/completions",
-  model: "risk-model",
-  timeoutMs: 2_000
-};
-
-describe("risk judge context privacy", () => {
-  it("redacts opaque secret references embedded in executable text", async () => {
+describe("semantic judge context privacy", () => {
+  it("redacts Secret references and common credential-shaped context", async () => {
     const reference = "secret://01ARZ3NDEKTSV4RRFFQ69G5FAV";
     const request = {
       type: "executeSecretOperation",
@@ -24,13 +15,24 @@ describe("risk judge context privacy", () => {
         destination: "nas.home.arpa",
         port: 22,
         protocolType: "ssh",
-        command: `printf '%s' ${reference}`,
+        command: `eval \"printf '%s' ${reference}\"`,
         requestedEffects: [],
         parameters: {},
         agentAssessment: {
-          declaredRisk: "silent",
-          reason: "main-agent hint",
-          intendedEffect: "Inspect an opaque credential reference without revealing it"
+          source: "mainAgent",
+          declaredRisk: "approvalRequired",
+          reason: "token=VERY_SECRET_TOKEN_VALUE",
+          userGoal: "Diagnose auth using Bearer ABCDEFGHIJKLMNOP",
+          taskContext: "Authentication is failing and the next step is opaque dynamic execution",
+          intendedEffect: "Inspect the auth failure",
+          expectedEffect: "Unknown",
+          expectedResult: "Find the cause",
+          intentAlignment: "unclear",
+          effectSeverity: "unknown",
+          reversibility: "unknown",
+          secretHandling: "unknown",
+          executionRecommendation: "uncertain",
+          confidence: 0.4
         }
       }
     } as IpcRequest;
@@ -39,22 +41,24 @@ describe("risk judge context privacy", () => {
     const transport: RiskJudgeTransport = {
       async fetch(_input, init) {
         body = String(init?.body ?? "");
-        return new Response(JSON.stringify({
-          choices: [{ message: { content: JSON.stringify({
-            secretSensitivity: "important",
-            operationRisk: "readOnly",
-            impact: "limited",
-            automaticExecution: false,
-            approval: "reusable",
-            confidence: 0.9,
-            reason: "No destructive effect"
-          }) } }]
-        }), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+          reason: "No destructive effect",
+          intentAlignment: "supporting",
+          effectSeverity: "minor",
+          reversibility: "easy",
+          secretHandling: "credentialUse",
+          executionRecommendation: "automatic",
+          confidence: 0.9
+        }) } }] }), { status: 200, headers: { "content-type": "application/json" } });
       }
     };
 
     await applyContextBoundedRiskJudge(request, configuration, transport);
     expect(body).toContain("<secret-reference>");
     expect(body).not.toContain(reference);
+    expect(body).not.toContain("VERY_SECRET_TOKEN_VALUE");
+    expect(body).not.toContain("ABCDEFGHIJKLMNOP");
+    expect(body).toContain("token=<redacted>");
+    expect(body).toContain("Bearer <redacted>");
   });
 });

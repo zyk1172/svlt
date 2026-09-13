@@ -64,24 +64,103 @@ public enum AuthorizationRequirement: String, Codable, CaseIterable, Sendable {
 }
 
 public struct AgentRiskAssessment: Codable, Equatable, Sendable {
+    public enum Source: String, Codable, CaseIterable, Sendable {
+        case mainAgent
+        case independentJudge
+    }
+
+    public enum IntentAlignment: String, Codable, CaseIterable, Sendable {
+        case direct, supporting, unclear, unrelated
+    }
+
+    public enum EffectSeverity: String, Codable, CaseIterable, Sendable {
+        case none, minor, bounded, broad, systemic, unknown
+    }
+
+    public enum Reversibility: String, Codable, CaseIterable, Sendable {
+        case readOnly, easy, recoverable, difficult, irreversible, unknown
+    }
+
+    public enum SecretHandling: String, Codable, CaseIterable, Sendable {
+        case none, credentialUse, userVisibleSensitiveData, thirdPartyExposure, plaintextSecretExposure, unknown
+    }
+
+    public enum ExecutionRecommendation: String, Codable, CaseIterable, Sendable {
+        case automatic
+        case reusableApproval
+        case freshApproval
+        case uncertain
+
+        public var authorizationRequirement: AuthorizationRequirement {
+            switch self {
+            case .automatic: return .none
+            case .reusableApproval: return .reusableApproval
+            case .freshApproval, .uncertain: return .freshApprovalRequired
+            }
+        }
+    }
+
+    public let source: Source
     public let declaredRisk: OperationRisk
     public let reason: String
+    public let userGoal: String
+    public let taskContext: String
     public let intendedEffect: String
+    public let expectedEffect: String
+    public let expectedResult: String
+    public let intentAlignment: IntentAlignment
+    public let effectSeverity: EffectSeverity
+    public let reversibility: Reversibility
+    public let secretHandling: SecretHandling
+    public let executionRecommendation: ExecutionRecommendation
+    public let confidence: Double
 
     public init(
-        declaredRisk: OperationRisk,
+        source: Source = .mainAgent,
+        declaredRisk: OperationRisk = .approvalRequired,
         reason: String,
-        intendedEffect: String
+        userGoal: String = "Complete the requested operation",
+        taskContext: String = "No additional task context supplied",
+        intendedEffect: String,
+        expectedEffect: String = "Perform the intended operation",
+        expectedResult: String = "Complete the requested task",
+        intentAlignment: IntentAlignment = .direct,
+        effectSeverity: EffectSeverity = .bounded,
+        reversibility: Reversibility = .recoverable,
+        secretHandling: SecretHandling = .credentialUse,
+        executionRecommendation: ExecutionRecommendation = .reusableApproval,
+        confidence: Double = 0.90
     ) {
+        self.source = source
         self.declaredRisk = declaredRisk
         self.reason = reason
+        self.userGoal = userGoal
+        self.taskContext = taskContext
         self.intendedEffect = intendedEffect
+        self.expectedEffect = expectedEffect
+        self.expectedResult = expectedResult
+        self.intentAlignment = intentAlignment
+        self.effectSeverity = effectSeverity
+        self.reversibility = reversibility
+        self.secretHandling = secretHandling
+        self.executionRecommendation = executionRecommendation
+        self.confidence = confidence
     }
 
     public static let conservativeDefault = AgentRiskAssessment(
-        declaredRisk: .silent,
-        reason: "Agent did not provide a risk assessment",
-        intendedEffect: "unspecified"
+        declaredRisk: .approvalRequired,
+        reason: "No semantic Agent assessment was supplied",
+        userGoal: "Complete the requested operation",
+        taskContext: "No additional task context supplied",
+        intendedEffect: "unspecified",
+        expectedEffect: "Unknown until reviewed",
+        expectedResult: "Complete the requested task",
+        intentAlignment: .unclear,
+        effectSeverity: .unknown,
+        reversibility: .unknown,
+        secretHandling: .unknown,
+        executionRecommendation: .reusableApproval,
+        confidence: 0
     )
 }
 

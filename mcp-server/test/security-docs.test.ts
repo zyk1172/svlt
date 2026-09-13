@@ -81,4 +81,10 @@ describe("security documentation", () => {
     expect(usage).not.toContain('"passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
     expect(usage).not.toContain('"tokenRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
   });
+  it("retires legacy semantic marker protocols from the intent-first design", async () => {
+    const design = await readFile(path.join(repositoryRoot, "docs/security/context-bounded-risk-judge.md"), "utf8");
+    expect(design).toContain("String marker protocols");
+    expect(design).toContain("retired");
+  });
+
 });
