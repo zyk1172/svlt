@@ -1,4 +1,5 @@
 import Foundation
+import VaultAuthorization
 import VaultCore
 import VaultExecution
 import VaultIPC
@@ -38,6 +39,31 @@ public extension VaultAppServices {
 }
 
 extension VaultAppServices {
+    static func approveWithTimeout(
+        approver: any OperationApproving,
+        timeout: Duration,
+        summary: String
+    ) async throws -> LocalAuthenticationContext? {
+        try await withThrowingTaskGroup(of: LocalAuthenticationContext?.self) { group in
+            group.addTask {
+                if let contextApprover = approver as? any OperationApprovalContextProviding {
+                    return try await contextApprover.approveWithAuthenticationContext(summary: summary)
+                }
+                try await approver.approve(summary: summary)
+                return nil
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw OperationAuthorizationError.timeout
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else {
+                throw OperationAuthorizationError.cancelled
+            }
+            return result
+        }
+    }
+
     func noteTrackedSecretOperationState(_ state: SecretOperationState) async {
         await secretOperationService.transitionCurrent(to: state)
     }
