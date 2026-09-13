@@ -17,40 +17,22 @@ jobs:
         with:
           ref: codex/catalog-agent-operations-slice
           fetch-depth: 0
-      - name: Align cross-file access boundary
+      - name: Align required cross-file access boundary
         run: |
           python3 <<'PY'
           from pathlib import Path
-
-          primary = Path('Sources/VaultService/VaultAppServices.swift')
-          source = primary.read_text()
-          required = {
+          path = Path('Sources/VaultService/VaultAppServices.swift')
+          source = path.read_text()
+          replacements = {
               'private enum CatalogMutationPhase: String {': 'enum CatalogMutationPhase: String {',
               'private enum SecretOperationAuthorizationPath: Sendable {': 'enum SecretOperationAuthorizationPath: Sendable {',
           }
-          for old, new in required.items():
+          for old, new in replacements.items():
               count = source.count(old)
               if count != 1:
                   raise SystemExit(f'expected exactly one {old!r}, found {count}')
               source = source.replace(old, new, 1)
-          primary.write_text(source)
-
-          old = 'private func assessCatalogReadAuthorization('
-          new = 'func assessCatalogReadAuthorization('
-          files = sorted(Path('Sources/VaultService').glob('*.swift'))
-          old_hits = [(path, path.read_text().count(old)) for path in files]
-          old_hits = [(path, count) for path, count in old_hits if count]
-          new_count = sum(path.read_text().count(new) for path in files)
-          if sum(count for _, count in old_hits) == 1:
-              path = old_hits[0][0]
-              text = path.read_text()
-              path.write_text(text.replace(old, new, 1))
-          elif sum(count for _, count in old_hits) == 0 and new_count == 1:
-              pass
-          else:
-              raise SystemExit(
-                  f'assessCatalogReadAuthorization declaration is ambiguous: old={old_hits}, new_count={new_count}'
-              )
+          path.write_text(source)
           PY
           git diff --check
       - name: Verify XcodeGen parity
@@ -71,6 +53,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Sources/VaultService/*.swift
+          git add Sources/VaultService/VaultAppServices.swift
           git commit -m 'refactor: align catalog slice access boundary'
           git push origin HEAD:codex/catalog-agent-operations-slice
