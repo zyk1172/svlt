@@ -784,6 +784,7 @@ const LocalHttpInput = z
     includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
+    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -827,6 +828,7 @@ const SshCommandInput = z
             message: "command must be at most 65536 UTF-8 bytes"
         }),
     sessionID: z.string().min(1).max(128).optional(),
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict();
@@ -840,6 +842,7 @@ const SshCommandBatchInput = z
     sessionID: z.string().min(1).max(128).optional(),
     commands: z.array(SSHCommandSpec).min(1).max(32),
     stopOnFailure: z.boolean().default(true),
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -876,6 +879,7 @@ const ApiRequestInput = z
     includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
+    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -902,6 +906,7 @@ const DatabaseQueryInput = z
     passwordRef: SecretReference,
     query: z.string().min(1).max(20_000),
     maxRows: z.number().int().min(1).max(100).optional(),
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -929,6 +934,7 @@ const FileTransferInput = z
     passwordRef: SecretReference,
     remotePath: z.string().min(1).max(4_096),
     localPath: z.string().min(1).max(4_096).optional(),
+    timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -959,6 +965,7 @@ const FTPTransferInput = z
     passwordRef: SecretReference,
     remotePath: z.string().min(1).max(4_096),
     localPath: z.string().min(1).max(4_096).optional(),
+    timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -989,6 +996,7 @@ const BrowserLoginInput = z
     passwordSelector: z.string().min(1).max(1_024),
     submitSelector: z.string().min(1).max(1_024).optional(),
     submit: z.boolean().optional(),
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -1026,6 +1034,7 @@ const LocalAppFillInput = z
         message: "Each field requires value or valueRef."
       })).min(1).max(20),
     submitButton: z.string().min(1).max(256).optional(),
+    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()

@@ -199,6 +199,7 @@ public actor SSHSessionManager {
     private enum RecordState: Equatable {
         case pending
         case active
+        case draining
     }
 
     private struct Record {
@@ -238,6 +239,8 @@ public actor SSHSessionManager {
     private static let maxControlPathBytes = 103
     private var records: [String: Record] = [:]
     private var openingTasks: [SSHSessionScope: OpeningTask] = [:]
+    private var transientSessionCountsByPrincipal: [String: Int] = [:]
+    private var transientSessionCount = 0
     private var didCleanStaleControlPaths = false
 
     public init(
@@ -373,7 +376,13 @@ public actor SSHSessionManager {
             await closeRecord(record)
             throw SSHSessionManagerError.sessionExpired
         }
-        guard record.state == .active, await checkControl(record) else {
+        guard record.state == .active else {
+            if record.state != .draining {
+                await closeRecord(record)
+            }
+            throw SSHSessionManagerError.controlUnavailable
+        }
+        guard await checkControl(record) else {
             await closeRecord(record)
             throw SSHSessionManagerError.controlUnavailable
         }
@@ -416,7 +425,7 @@ public actor SSHSessionManager {
         let recordsToClose = Array(records.values)
         records.removeAll()
         for record in recordsToClose {
-            if record.state == .active {
+            if record.state == .active || record.state == .draining {
                 await closeControl(record)
             } else {
                 removeControlPath(record.controlPath)
@@ -482,6 +491,8 @@ public actor SSHSessionManager {
         scope: SSHSessionScope,
         operation: @escaping @Sendable (SSHSessionAccess) async throws -> SSHSessionCommandExecution
     ) async throws -> SSHSessionCommandExecution {
+        try reserveTransientSlot(for: scope.principal)
+        defer { releaseTransientSlot(for: scope.principal) }
         let id = Self.makeSessionID()
         let controlPath = try makeControlPath()
         let tick = monotonicNow()
@@ -597,10 +608,6 @@ public actor SSHSessionManager {
         records[record.id] = active
         do {
             let result = try await operation(access)
-            guard result.channelState == .remoteCommandCompleted else {
-                await closeRecord(record)
-                return result.assigningSessionID(nil, masterReady: false)
-            }
             guard var current = records[record.id] else {
                 // Explicit invalidation may remove the cache record while the
                 // command is finishing. Preserve the real command result.
@@ -609,6 +616,28 @@ public actor SSHSessionManager {
             current.inFlightCount = max(0, current.inFlightCount - 1)
             current.lastUsedAt = now()
             current.lastUsedTick = monotonicNow()
+
+            guard result.channelState == .remoteCommandCompleted else {
+                if current.inFlightCount == 0 {
+                    await closeRecord(current)
+                } else {
+                    current.state = .draining
+                    records[record.id] = current
+                }
+                return result.assigningSessionID(nil, masterReady: false)
+            }
+
+            if current.state == .draining {
+                if current.inFlightCount == 0 {
+                    await closeRecord(current)
+                } else {
+                    records[record.id] = current
+                }
+                return result
+                    .assigningFingerprintsIfMissing(record.outputFingerprints)
+                    .assigningSessionID(nil, masterReady: false)
+            }
+
             records[record.id] = current
             return result
                 .assigningFingerprintsIfMissing(record.outputFingerprints)
@@ -618,16 +647,38 @@ public actor SSHSessionManager {
                 current.inFlightCount = max(0, current.inFlightCount - 1)
                 current.lastUsedAt = now()
                 current.lastUsedTick = monotonicNow()
-                records[record.id] = current
+                if current.state == .draining, current.inFlightCount == 0 {
+                    await closeRecord(current)
+                } else {
+                    records[record.id] = current
+                }
             }
             throw error
         }
     }
 
+    private func reserveTransientSlot(for principal: String) throws {
+        try enforceLimits(for: principal)
+        transientSessionCountsByPrincipal[principal, default: 0] += 1
+        transientSessionCount += 1
+    }
+
+    private func releaseTransientSlot(for principal: String) {
+        if let count = transientSessionCountsByPrincipal[principal] {
+            if count <= 1 {
+                transientSessionCountsByPrincipal.removeValue(forKey: principal)
+            } else {
+                transientSessionCountsByPrincipal[principal] = count - 1
+            }
+        }
+        transientSessionCount = max(0, transientSessionCount - 1)
+    }
+
     private func enforceLimits(for principal: String) throws {
         let principalRecords = records.values.filter { $0.scope.principal == principal }
-        guard principalRecords.count < maxSessionsPerPrincipal,
-              records.count < maxGlobalSessions
+        let principalTransientCount = transientSessionCountsByPrincipal[principal, default: 0]
+        guard principalRecords.count + principalTransientCount < maxSessionsPerPrincipal,
+              records.count + transientSessionCount < maxGlobalSessions
         else {
             throw SSHSessionManagerError.sessionLimitReached
         }
@@ -678,7 +729,7 @@ public actor SSHSessionManager {
 
     private func closeRecord(_ record: Record) async {
         records.removeValue(forKey: record.id)
-        if record.state == .active {
+        if record.state == .active || record.state == .draining {
             await closeControl(record)
         } else {
             removeControlPath(record.controlPath)

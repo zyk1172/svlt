@@ -205,6 +205,65 @@ private let transferReferenceText = "secret://0123456789ABCDEFGHJKMNPQRS"
     )
 }
 
+
+@Test func ftpStagePrefersTaskCancellationOverTransportFailure() async {
+    let gate = BlockingFTPStageGate()
+    let task = Task {
+        try await runFTPStage {
+            await gate.markStartedAndWait()
+            throw FTPCancellationProbeError.transport
+        }
+    }
+    await gate.waitUntilStarted()
+    task.cancel()
+    await gate.release()
+
+    do {
+        _ = try await task.value
+        Issue.record("FTP stage returned a transport result after cancellation.")
+    } catch is CancellationError {
+        // Expected: explicit task cancellation wins over the callback error.
+    } catch {
+        Issue.record("FTP cancellation was rewritten as \(error).")
+    }
+}
+
+private enum FTPCancellationProbeError: Error {
+    case transport
+}
+
+private actor BlockingFTPStageGate {
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStartedAndWait() async {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+}
+
 private func transferDescriptor(
     action: SecretOperationAction,
     protocolType: SecretOperationProtocol,

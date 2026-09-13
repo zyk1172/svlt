@@ -673,6 +673,9 @@ private struct FTPClient: Sendable {
         let data = FTPWire(host: host, port: dataPort)
         do {
             try await runFTPStage { try await data.start() }
+        } catch is CancellationError {
+            data.cancel()
+            throw CancellationError()
         } catch {
             data.cancel()
             throw FTPClientError.connection
@@ -732,6 +735,8 @@ private struct FTPClient: Sendable {
             try await runFTPStage { try await wire.finishSending() }
         } catch let error as FTPClientError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw FTPClientError.localIO
         }
@@ -813,9 +818,16 @@ private struct FTPReplyReader: Sendable {
     }
 }
 
-private func runFTPStage<T: Sendable>(
+func runFTPStage<T: Sendable>(
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
     try Task.checkCancellation()
-    return try await operation()
+    do {
+        let result = try await operation()
+        try Task.checkCancellation()
+        return result
+    } catch {
+        try Task.checkCancellation()
+        throw error
+    }
 }
