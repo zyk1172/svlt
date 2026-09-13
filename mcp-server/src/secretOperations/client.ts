@@ -1,10 +1,10 @@
+import type { SecretOperationDescriptor } from "../protocol.js";
 import type {
   IpcRequest,
   IpcResponse,
-  SecretOperationDescriptor,
   SecretOperationHandle,
   SecretOperationStatus
-} from "../protocol.js";
+} from "./protocol.js";
 
 export interface SecretOperationIpcClient {
   request(request: IpcRequest): Promise<IpcResponse>;
