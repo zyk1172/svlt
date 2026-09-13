@@ -3,15 +3,18 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import { z } from "zod";
+
 import {
-  AuthenticatedIpcRequest,
   AgentCallerIdentity,
   CapabilityToken,
   IpcFrameCodec,
-  IpcRequest,
-  IpcResponse,
   MAX_FRAME_BYTES
 } from "./protocol.js";
+import {
+  IpcRequest,
+  IpcResponse
+} from "./secretOperations/protocol.js";
 import { applyContextBoundedRiskJudge } from "./risk-judge.js";
 
 export interface IpcPaths {
@@ -29,11 +32,18 @@ export interface LocalIpcClientOptions {
   declaredCaller?: AgentCallerIdentity;
 }
 
+const AuthenticatedIpcRequest = z.object({
+  capabilityToken: CapabilityToken,
+  caller: AgentCallerIdentity.optional(),
+  request: IpcRequest
+}).strict();
+
 const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
 const DEFAULT_UNAVAILABLE_RETRY_DELAY_MS = 500;
-// This is only a control-request timeout. Secret operations have their own
-// adapter-owned execution timeout, which starts after any device-owner
-// approval completes, so the MCP transport must not reuse this deadline.
+// This is only a control-request timeout. Secret-operation execution now runs
+// behind operationID, so start/status/cancel remain bounded control requests.
+// The legacy executeSecretOperation compatibility request still has no MCP
+// transport deadline because it may span local approval plus executor work.
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const FRAME_HEADER_BYTES = 4;
 const MAX_WIRE_FRAME_BYTES = FRAME_HEADER_BYTES + MAX_FRAME_BYTES;
@@ -93,7 +103,8 @@ export class LocalIpcClient {
     // invocation is a fresh stateless model call. It receives only the main
     // agent's short intendedEffect (used as the problem statement) plus the
     // canonical operation fields; chat history and the agent's risk rationale
-    // are intentionally excluded.
+    // are intentionally excluded. Lifecycle status/cancel control requests do
+    // not carry descriptors and therefore pass through unchanged.
     const riskJudgedRequest = await applyContextBoundedRiskJudge(request);
     const parsedRequest = IpcRequest.parse(riskJudgedRequest);
     for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
