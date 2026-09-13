@@ -1,0 +1,784 @@
+xcodebuild_status=65
+
+003752:                      ^
+003753: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003754:     #expect(try await service.catalogAuditHealth() == nil)
+003755:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003756: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003757:     #expect(try await service.catalogAuditHealth() == nil)
+003758:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003759: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003760: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003761:                      ^
+003762: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003763:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003764:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003765: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003766:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003767:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003768: 
+003769: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SecureExportWriterTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003770:     cd /Users/runner/work/svlt/svlt
+003771:     
+003772: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003773:     let error = await serviceCatalogError { try await task.value }
+003774:                                                       ~~~~~^~~~~
+003775: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003776: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003777:                      ^
+003778: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003779:     #expect(try await service.catalogAuditHealth() == nil)
+003780:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003781: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003782:     #expect(try await service.catalogAuditHealth() == nil)
+003783:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003784: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003785: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003786:                      ^
+003787: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003788:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003789:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003790: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003791:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003792:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003793: 
+003794: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SecureViewerModelTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003795:     cd /Users/runner/work/svlt/svlt
+003796:     
+003797: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003798:     let error = await serviceCatalogError { try await task.value }
+003799:                                                       ~~~~~^~~~~
+003800: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003801: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003802:                      ^
+003803: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003804:     #expect(try await service.catalogAuditHealth() == nil)
+003805:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003806: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003807:     #expect(try await service.catalogAuditHealth() == nil)
+003808:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003809: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003810: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003811:                      ^
+003812: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003813:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003814:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003815: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003816:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003817:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003818: 
+003819: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SensitiveCatalogDocumentStoreTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003820:     cd /Users/runner/work/svlt/svlt
+003821:     
+003822: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003823:     let error = await serviceCatalogError { try await task.value }
+003824:                                                       ~~~~~^~~~~
+003825: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003826: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003827:                      ^
+003828: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003829:     #expect(try await service.catalogAuditHealth() == nil)
+003830:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003831: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003832:     #expect(try await service.catalogAuditHealth() == nil)
+003833:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003834: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003835: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003836:                      ^
+003837: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003838:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003839:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003840: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003841:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003842:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003843: 
+003844: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SensitiveCatalogEditorPresetTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003845:     cd /Users/runner/work/svlt/svlt
+003846:     
+003847: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003848:     let error = await serviceCatalogError { try await task.value }
+003849:                                                       ~~~~~^~~~~
+003850: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003851: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003852:                      ^
+003853: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003854:     #expect(try await service.catalogAuditHealth() == nil)
+003855:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003856: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003857:     #expect(try await service.catalogAuditHealth() == nil)
+003858:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003859: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003860: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003861:                      ^
+003862: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003863:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003864:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003865: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003866:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003867:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003868: 
+003869: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SensitiveCatalogTemplateStoreTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003870:     cd /Users/runner/work/svlt/svlt
+003871:     
+003872: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003873:     let error = await serviceCatalogError { try await task.value }
+003874:                                                       ~~~~~^~~~~
+003875: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003876: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003877:                      ^
+003878: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003879:     #expect(try await service.catalogAuditHealth() == nil)
+003880:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003881: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003882:     #expect(try await service.catalogAuditHealth() == nil)
+003883:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003884: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003885: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003886:                      ^
+003887: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003888:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003889:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003890: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003891:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003892:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003893: 
+003894: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SensitiveInformationDocumentStoreTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003895:     cd /Users/runner/work/svlt/svlt
+003896:     
+003897: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003898:     let error = await serviceCatalogError { try await task.value }
+003899:                                                       ~~~~~^~~~~
+003900: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003901: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003902:                      ^
+003903: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003904:     #expect(try await service.catalogAuditHealth() == nil)
+003905:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003906: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003907:     #expect(try await service.catalogAuditHealth() == nil)
+003908:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003909: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003910: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003911:                      ^
+003912: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003913:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003914:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003915: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003916:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003917:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003918: 
+003919: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SensitiveInformationScannerTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003920:     cd /Users/runner/work/svlt/svlt
+003921:     
+003922: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003923:     let error = await serviceCatalogError { try await task.value }
+003924:                                                       ~~~~~^~~~~
+003925: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003926: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003927:                      ^
+003928: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003929:     #expect(try await service.catalogAuditHealth() == nil)
+003930:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003931: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003932:     #expect(try await service.catalogAuditHealth() == nil)
+003933:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003934: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003935: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003936:                      ^
+003937: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003938:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003939:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003940: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003941:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003942:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003943: 
+003944: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003945:     cd /Users/runner/work/svlt/svlt
+003946:     
+003947: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003948:     let error = await serviceCatalogError { try await task.value }
+003949:                                                       ~~~~~^~~~~
+003950: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003951: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003952:                      ^
+003953: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003954:     #expect(try await service.catalogAuditHealth() == nil)
+003955:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003956: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003957:     #expect(try await service.catalogAuditHealth() == nil)
+003958:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003959: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003960: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003961:                      ^
+003962: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003963:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003964:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003965: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003966:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003967:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003968: 
+003969: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesOrphanScanTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003970:     cd /Users/runner/work/svlt/svlt
+003971:     
+003972: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003973:     let error = await serviceCatalogError { try await task.value }
+003974:                                                       ~~~~~^~~~~
+003975: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003976: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003977:                      ^
+003978: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003979:     #expect(try await service.catalogAuditHealth() == nil)
+003980:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003981: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+003982:     #expect(try await service.catalogAuditHealth() == nil)
+003983:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003984: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+003985: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+003986:                      ^
+003987: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003988:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003989:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003990: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+003991:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+003992:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+003993: 
+003994: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultDaemonCoreTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+003995:     cd /Users/runner/work/svlt/svlt
+003996:     
+003997: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+003998:     let error = await serviceCatalogError { try await task.value }
+003999:                                                       ~~~~~^~~~~
+004000: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004001: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004002:                      ^
+004003: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004004:     #expect(try await service.catalogAuditHealth() == nil)
+004005:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004006: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004007:     #expect(try await service.catalogAuditHealth() == nil)
+004008:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004009: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004010: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004011:                      ^
+004012: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004013:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004014:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004015: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004016:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004017:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004018: 
+004019: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultRecordResolverTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+004020:     cd /Users/runner/work/svlt/svlt
+004021:     
+004022: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+004023:     let error = await serviceCatalogError { try await task.value }
+004024:                                                       ~~~~~^~~~~
+004025: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004026: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004027:                      ^
+004028: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004029:     #expect(try await service.catalogAuditHealth() == nil)
+004030:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004031: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004032:     #expect(try await service.catalogAuditHealth() == nil)
+004033:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004034: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004035: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004036:                      ^
+004037: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004038:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004039:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004040: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004041:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004042:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004043: 
+004044: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultUICopyTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+004045:     cd /Users/runner/work/svlt/svlt
+004046:     
+004047: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+004048:     let error = await serviceCatalogError { try await task.value }
+004049:                                                       ~~~~~^~~~~
+004050: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004051: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004052:                      ^
+004053: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004054:     #expect(try await service.catalogAuditHealth() == nil)
+004055:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004056: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004057:     #expect(try await service.catalogAuditHealth() == nil)
+004058:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004059: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004060: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004061:                      ^
+004062: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004063:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004064:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004065: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004066:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004067:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004068: 
+004069: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultWorkbenchCopyTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+004070:     cd /Users/runner/work/svlt/svlt
+004071:     
+004072: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:220:60: warning: expression of type 'CatalogWriteResult' is unused
+004073:     let error = await serviceCatalogError { try await task.value }
+004074:                                                       ~~~~~^~~~~
+004075: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX616_4_6expectfMf1_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004076: Testing.__checkValue(try await service.catalogAuditHealth() == nil,expression: .__fromSyntaxNode("try await service.catalogAuditHealth() == nil"),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004077:                      ^
+004078: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004079:     #expect(try await service.catalogAuditHealth() == nil)
+004080:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004081: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:617:5: note: in expansion of macro 'expect' here
+004082:     #expect(try await service.catalogAuditHealth() == nil)
+004083:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004084: @__swiftmacro_23VaultAuthorizationTests0039VaultAppServicesCatalogTestsswift_jrGEmfMX665_4_6expectfMf0_.swift:1:22: warning: no calls to throwing functions occur within 'try' expression
+004085: Testing.__checkValue(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED",expression: .__fromSyntaxNode(#"try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED""#),comments: [],isRequired: false,sourceLocation: Testing.SourceLocation.__here()).__expected()
+004086:                      ^
+004087: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004088:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004089:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004090: /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/VaultAppServicesCatalogTests.swift:666:5: note: in expansion of macro 'expect' here
+004091:     #expect(try await service.catalogAuditHealth() == "AUDIT_APPEND_FAILED")
+004092:     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+004093: 
+004094: SwiftDriverJobDiscovery normal arm64 Compiling SensitiveIndexSelectionStore.swift, SensitiveInformationDocumentStore+UIProbe.swift, SensitiveInformationDocumentStore.swift, SetupGuideView.swift, VaultDashboardView.swift, VaultLifecycleMonitor.swift, VaultUICopy.swift, VaultWorkbenchView.swift (in target 'AgentSecretVaultApp' from project 'SVLT')
+004095: 
+004096: SwiftCompile normal arm64 Compiling\ EncryptSelectionCoordinatorTests.swift,\ LegacyCompatibleRecordStoreTests.swift,\ LegacyVaultMigrationVerifierTests.swift,\ MasterKeyCoordinatorTests.swift,\ MenuBarLifecycleTests.swift,\ MenuBarPanelTests.swift,\ MenuBarPresentationTests.swift,\ RevealSessionCoordinatorTests.swift,\ RevealSessionStoreTests.swift,\ RevealSessionWindowLayoutTests.swift,\ ScopedMasterKeyCoordinatorTests.swift,\ SecretCatalogEntrySearchServiceTests.swift,\ SecretOperationApprovalSummaryTests.swift,\ SecretOperationCoordinatorTests.swift,\ SecretOperationPolicyEngineTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/EncryptSelectionCoordinatorTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/LegacyCompatibleRecordStoreTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/LegacyVaultMigrationVerifierTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/MasterKeyCoordinatorTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/MenuBarLifecycleTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/MenuBarPanelTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/MenuBarPresentationTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/RevealSessionCoordinatorTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/RevealSessionStoreTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/RevealSessionWindowLayoutTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/ScopedMasterKeyCoordinatorTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SecretCatalogEntrySearchServiceTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SecretOperationApprovalSummaryTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SecretOperationCoordinatorTests.swift /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/SecretOperationPolicyEngineTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+004097: 
+004098: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/EncryptSelectionCoordinatorTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+004099:     cd /Users/runner/work/svlt/svlt
+004100:     
+004101: 
+004102: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/LegacyCompatibleRecordStoreTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+004103:     cd /Users/runner/work/svlt/svlt
+004104:     
+004105: 
+004106: SwiftCompile normal arm64 /Users/runner/work/svlt/svlt/Tests/VaultAuthorizationTests/LegacyVaultMigrationVerifierTests.swift (in target 'VaultAuthorizationTests' from project 'SVLT')
+...
+004461:     builtin-RegisterExecutionPolicyException /Users/runner/work/_temp/svlt-policy-diag-derived/Build/Products/Debug/VaultAuthorizationTests.xctest
+004462: 
+004463: Touch /Users/runner/work/_temp/svlt-policy-diag-derived/Build/Products/Debug/VaultAuthorizationTests.xctest (in target 'VaultAuthorizationTests' from project 'SVLT')
+004464:     cd /Users/runner/work/svlt/svlt
+004465:     /usr/bin/touch -c /Users/runner/work/_temp/svlt-policy-diag-derived/Build/Products/Debug/VaultAuthorizationTests.xctest
+004466: 
+004467: Test Suite 'All tests' started at 2026-09-13 20:38:02.596.
+004468: Test Suite 'All tests' passed at 2026-09-13 20:38:02.597.
+004469: 	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.001) seconds
+004470: ◇ Test run started.
+004471: ↳ Testing Library Version: 1902
+004472: ↳ Target Platform: arm64e-apple-macos14.0
+004473: ◇ Test pendingCatalogWriteQueueConsumesOnlyTheCurrentRequestInFIFOOrder() started.
+004474: ✔ Test pendingCatalogWriteQueueConsumesOnlyTheCurrentRequestInFIFOOrder() passed after 0.001 seconds.
+004475: ◇ Test appIPCControllerPublishesEndpointMetadataWithoutSecrets() started.
+004476: ✔ Test appIPCControllerPublishesEndpointMetadataWithoutSecrets() passed after 0.001 seconds.
+004477: ◇ Test appControlPeerAuthenticatorPinsTheExpectedBundleAndTeam() started.
+004478: ✔ Test appControlPeerAuthenticatorPinsTheExpectedBundleAndTeam() passed after 0.005 seconds.
+004479: ◇ Test appIPCControllerHandlesAuthenticatedFrames() started.
+004480: ✔ Test appIPCControllerHandlesAuthenticatedFrames() passed after 0.003 seconds.
+004481: ◇ Test controllerRotatesCapabilityTokenAcrossRestart() started.
+004482: 2026-09-13 20:38:02.647637+0000 xctest[18080:50202] [IPC] IPC_AUTH_FAILED
+004483: ✔ Test controllerRotatesCapabilityTokenAcrossRestart() passed after 0.005 seconds.
+004484: ◇ Test controllerRejectsAnUnboundedClientConfiguration() started.
+004485: ✔ Test controllerRejectsAnUnboundedClientConfiguration() passed after 0.001 seconds.
+004486: ◇ Test appControlIPCUsesRealCatalogStoreAndHMACPathForEntryCreation() started.
+004487: ✔ Test appControlIPCUsesRealCatalogStoreAndHMACPathForEntryCreation() passed after 0.231 seconds.
+004488: ◇ Test lowProtectionKeyIsUnlockedOnceAndReused() started.
+004489: ✔ Test lowProtectionKeyIsUnlockedOnceAndReused() passed after 0.001 seconds.
+004490: ◇ Test clearingLowProtectionUnlockRelocksReadAccess() started.
+004491: ✔ Test clearingLowProtectionUnlockRelocksReadAccess() passed after 0.001 seconds.
+004492: ◇ Test highProtectionStillRequestsFreshDeviceAuthorization() started.
+004493: ✔ Test highProtectionStillRequestsFreshDeviceAuthorization() passed after 0.001 seconds.
+004494: ◇ Test protectionKeyStoreCachesOnlyTheCandidateSelectedByVaultVerification() started.
+004495: ✔ Test protectionKeyStoreCachesOnlyTheCandidateSelectedByVaultVerification() passed after 0.001 seconds.
+004496: ◇ Test protectionKeyStoreForwardsTheCurrentOperationAuthenticationContext() started.
+004497: ✔ Test protectionKeyStoreForwardsTheCurrentOperationAuthenticationContext() passed after 0.028 seconds.
+...
+004510: ◇ Test auditHealthStorePersistsStickyGapSuccessSequenceAndMaintenanceCadence() started.
+004511: ✔ Test auditHealthStorePersistsStickyGapSuccessSequenceAndMaintenanceCadence() passed after 0.007 seconds.
+004512: ◇ Test auditHealthStoreLoadsLegacySchemaWithoutMaintenanceFields() started.
+004513: ✔ Test auditHealthStoreLoadsLegacySchemaWithoutMaintenanceFields() passed after 0.001 seconds.
+004514: ◇ Test auditHealthStoreRejectsUnknownSchema() started.
+004515: ✔ Test auditHealthStoreRejectsUnknownSchema() passed after 0.001 seconds.
+004516: ◇ Test auditIntegrityMaintenanceIsLowFrequencyAcrossCoordinatorRestart() started.
+004517: ✔ Test auditIntegrityMaintenanceIsLowFrequencyAcrossCoordinatorRestart() passed after 0.159 seconds.
+004518: ◇ Test auditIntegrityMaintenanceBacksOffAfterFailure() started.
+004519: 2026-09-13 20:38:03.094591+0000 xctest[18080:50198] [audit] AUDIT_INTEGRITY_SCAN_FAILED
+004520: 2026-09-13 20:38:03.275810+0000 xctest[18080:50198] [audit] AUDIT_INTEGRITY_SCAN_FAILED
+004521: ✔ Test auditIntegrityMaintenanceBacksOffAfterFailure() passed after 0.209 seconds.
+004522: ◇ Test defaultReadAuthorizationSurvivesTimeUntilExplicitInvalidation() started.
+004523: ✔ Test defaultReadAuthorizationSurvivesTimeUntilExplicitInvalidation() passed after 0.001 seconds.
+004524: ◇ Test credentialAuthorizationIsReusableUntilConfiguredTTL() started.
+004525: ✔ Test credentialAuthorizationIsReusableUntilConfiguredTTL() passed after 0.001 seconds.
+004526: ◇ Test externalSendAuthorizationIsBoundToDestination() started.
+004527: ✔ Test externalSendAuthorizationIsBoundToDestination() passed after 0.001 seconds.
+004528: ◇ Test deleteAuthorizationRemainsSingleUse() started.
+004529: ✔ Test deleteAuthorizationRemainsSingleUse() passed after 0.001 seconds.
+004530: ◇ Test databaseClassifierKeepsPersistentAndIdentityChangingSetStatementsFresh() started.
+004531: ✔ Test databaseClassifierKeepsPersistentAndIdentityChangingSetStatementsFresh() passed after 0.003 seconds.
+004532: ◇ Test databaseClassifierRejectsExecutableCommentsIntoFreshUnknownPath() started.
+004533: ✔ Test databaseClassifierRejectsExecutableCommentsIntoFreshUnknownPath() passed after 0.001 seconds.
+004534: ◇ Test databaseClassifierDoesNotTreatMySQLArithmeticAsDashDashComment() started.
+004535: ✔ Test databaseClassifierDoesNotTreatMySQLArithmeticAsDashDashComment() passed after 0.001 seconds.
+004536: ◇ Test databaseClassifierPreservesPostgreSQLHashJSONOperators() started.
+...
+004652: ◇ Test auditKeyStoreUsesNoUserPresenceProtection() started.
+004653: ✔ Test auditKeyStoreUsesNoUserPresenceProtection() passed after 0.001 seconds.
+004654: ◇ Test recoveryKeyStoreTreatsUnavailableLookupsAsMissingBeforeCreation() started.
+004655: ✔ Test recoveryKeyStoreTreatsUnavailableLookupsAsMissingBeforeCreation() passed after 0.001 seconds.
+004656: ◇ Test encryptSelectionSavesRecordBeforeReplacingSelection() started.
+004657: ✔ Test encryptSelectionSavesRecordBeforeReplacingSelection() passed after 0.001 seconds.
+004658: ◇ Test vaultAppServicesEncryptTextReturnsReferenceWithoutReplacingSelection() started.
+004659: ✔ Test vaultAppServicesEncryptTextReturnsReferenceWithoutReplacingSelection() passed after 0.008 seconds.
+004660: ◇ Test replacementFailureReturnsUnlinkedRecordWithoutRetryingReplacement() started.
+004661: ✔ Test replacementFailureReturnsUnlinkedRecordWithoutRetryingReplacement() passed after 0.001 seconds.
+004662: ◇ Test emptyPlaintextIsRejectedBeforeSavingOrReplacing() started.
+004663: ✔ Test emptyPlaintextIsRejectedBeforeSavingOrReplacing() passed after 0.001 seconds.
+004664: ◇ Test labelContainingPlaintextIsRejectedBeforeSavingOrReplacing() started.
+004665: ✔ Test labelContainingPlaintextIsRejectedBeforeSavingOrReplacing() passed after 0.001 seconds.
+004666: ◇ Test compatibleRecordStoreReadsLegacyRecordWhenNoIndexIsSelected() started.
+004667: ✔ Test compatibleRecordStoreReadsLegacyRecordWhenNoIndexIsSelected() passed after 0.004 seconds.
+004668: ◇ Test compatibleRecordStoreDecryptsLegacyRecordWhenNoIndexIsSelected() started.
+004669: ✔ Test compatibleRecordStoreDecryptsLegacyRecordWhenNoIndexIsSelected() passed after 0.002 seconds.
+004670: ◇ Test compatibleRecordStorePrefersSelectedIndexOverLegacyRecord() started.
+004671: ✔ Test compatibleRecordStorePrefersSelectedIndexOverLegacyRecord() passed after 0.008 seconds.
+004672: ◇ Test legacyMigrationVerifierAcceptsRecordsEncryptedWithTheCandidateKey() started.
+004673: ✔ Test legacyMigrationVerifierAcceptsRecordsEncryptedWithTheCandidateKey() passed after 0.002 seconds.
+004674: ◇ Test legacyMigrationVerifierRejectsTheWrongCandidateWithoutCreatingOutput() started.
+004675: ✔ Test legacyMigrationVerifierRejectsTheWrongCandidateWithoutCreatingOutput() passed after 0.003 seconds.
+004676: ◇ Test newVaultCreatesLocalAndRecoveryWrappedMasterKey() started.
+...
+004795: ✔ Test entrySearchFindsUserFacingSecretFieldLabelAndKeepsStableKeyFallback() passed after 0.001 seconds.
+004796: ◇ Test entrySearchStructuredFieldFilterUsesKeyAndUserFacingLabel() started.
+004797: ✔ Test entrySearchStructuredFieldFilterUsesKeyAndUserFacingLabel() passed after 0.004 seconds.
+004798: ◇ Test sameDestinationDoesNotMergeDifferentEntries() started.
+004799: ✔ Test sameDestinationDoesNotMergeDifferentEntries() passed after 0.001 seconds.
+004800: ◇ Test catalogBrowsingIncludesEmptyIndexesAndProjectsEntriesByIndex() started.
+004801: ✔ Test catalogBrowsingIncludesEmptyIndexesAndProjectsEntriesByIndex() passed after 0.001 seconds.
+004802: ◇ Test destructiveSSHBatchSummaryShowsTheActualCommandsAndHighestRequirement() started.
+004803: ✘ Test destructiveSSHBatchSummaryShowsTheActualCommandsAndHighestRequirement() recorded an issue at SecretOperationApprovalSummaryTests.swift:45:5: Expectation failed: (decision.authorizationRequirement → .reusableApproval) == .freshApprovalRequired
+004804: ✘ Test destructiveSSHBatchSummaryShowsTheActualCommandsAndHighestRequirement() recorded an issue at SecretOperationApprovalSummaryTests.swift:61:5: Expectation failed: (summary → "SVLT 请求本机审批：执行 SSH 操作；操作：SSH 批处理（4 条）：1. whoami；2. mkdir 「/share/test」；3. rm 「-rf」 「/share/test」；4. docker 「system」 「prune」；目标：192.168.2.240；凭据：NAS 凭据；风险：批处理最高风险：；SSH 命令匹配固定高危类别（ssh.fresh.filesystem-delete），每次都需要设备所有者重新认证后执行；语义判断（mainAgent）：目标 unclear，影响 unknown，可逆性 unknown，Secret unknown，建议 reusableAppr；批处理最高授权级别：可复用审批").contains("批处理最高授权级别：必须重新本机认证")
+004805: ✘ Test destructiveSSHBatchSummaryShowsTheActualCommandsAndHighestRequirement() failed after 0.061 seconds with 2 issues.
+004806: ◇ Test sshBatchSummaryShowsEveryCommandAndArgumentInFull() started.
+004807: ✔ Test sshBatchSummaryShowsEveryCommandAndArgumentInFull() passed after 0.002 seconds.
+004808: ◇ Test sshBatchSummaryNeverIncludesCredentialLabelsOrReferencesFromArguments() started.
+004809: ✔ Test sshBatchSummaryNeverIncludesCredentialLabelsOrReferencesFromArguments() passed after 0.003 seconds.
+004810: ◇ Test sshHostKeyPinSummaryShowsOwnerReviewMaterialWithoutSecretReference() started.
+004811: ✔ Test sshHostKeyPinSummaryShowsOwnerReviewMaterialWithoutSecretReference() passed after 0.003 seconds.
+004812: ◇ Test operationLifecycleIsPrincipalScopedAtServiceBoundary() started.
+004813: ✔ Test operationLifecycleIsPrincipalScopedAtServiceBoundary() passed after 0.001 seconds.
+004814: ◇ Test cancellingRunningOperationProducesOutcomeUnknown() started.
+004815: ✔ Test cancellingRunningOperationProducesOutcomeUnknown() passed after 0.001 seconds.
+004816: ◇ Test cancellingQueuedOrApprovalOperationIsDefinitive() started.
+004817: ✔ Test cancellingQueuedOrApprovalOperationIsDefinitive() passed after 0.009 seconds.
+004818: ◇ Test approvalPendingRemainsTrueUntilEveryOverlappingApprovalFinishes() started.
+004819: ✔ Test approvalPendingRemainsTrueUntilEveryOverlappingApprovalFinishes() passed after 0.001 seconds.
+004820: ◇ Test executionApprovalFlightJoinIsAtomicPerScope() started.
+...
+004856: ◇ Test dynamicOrUnknownDatabaseClassificationCanStillUseSemanticDecision() started.
+004857: ✔ Test dynamicOrUnknownDatabaseClassificationCanStillUseSemanticDecision() passed after 0.001 seconds.
+004858: ◇ Test sftpDeleteOverwriteAndWriteAreSemanticSignalsNotHardFloors() started.
+004859: ✔ Test sftpDeleteOverwriteAndWriteAreSemanticSignalsNotHardFloors() passed after 0.001 seconds.
+004860: ◇ Test ftpPlaintextCredentialTransportRemainsANonDowngradableHardFloor() started.
+004861: ✔ Test ftpPlaintextCredentialTransportRemainsANonDowngradableHardFloor() passed after 0.001 seconds.
+004862: ◇ Test arbitraryLocalProcessSecretReleaseRemainsANonDowngradableHardFloor() started.
+004863: ✔ Test arbitraryLocalProcessSecretReleaseRemainsANonDowngradableHardFloor() passed after 0.001 seconds.
+004864: ◇ Test technicalFailuresCannotBeOverriddenBySemanticAssessment() started.
+004865: ✔ Test technicalFailuresCannotBeOverriddenBySemanticAssessment() passed after 0.001 seconds.
+004866: ◇ Test identityAndDescriptorMismatchesCannotBeOverriddenBySemantics() started.
+004867: ✘ Test identityAndDescriptorMismatchesCannotBeOverriddenBySemantics() recorded an issue at SecretOperationPolicyEngineTests.swift:545:5: Expectation failed: (decision.policyRuleID → "http.destination-mismatch+intent-first") == "http.destination-mismatch"
+004868: ✘ Test identityAndDescriptorMismatchesCannotBeOverriddenBySemantics() failed after 0.001 seconds with 1 issue.
+004869: ◇ Test duplicateAndMissingSecretMetadataRemainTechnicalFailures() started.
+004870: ✘ Test duplicateAndMissingSecretMetadataRemainTechnicalFailures() recorded an issue at SecretOperationPolicyEngineTests.swift:570:5: Expectation failed: (duplicate.policyRuleID → "secret-reference.duplicate+intent-first") == "secret-reference.duplicate"
+004871: ✘ Test duplicateAndMissingSecretMetadataRemainTechnicalFailures() recorded an issue at SecretOperationPolicyEngineTests.swift:585:5: Expectation failed: (missing.policyRuleID → "secret-metadata.missing+intent-first") == "secret-metadata.missing"
+004872: ✘ Test duplicateAndMissingSecretMetadataRemainTechnicalFailures() failed after 0.001 seconds with 2 issues.
+004873: ◇ Test deterministicSSHClassifierStillDetectsConcreteRiskFamilies() started.
+004874: ✔ Test deterministicSSHClassifierStillDetectsConcreteRiskFamilies() passed after 0.001 seconds.
+004875: ◇ Test ordinarySSHClassifierInputsRemainOrdinary() started.
+004876: ✔ Test ordinarySSHClassifierInputsRemainOrdinary() passed after 0.003 seconds.
+004877: ◇ Test databaseClassifierStillDescribesConcreteSQLRiskWithoutOwningFinalSemanticDecision() started.
+004878: ✔ Test databaseClassifierStillDescribesConcreteSQLRiskWithoutOwningFinalSemanticDecision() passed after 0.001 seconds.
+004879: ◇ Test structuredSSHBatchLimitsRemainTechnicalBoundaries() started.
+004880: ✔ Test structuredSSHBatchLimitsRemainTechnicalBoundaries() passed after 0.002 seconds.
+004881: ◇ Test operationHashIgnoresSemanticAssessmentWordingAndRecommendation() started.
+004882: ✔ Test operationHashIgnoresSemanticAssessmentWordingAndRecommendation() passed after 0.001 seconds.
+004883: ◇ Test metadataOnlyOperationsRemainSilentWithoutSemanticAuthorization() started.
+004884: ✔ Test metadataOnlyOperationsRemainSilentWithoutSemanticAuthorization() passed after 0.001 seconds.
+004885: ◇ Test freshRuleRegistriesStayBounded() started.
+004886: ✔ Test freshRuleRegistriesStayBounded() passed after 0.001 seconds.
+004887: ◇ Test longRunningOperationDoesNotBlockLaterOperation() started.
+...
+004903: ◇ Test firstOperationForwardsItsOwnerApprovalContextToTheMasterKeyLookup() started.
+004904: ✔ Test firstOperationForwardsItsOwnerApprovalContextToTheMasterKeyLookup() passed after 0.035 seconds.
+004905: ◇ Test dangerousSecretOperationWaitsForApprovalAndResumesSameRequest() started.
+004906: ✔ Test dangerousSecretOperationWaitsForApprovalAndResumesSameRequest() passed after 0.018 seconds.
+004907: ◇ Test executionApprovalExplainsItsScopedReuseWindow() started.
+004908: ✔ Test executionApprovalExplainsItsScopedReuseWindow() passed after 0.013 seconds.
+004909: ◇ Test exportReusesScopedAuthorizationAndFreshKeyAcrossLeafFiles() started.
+004910: ✔ Test exportReusesScopedAuthorizationAndFreshKeyAcrossLeafFiles() passed after 0.021 seconds.
+004911: ◇ Test failedScopedOperationKeepsOwnerAuthorizationUntilExpiry() started.
+004912: ✔ Test failedScopedOperationKeepsOwnerAuthorizationUntilExpiry() passed after 0.012 seconds.
+004913: ◇ Test eligibleSecretOperationsReuseExecutionAuthorizationUntilExpiry() started.
+004914: ✔ Test eligibleSecretOperationsReuseExecutionAuthorizationUntilExpiry() passed after 0.013 seconds.
+004915: ◇ Test destructiveSSHRequiresFreshApprovalWithoutExtendingReusableLease() started.
+004916: ✘ Test destructiveSSHRequiresFreshApprovalWithoutExtendingReusableLease() recorded an issue at SecretOperationServiceTests.swift:355:5: Expectation failed: await fixture.approver.count == 2
+004917: ✘ Test destructiveSSHRequiresFreshApprovalWithoutExtendingReusableLease() failed after 0.016 seconds with 1 issue.
+004918: ◇ Test insecureHTTPRequiresAFreshApprovalForEachOperationWithoutALease() started.
+004919: ✔ Test insecureHTTPRequiresAFreshApprovalForEachOperationWithoutALease() passed after 0.007 seconds.
+004920: ◇ Test publicHTTPSSecretSendUsesFreshOwnerApprovalInsteadOfPolicyDenial() started.
+004921: ✔ Test publicHTTPSSecretSendUsesFreshOwnerApprovalInsteadOfPolicyDenial() passed after 0.008 seconds.
+004922: ◇ Test agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() started.
+004923: ✔ Test agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() passed after 0.012 seconds.
+004924: ◇ Test agentApprovalHintOnHostnameBehavesAsAnOrdinaryWindowOperation() started.
+004925: ✔ Test agentApprovalHintOnHostnameBehavesAsAnOrdinaryWindowOperation() passed after 0.006 seconds.
+004926: ◇ Test containerLifecycleWritesReuseTheWindowAndRemovalStaysFresh() started.
+004927: ✘ Test containerLifecycleWritesReuseTheWindowAndRemovalStaysFresh() recorded an issue at SecretOperationServiceTests.swift:547:5: Expectation failed: await fixture.approver.count == 2
+004928: ✘ Test containerLifecycleWritesReuseTheWindowAndRemovalStaysFresh() failed after 0.008 seconds with 1 issue.
+004929: ◇ Test concurrentEligibleOperationsShareOneApproval() started.
+004930: ✔ Test concurrentEligibleOperationsShareOneApproval() passed after 0.250 seconds.
+004931: ◇ Test concurrentOperationsWithDisabledExecutionWindowDoNotShareApproval() started.
+004932: ✔ Test concurrentOperationsWithDisabledExecutionWindowDoNotShareApproval() passed after 0.133 seconds.
+004933: ◇ Test executionAuthorizationIsBoundToTheCallingAgentPrincipal() started.
+004934: ✔ Test executionAuthorizationIsBoundToTheCallingAgentPrincipal() passed after 0.012 seconds.
+004935: ◇ Test unavailableExecutorIsRejectedBeforeApprovalAndCannotPrimeLease() started.
+004936: ✔ Test unavailableExecutorIsRejectedBeforeApprovalAndCannotPrimeLease() passed after 0.017 seconds.
+004937: ◇ Test legacyUnavailableExecutorStatusIsNotAuditedAsCompleted() started.
+004938: ✔ Test legacyUnavailableExecutorStatusIsNotAuditedAsCompleted() passed after 0.021 seconds.
+004939: ◇ Test securityInvalidationCancelsPendingExecutionApproval() started.
+004940: ✔ Test securityInvalidationCancelsPendingExecutionApproval() passed after 0.015 seconds.
+004941: ◇ Test unboundPublicDestinationTakesFreshApprovalInsteadOfDenial() started.
+004942: ✔ Test unboundPublicDestinationTakesFreshApprovalInsteadOfDenial() passed after 0.029 seconds.
+004943: ◇ Test policyMismatchAfterApprovalStillExecutesUnderTheOriginalApproval() started.
+...
+004978: ✔ Test clipboardClearOnlyClearsAppOwnedCopy() passed after 0.001 seconds.
+004979: ◇ Test clipboardClearDoesNotEraseExternallyChangedClipboard() started.
+004980: ✔ Test clipboardClearDoesNotEraseExternallyChangedClipboard() passed after 0.001 seconds.
+004981: ◇ Test catalogStoreCreatesAnEmptyAcceptedV3TemplateWithoutFakeData() started.
+004982: ✔ Test catalogStoreCreatesAnEmptyAcceptedV3TemplateWithoutFakeData() passed after 0.019 seconds.
+004983: ◇ Test catalogStoreNeverOverwritesAnExistingTemplateTarget() started.
+004984: ✔ Test catalogStoreNeverOverwritesAnExistingTemplateTarget() passed after 0.001 seconds.
+004985: ◇ Test catalogStoreRollsBackNormalMutationWhenIntegrityCommitFails() started.
+004986: 2026-09-13 20:38:05.535477+0000 xctest[18080:50202] SVLT Catalog IO failure: stage=document-replace errno=-1 symbol=UNKNOWN operation=catalog-mutation
+004987: ✔ Test catalogStoreRollsBackNormalMutationWhenIntegrityCommitFails() passed after 0.038 seconds.
+004988: ◇ Test catalogStoreNeverOverwritesAnExistingManagedV3TemplateTarget() started.
+004989: ✔ Test catalogStoreNeverOverwritesAnExistingManagedV3TemplateTarget() passed after 0.014 seconds.
+004990: ◇ Test catalogStoreTemplateCreationRollsBackBothFilesOnIntegrityFailure() started.
+004991: 2026-09-13 20:38:05.565547+0000 xctest[18080:50237] SVLT Catalog IO failure: stage=document-replace errno=-1 symbol=UNKNOWN operation=catalog-mutation
+004992: ✔ Test catalogStoreTemplateCreationRollsBackBothFilesOnIntegrityFailure() passed after 0.012 seconds.
+004993: ◇ Test catalogStoreWritesCanonicalDocumentAndIntegritySidecar() started.
+004994: ✔ Test catalogStoreWritesCanonicalDocumentAndIntegritySidecar() passed after 0.068 seconds.
+004995: ◇ Test catalogStoreRepairsLineEndingFormatWithoutChangingAcceptedSemantics() started.
+004996: ✔ Test catalogStoreRepairsLineEndingFormatWithoutChangingAcceptedSemantics() passed after 0.084 seconds.
+004997: ◇ Test catalogStoreRepairsKnownPreviousPolicyBlockWithoutChangingAcceptedSemantics() started.
+004998: ✔ Test catalogStoreRepairsKnownPreviousPolicyBlockWithoutChangingAcceptedSemantics() passed after 0.080 seconds.
+004999: ◇ Test catalogStoreRepairsTheExactPR21ReleasedPolicyWithoutChangingRevision() started.
+005000: ✔ Test catalogStoreRepairsTheExactPR21ReleasedPolicyWithoutChangingRevision() passed after 0.080 seconds.
+005001: ◇ Test catalogStoreRejectsFormatRepairWhenCurrentRawChangesAfterPlanning() started.
+005002: ✔ Test catalogStoreRejectsFormatRepairWhenCurrentRawChangesAfterPlanning() passed after 0.160 seconds.
+005003: ◇ Test catalogStoreCreatesEntryWithNotesAndNoFields() started.
+005004: ✔ Test catalogStoreCreatesEntryWithNotesAndNoFields() passed after 0.051 seconds.
+005005: ◇ Test catalogStoreCreatesEntryInTheTargetIndexBeforeLaterIndexEntries() started.
+005006: ✔ Test catalogStoreCreatesEntryInTheTargetIndexBeforeLaterIndexEntries() passed after 0.105 seconds.
+005007: ◇ Test catalogStoreScopesDefaultIntegrityPerDocumentAndIgnoresAStaleLegacySidecar() started.
+005008: ✔ Test catalogStoreScopesDefaultIntegrityPerDocumentAndIgnoresAStaleLegacySidecar() passed after 0.028 seconds.
+005009: ◇ Test catalogStoreReconcilesSafeExternalMarkdownWithoutTreatingRawHashAsSemanticState() started.
+005010: ✔ Test catalogStoreReconcilesSafeExternalMarkdownWithoutTreatingRawHashAsSemanticState() passed after 0.045 seconds.
+005011: ◇ Test catalogStoreAcceptsHandCreatedV3WithoutReferencesAndKeepsMarkdownBytes() started.
+005012: ✔ Test catalogStoreAcceptsHandCreatedV3WithoutReferencesAndKeepsMarkdownBytes() passed after 0.007 seconds.
+005013: ◇ Test catalogStoreRequiresExplicitAdoptionForHandCreatedV3WithSecretReferences() started.
+005014: ✔ Test catalogStoreRequiresExplicitAdoptionForHandCreatedV3WithSecretReferences() passed after 0.017 seconds.
+005015: ◇ Test catalogStoreRejectsAnOpaqueReferenceInjectedIntoOrdinaryMetadata() started.
+005016: 2026-09-13 20:38:06.350966+0000 xctest[18080:50237] [CatalogParse] SVLT Catalog parse failure: reason=secretReferenceInMetadata
+005017: 2026-09-13 20:38:06.354415+0000 xctest[18080:50237] [CatalogParse] SVLT Catalog parse failure: reason=secretReferenceInMetadata
+005018: ✔ Test catalogStoreRejectsAnOpaqueReferenceInjectedIntoOrdinaryMetadata() passed after 0.050 seconds.
+005019: ◇ Test catalogStorePausesHighRiskExternalSecretChangesUntilExplicitAcceptance() started.
+005020: 2026-09-13 20:38:06.438051+0000 xctest[18080:50210] [CatalogParse] SVLT Catalog parse failure: reason=secretFieldContainsValue
+005021: 2026-09-13 20:38:06.441832+0000 xctest[18080:50210] [CatalogParse] SVLT Catalog parse failure: reason=secretFieldContainsValue
+005022: ✔ Test catalogStorePausesHighRiskExternalSecretChangesUntilExplicitAcceptance() passed after 0.087 seconds.
+005023: ◇ Test catalogStoreRejectsApprovalWhenThePendingFileChangesAfterApprovalSnapshot() started.
+005024: ✔ Test catalogStoreRejectsApprovalWhenThePendingFileChangesAfterApprovalSnapshot() passed after 0.042 seconds.
+005025: ◇ Test catalogStoreAppliesMixedBatchAsOneRevisionAndOneMarkdownWrite() started.
+005026: ✔ Test catalogStoreAppliesMixedBatchAsOneRevisionAndOneMarkdownWrite() passed after 0.133 seconds.
+005027: ◇ Test catalogStoreSerializesConcurrentMutationsAcrossStoreInstances() started.
+005028: ✔ Test catalogStoreSerializesConcurrentMutationsAcrossStoreInstances() passed after 0.102 seconds.
+005029: ◇ Test catalogStoreRejectsUnsupportedLegacyDocumentWithoutChangingIt() started.
+005030: ✔ Test catalogStoreRejectsUnsupportedLegacyDocumentWithoutChangingIt() passed after 0.002 seconds.
+005031: ◇ Test catalogStoreAdoptsValidExternalV2WithBackupAndRevisionOne() started.
+005032: ✔ Test catalogStoreAdoptsValidExternalV2WithBackupAndRevisionOne() passed after 0.013 seconds.
+005033: ◇ Test catalogStoreMigratesManagedV2WithThePR13IntegritySidecar() started.
+005034: ✔ Test catalogStoreMigratesManagedV2WithThePR13IntegritySidecar() passed after 0.016 seconds.
+005035: ◇ Test catalogStoreRejectsLegacyRevisionOverflowWithoutChangingEitherFile() started.
+005036: ✔ Test catalogStoreRejectsLegacyRevisionOverflowWithoutChangingEitherFile() passed after 0.004 seconds.
+005037: ◇ Test catalogStoreFollowsAnObsidianRenameWithTheAuthenticatedV3Sidecar() started.
+005038: ✔ Test catalogStoreFollowsAnObsidianRenameWithTheAuthenticatedV3Sidecar() passed after 0.034 seconds.
+005039: ◇ Test catalogStoreMigratesTheRealV2LegacyPolicyCatalogOutOfBusinessData() started.
+005040: ✔ Test catalogStoreMigratesTheRealV2LegacyPolicyCatalogOutOfBusinessData() passed after 0.052 seconds.
+005041: ◇ Test catalogStoreFailsClosedForAnAmbiguousPolicyShapedV2Index() started.
+005042: ✔ Test catalogStoreFailsClosedForAnAmbiguousPolicyShapedV2Index() passed after 0.012 seconds.
+005043: ◇ Test catalogStoreRollsBackV2MigrationWhenNewSidecarCreationFails() started.
+005044: 2026-09-13 20:38:06.892523+0000 xctest[18080:50236] SVLT Catalog IO failure: stage=document-replace errno=-1 symbol=UNKNOWN operation=catalog-mutation
+005045: ✔ Test catalogStoreRollsBackV2MigrationWhenNewSidecarCreationFails() passed after 0.043 seconds.
+005046: ◇ Test catalogStoreRollsBackV2MigrationAndPreservesThePR13SidecarWhenCommitFails() started.
+005047: 2026-09-13 20:38:06.919878+0000 xctest[18080:50202] SVLT Catalog IO failure: stage=document-replace errno=-1 symbol=UNKNOWN operation=catalog-mutation
+005048: ✔ Test catalogStoreRollsBackV2MigrationAndPreservesThePR13SidecarWhenCommitFails() passed after 0.031 seconds.
+005049: ◇ Test catalogStoreRecoversAnInterruptedV2MigrationBeforeServingTheDocument() started.
+005050: ✔ Test catalogStoreRecoversAnInterruptedV2MigrationBeforeServingTheDocument() passed after 0.007 seconds.
+005051: ◇ Test catalogStoreDoesNotAdoptMalformedExternalV2OrChangeTheFile() started.
+005052: ✔ Test catalogStoreDoesNotAdoptMalformedExternalV2OrChangeTheFile() passed after 0.001 seconds.
+005053: ◇ Test catalogAdoptionKeepsPolicyBlockOutsideCatalogModelAndPreservesReferences() started.
+005054: ✔ Test catalogAdoptionKeepsPolicyBlockOutsideCatalogModelAndPreservesReferences() passed after 0.023 seconds.
+005055: ◇ Test catalogStoreRejectsTamperedCleanupRecordBeforeItCanBecomeDeletionAuthority() started.
+005056: ✔ Test catalogStoreRejectsTamperedCleanupRecordBeforeItCanBecomeDeletionAuthority() passed after 0.010 seconds.
+005057: ◇ Test catalogStoreDoesNotSilentlyAcceptASecretReferenceInUnmanagedMarkdown() started.
+005058: 2026-09-13 20:38:06.993594+0000 xctest[18080:50210] [CatalogParse] SVLT Catalog parse failure: reason=secretReferenceInMetadata
+005059: ✔ Test catalogStoreDoesNotSilentlyAcceptASecretReferenceInUnmanagedMarkdown() passed after 0.013 seconds.
+005060: ◇ Test appEntryCreationUsesOneInitialFieldPerPreset() started.
+005061: ✔ Test appEntryCreationUsesOneInitialFieldPerPreset() passed after 0.001 seconds.
+005062: ◇ Test existingEntryEditOpensDetailAndKeepsEditingSeparate() started.
+005063: ✔ Test existingEntryEditOpensDetailAndKeepsEditingSeparate() passed after 0.104 seconds.
+005064: ◇ Test catalogEditorUsesDirectCardsAndEntryBatchEditing() started.
+005065: ✔ Test catalogEditorUsesDirectCardsAndEntryBatchEditing() passed after 0.141 seconds.
+005066: ◇ Test packagedSensitiveCatalogTemplateIsValidAndContainsNoSecretReferences() started.
+005067: ✔ Test packagedSensitiveCatalogTemplateIsValidAndContainsNoSecretReferences() passed after 0.007 seconds.
+005068: ◇ Test sensitiveInformationDocumentNormalizesLegacyReferencePresentationAndListsReferences() started.
+005069: ✔ Test sensitiveInformationDocumentNormalizesLegacyReferencePresentationAndListsReferences() passed after 0.004 seconds.
+005070: ◇ Test legacySensitiveInformationStoreRefusesCatalogV2Parsing() started.
+005071: ✔ Test legacySensitiveInformationStoreRefusesCatalogV2Parsing() passed after 0.001 seconds.
+005072: ◇ Test legacySensitiveInformationStoreCannotWriteManagedCatalogV2() started.
+005073: ✔ Test legacySensitiveInformationStoreCannotWriteManagedCatalogV2() passed after 0.001 seconds.
+...
+005090: ◇ Test rejectedAgentWriteRequestDoesNotGrantAccess() started.
+005091: ✔ Test rejectedAgentWriteRequestDoesNotGrantAccess() passed after 0.060 seconds.
+005092: ◇ Test appCanDiscoverPendingAgentWriteRequestsAfterColdStart() started.
+005093: ✔ Test appCanDiscoverPendingAgentWriteRequestsAfterColdStart() passed after 0.524 seconds.
+005094: ◇ Test agentCatalogValidationLoadsTheSharedSelectedDocument() started.
+005095: ✔ Test agentCatalogValidationLoadsTheSharedSelectedDocument() passed after 0.087 seconds.
+005096: ◇ Test agentCatalogCreateIndexIsVisibleThroughAuthoritativeRecentAudit() started.
+005097: ✔ Test agentCatalogCreateIndexIsVisibleThroughAuthoritativeRecentAudit() passed after 0.469 seconds.
+005098: ◇ Test failedAuditAppendExposesSafeHealthWithoutFailingOperation() started.
+005099: 2026-09-13 20:38:09.138713+0000 xctest[18080:50236] [audit] AUDIT_APPEND_FAILED
+005100: 2026-09-13 20:38:09.157514+0000 xctest[18080:50236] [audit] AUDIT_APPEND_FAILED
+005101: 2026-09-13 20:38:09.158745+0000 xctest[18080:50236] [audit] AUDIT_APPEND_FAILED
+005102: 2026-09-13 20:38:09.651970+0000 xctest[18080:50236] [audit] AUDIT_APPEND_FAILED
+005103: ✔ Test failedAuditAppendExposesSafeHealthWithoutFailingOperation() passed after 0.598 seconds.
+005104: ◇ Test appAuditProjectionKeepsHealthyEntriesWhenOneRecordCannotBeRead() started.
+005105: ✔ Test appAuditProjectionKeepsHealthyEntriesWhenOneRecordCannotBeRead() passed after 0.037 seconds.
+005106: ◇ Test agentSecureInputSessionIsAtomicAndUsesOneDeviceOwnerApproval() started.
+005107: ✔ Test agentSecureInputSessionIsAtomicAndUsesOneDeviceOwnerApproval() passed after 0.311 seconds.
+005108: ◇ Test secureInputTerminalReceiptsSurviveRestartAndExpireAsUnknown() started.
+005109: ✔ Test secureInputTerminalReceiptsSurviveRestartAndExpireAsUnknown() passed after 0.420 seconds.
+005110: ◇ Test secureInputReceiptLoaderKeepsNewestDuplicateWithoutTrapping() started.
+005111: ✔ Test secureInputReceiptLoaderKeepsNewestDuplicateWithoutTrapping() passed after 0.030 seconds.
+005112: ◇ Test agentSecureInputConvertsExistingCatalogValueWithoutDroppingIt() started.
+005113: ✔ Test agentSecureInputConvertsExistingCatalogValueWithoutDroppingIt() passed after 0.161 seconds.
+005114: ◇ Test agentSecureInputAuthorizesFinalReplaceSecretDiffAfterNewReferenceExists() started.
+005115: ✔ Test agentSecureInputAuthorizesFinalReplaceSecretDiffAfterNewReferenceExists() passed after 0.243 seconds.
+005116: ◇ Test concurrentSecureInputRequestsForSameEntryAreRevisionBound() started.
+005117: ✔ Test concurrentSecureInputRequestsForSameEntryAreRevisionBound() passed after 0.312 seconds.
+005118: ◇ Test staleGenericCatalogEditorCannotCommitWhileSecureInputIsPending() started.
+005119: ✔ Test staleGenericCatalogEditorCannotCommitWhileSecureInputIsPending() passed after 0.044 seconds.
+005120: ◇ Test cancellingSecureInputDuringAuthenticationPreventsLateCommit() started.
+005121: ✔ Test cancellingSecureInputDuringAuthenticationPreventsLateCommit() passed after 0.082 seconds.
+005122: ◇ Test invalidatingSecurityStateCancelsAwaitingSecureInput() started.
+005123: 2026-09-13 20:38:11.348006+0000 xctest[18080:50236] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005124: 2026-09-13 20:38:11.348253+0000 xctest[18080:50236] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005125: 2026-09-13 20:38:11.348362+0000 xctest[18080:50236] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005126: ✘ Test invalidatingSecurityStateCancelsAwaitingSecureInput() recorded an issue at VaultAppServicesCatalogTests.swift:1155:2: Caught error: .writeFailed
+005127: ✘ Test invalidatingSecurityStateCancelsAwaitingSecureInput() failed after 0.025 seconds with 1 issue.
+005128: ◇ Test appServiceUsesEntryCentricCatalogAndNeverReturnsPlaintext() started.
+005129: 2026-09-13 20:38:11.362240+0000 xctest[18080:50198] SVLT Catalog IO failure: stage=document-directory-fsync errno=60 symbol=ETIMEDOUT operation=catalog-mutation
+005130: 2026-09-13 20:38:11.362353+0000 xctest[18080:50198] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005131: ✘ Test appServiceUsesEntryCentricCatalogAndNeverReturnsPlaintext() recorded an issue at VaultAppServicesCatalogTests.swift:1228:2: Caught error: .writeFailed
+005132: ✘ Test appServiceUsesEntryCentricCatalogAndNeverReturnsPlaintext() failed after 0.003 seconds with 1 issue.
+005133: ◇ Test appServiceAllowsSafeCatalogCreationWithoutStructureLease() started.
+005134: 2026-09-13 20:38:11.400980+0000 xctest[18080:50198] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005135: 2026-09-13 20:38:11.401090+0000 xctest[18080:50198] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005136: 2026-09-13 20:38:11.401134+0000 xctest[18080:50198] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005137: ✘ Test appServiceAllowsSafeCatalogCreationWithoutStructureLease() recorded an issue at VaultAppServicesCatalogTests.swift:1245:2: Caught error: .writeFailed
+005138: ✘ Test appServiceAllowsSafeCatalogCreationWithoutStructureLease() failed after 0.038 seconds with 1 issue.
+005139: ◇ Test appServiceRejectsManualAgentWriteEnable() started.
+005140: ✔ Test appServiceRejectsManualAgentWriteEnable() passed after 0.059 seconds.
+005141: ◇ Test appServiceKeepsManualEnableFailClosedAndRevokeAvailable() started.
+005142: ✔ Test appServiceKeepsManualEnableFailClosedAndRevokeAvailable() passed after 0.032 seconds.
+005143: ◇ Test agentSafeCreateEntryWritesMetadataAndEmptySecretPlaceholderWithoutLease() started.
+005144: ✔ Test agentSafeCreateEntryWritesMetadataAndEmptySecretPlaceholderWithoutLease() passed after 0.187 seconds.
+005145: ◇ Test appServiceDoesNotLetDraftSmuggleExistingSecretBinding() started.
+005146: ✔ Test appServiceDoesNotLetDraftSmuggleExistingSecretBinding() passed after 0.019 seconds.
+005147: ◇ Test appServiceDoesNotLetAgentBindExistingSecretWithoutApproval() started.
+005148: ✔ Test appServiceDoesNotLetAgentBindExistingSecretWithoutApproval() passed after 0.017 seconds.
+005149: ◇ Test appServiceRejectsV3AdoptionWhenSecretReferenceDoesNotExist() started.
+005150: ✔ Test appServiceRejectsV3AdoptionWhenSecretReferenceDoesNotExist() passed after 0.013 seconds.
+005151: ◇ Test appServiceRequiresLocalApprovalForExistingSecretDuringV3Adoption() started.
+005152: ✔ Test appServiceRequiresLocalApprovalForExistingSecretDuringV3Adoption() passed after 0.025 seconds.
+005153: ◇ Test appControlSecretEndpointChangeRequiresAndUsesLocalApproval() started.
+005154: 2026-09-13 20:38:11.774854+0000 xctest[18080:50210] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005155: 2026-09-13 20:38:11.774938+0000 xctest[18080:50210] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005156: 2026-09-13 20:38:11.774992+0000 xctest[18080:50210] SVLT Catalog IO failure: stage=document-read errno=60 symbol=ETIMEDOUT operation=catalog-read
+005157: ✘ Test appControlSecretEndpointChangeRequiresAndUsesLocalApproval() recorded an issue at VaultAppServicesCatalogTests.swift:1476:2: Caught error: .writeFailed
+005158: ✘ Test appControlSecretEndpointChangeRequiresAndUsesLocalApproval() failed after 0.014 seconds with 1 issue.
+005159: ◇ Test appServiceKeepsMultipleSecureFieldsIndependentAndNeverStoresPlaintext() started.
+005160: ✔ Test appServiceKeepsMultipleSecureFieldsIndependentAndNeverStoresPlaintext() passed after 0.168 seconds.
+005161: ◇ Test appServiceCommitsNewSecretFieldWithEntryMetadataInOneCall() started.
+005162: ✔ Test appServiceCommitsNewSecretFieldWithEntryMetadataInOneCall() passed after 0.086 seconds.
+005163: ◇ Test appServiceRollsBackNewSecretRecordWhenEntryCommitConflicts() started.
+005164: ✔ Test appServiceRollsBackNewSecretRecordWhenEntryCommitConflicts() passed after 0.084 seconds.
+005165: ◇ Test appServiceReportsCleanupRequiredAndPersistsOpaqueReferenceWhenCompensationFails() started.
+005166: ✔ Test appServiceReportsCleanupRequiredAndPersistsOpaqueReferenceWhenCompensationFails() passed after 0.076 seconds.
+005167: ◇ Test appServiceCompensatesEverySecretCreatedBeforeLaterCreationFails() started.
+005168: ✔ Test appServiceCompensatesEverySecretCreatedBeforeLaterCreationFails() passed after 0.038 seconds.
+005169: ◇ Test appServiceReplacementUsesApprovalAndDoesNotDeleteThePreviousRecord() started.
+005170: ✔ Test appServiceReplacementUsesApprovalAndDoesNotDeleteThePreviousRecord() passed after 0.093 seconds.
+005171: ◇ Test appServiceEmptyReplacementInputLeavesExistingSecretUntouched() started.
+005172: ✔ Test appServiceEmptyReplacementInputLeavesExistingSecretUntouched() passed after 0.063 seconds.
+005173: ◇ Test appServiceReplacementFailureKeepsOldBindingAndPersistsNewOrphanID() started.
+005174: ✔ Test appServiceReplacementFailureKeepsOldBindingAndPersistsNewOrphanID() passed after 0.120 seconds.
+005175: ◇ Test appServiceReconciliationNeverDeletesAReferenceThatWasBoundAfterFailure() started.
+005176: ✔ Test appServiceReconciliationNeverDeletesAReferenceThatWasBoundAfterFailure() passed after 0.050 seconds.
+005177: ◇ Test appServiceReconciliationDeletesOnlyStillOrphanedCleanupReferences() started.
+005178: ✔ Test appServiceReconciliationDeletesOnlyStillOrphanedCleanupReferences() passed after 0.053 seconds.
+005179: ◇ Test vaultAppServicesScanOrphansComparesMarkdownReferencesWithStoredRecords() started.
+005180: ✔ Test vaultAppServicesScanOrphansComparesMarkdownReferencesWithStoredRecords() passed after 0.012 seconds.
+005181: ◇ Test vaultAppServicesScanOrphansThrowsWhenRecordListingIsUnavailable() started.
+005182: ✔ Test vaultAppServicesScanOrphansThrowsWhenRecordListingIsUnavailable() passed after 0.001 seconds.
+005183: ◇ Test vaultAppServicesTracksPluginActivityInStatus() started.
+005184: ✔ Test vaultAppServicesTracksPluginActivityInStatus() passed after 0.001 seconds.
+005185: ◇ Test vaultAppServicesListsSavedSecretReferencesWithoutDecryptingPlaintext() started.
+005186: ✔ Test vaultAppServicesListsSavedSecretReferencesWithoutDecryptingPlaintext() passed after 0.005 seconds.
+005187: ◇ Test daemonConfigurationKeepsExecutionAuthorizationTTLIndependent() started.
+005188: ✔ Test daemonConfigurationKeepsExecutionAuthorizationTTLIndependent() passed after 0.001 seconds.
+005189: ◇ Test daemonConfigurationCarriesOnlyAppOwnedHTTPProjectionProfiles() started.
+005190: ✔ Test daemonConfigurationCarriesOnlyAppOwnedHTTPProjectionProfiles() passed after 0.001 seconds.
+005191: ◇ Test daemonStartsWithIPCAvailableButVaultLockedWithoutEagerAuthentication() started.
+...
+005235: ◇ Test workbenchUsesStableRenderingForBetaMacOSCompatibility() started.
+005236: ✔ Test workbenchUsesStableRenderingForBetaMacOSCompatibility() passed after 0.010 seconds.
+005237: ◇ Test agentAuthenticationUsesSingleDeviceOwnerConsumerWithoutApprovalBanner() started.
+005238: ✔ Test agentAuthenticationUsesSingleDeviceOwnerConsumerWithoutApprovalBanner() passed after 0.018 seconds.
+005239: ◇ Test agentSecureInputUsesLocalSheetAndScrollOwners() started.
+005240: ✔ Test agentSecureInputUsesLocalSheetAndScrollOwners() passed after 0.025 seconds.
+005241: ◇ Test numericTelemetryCompatibilityDoesNotInstallGlobalRuntimeHooks() started.
+005242: ✔ Test numericTelemetryCompatibilityDoesNotInstallGlobalRuntimeHooks() passed after 0.001 seconds.
+005243: ✘ Test run with 366 tests in 0 suites failed after 10.302 seconds with 11 issues.
+005244: 2026-09-13 20:38:18.011 xcodebuild[14225:39771] [MT] IDETestOperationsObserverDebug: 17.196 elapsed -- Testing started completed.
+005245: 2026-09-13 20:38:18.011 xcodebuild[14225:39771] [MT] IDETestOperationsObserverDebug: 0.000 sec, +0.000 sec -- start
+005246: 2026-09-13 20:38:18.011 xcodebuild[14225:39771] [MT] IDETestOperationsObserverDebug: 17.196 sec, +17.196 sec -- end
+005247: 
+005248: Test session results, code coverage, and logs:
+005249: 	/Users/runner/work/_temp/svlt-policy-diag-derived/Logs/Test/Test-AgentSecretVault-2026.09.13_20-36-10-+0000.xcresult
+005250: 
+005251: Failing tests:
+005252: 	destructiveSSHBatchSummaryShowsTheActualCommandsAndHighestRequirement()
+005253: 	destructiveSSHBatchSummaryShowsTheActualCommandsAndHighestRequirement()
+005254: 	identityAndDescriptorMismatchesCannotBeOverriddenBySemantics()
+005255: 	duplicateAndMissingSecretMetadataRemainTechnicalFailures()
+005256: 	duplicateAndMissingSecretMetadataRemainTechnicalFailures()
+005257: 	destructiveSSHRequiresFreshApprovalWithoutExtendingReusableLease()
+005258: 	containerLifecycleWritesReuseTheWindowAndRemovalStaysFresh()
+005259: 	invalidatingSecurityStateCancelsAwaitingSecureInput()
+005260: 	appServiceUsesEntryCentricCatalogAndNeverReturnsPlaintext()
+005261: 	appServiceAllowsSafeCatalogCreationWithoutStructureLease()
+005262: 	appControlSecretEndpointChangeRequiresAndUsesLocalApproval()
+005263: 
+005264: ** TEST FAILED **
+005265: 
+005266: Testing started
