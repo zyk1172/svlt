@@ -906,6 +906,7 @@ describe("local IPC client", () => {
 
     let receivedRequestType: string | undefined;
     const server = net.createServer({ allowHalfOpen: true }, (socket) => {
+      socket.setTimeout(25, () => socket.destroy());
       const chunks: Buffer[] = [];
       socket.on("data", (chunk) => chunks.push(chunk));
       socket.on("end", () => {
