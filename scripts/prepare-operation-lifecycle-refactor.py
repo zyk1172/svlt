@@ -44,6 +44,15 @@ if text.count(anchor) != 1:
     raise RuntimeError("wire-model anchor not found exactly once")
 text = text.replace(anchor, budget_trim + anchor, 1)
 
+ipc_test_import = "import VaultCore\\n@testable import VaultIPC"
+if text.count(ipc_test_import) != 1:
+    raise RuntimeError("lifecycle IPC test import anchor not found exactly once")
+text = text.replace(
+    ipc_test_import,
+    "import VaultCore\\nimport VaultExecution\\n@testable import VaultIPC",
+    1,
+)
+
 old_ending = 'write(path, text.rstrip() + append + "\\n")'
 new_ending = 'write(path, text.rstrip() + "\\n" + append.strip() + "\\n")'
 if text.count(old_ending) != 1:
