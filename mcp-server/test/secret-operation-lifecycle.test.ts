@@ -84,6 +84,16 @@ describe("operationID MCP lifecycle", () => {
     ]);
   });
 
+  it("treats succeeded without its output as outcomeUnknown", async () => {
+    const client = new FakeLifecycleClient([
+      handle(),
+      status("succeeded")
+    ]);
+
+    await expect(executeOpaqueOperation(client, descriptor, undefined, { pollIntervalMs: 0 }))
+      .resolves.toEqual({ status: OPERATION_OUTCOME_UNKNOWN });
+  });
+
   it("preserves daemon failure codes instead of translating them", async () => {
     const client = new FakeLifecycleClient([
       handle(),
