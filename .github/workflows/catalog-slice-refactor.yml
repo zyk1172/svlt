@@ -1,4 +1,4 @@
-name: Catalog slice access repair
+name: Finalize catalog slice architecture guard
 
 on:
   push:
@@ -8,61 +8,84 @@ permissions:
   contents: write
 
 jobs:
-  repair-and-verify:
+  finalize:
     if: github.actor != 'github-actions[bot]'
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           ref: codex/catalog-agent-operations-slice
           fetch-depth: 0
-      - name: Align required cross-file access boundary
+      - name: Ratchet architecture budgets and guard catalog slice
         run: |
           python3 <<'PY'
           from pathlib import Path
 
-          app_path = Path('Sources/VaultService/VaultAppServices.swift')
-          app_source = app_path.read_text()
-          app_replacements = {
-              'private enum CatalogMutationPhase: String {': 'enum CatalogMutationPhase: String {',
-              'private enum SecretOperationAuthorizationPath: Sendable {': 'enum SecretOperationAuthorizationPath: Sendable {',
-          }
-          for old, new in app_replacements.items():
-              count = app_source.count(old)
-              if count != 1:
-                  raise SystemExit(f'expected exactly one {old!r}, found {count}')
-              app_source = app_source.replace(old, new, 1)
-          app_path.write_text(app_source)
+          budget_path = Path('scripts/check-architecture-budgets.sh')
+          source = budget_path.read_text()
+          app = Path('Sources/VaultService/VaultAppServices.swift')
+          catalog = Path('Sources/VaultService/VaultAppServices+CatalogOperations.swift')
+          app_size = app.stat().st_size
+          catalog_size = catalog.stat().st_size
 
-          catalog_path = Path('Sources/VaultService/VaultAppServices+CatalogOperations.swift')
-          catalog_source = catalog_path.read_text()
-          old = '    private func finishSecureInputRequest(\n'
-          new = '    func finishSecureInputRequest(\n'
-          count = catalog_source.count(old)
-          if count != 1:
-              raise SystemExit(f'expected exactly one finishSecureInputRequest declaration, found {count}')
-          catalog_path.write_text(catalog_source.replace(old, new, 1))
+          old_budget = '  "Sources/VaultService/VaultAppServices.swift:251338"\n'
+          new_budget = (
+              f'  "Sources/VaultService/VaultAppServices.swift:{app_size}"\n'
+              f'  "Sources/VaultService/VaultAppServices+CatalogOperations.swift:{catalog_size}"\n'
+          )
+          if source.count(old_budget) != 1:
+              raise SystemExit('expected the pre-slice VaultAppServices budget exactly once')
+          source = source.replace(old_budget, new_budget, 1)
+
+          anchor = 'if (( failed != 0 )); then\n'
+          guard = r'''# Keep the Agent-facing Catalog orchestration in its dedicated vertical slice.
+# The byte ceilings prevent either side from silently growing back into a God file;
+# these symbol checks additionally stop the primary Agent Catalog entry points from
+# drifting back into VaultAppServices.swift during future edits.
+readonly catalog_root="Sources/VaultService/VaultAppServices.swift"
+readonly catalog_slice="Sources/VaultService/VaultAppServices+CatalogOperations.swift"
+readonly extracted_catalog_symbols=(
+  "searchSecrets"
+  "getCatalogEntry"
+  "listCatalogIndexes"
+  "listCatalogEntries"
+  "applyCatalogBatch"
+  "createCatalogIndex"
+  "catalogSnapshotForAgent"
+)
+
+if [[ ! -f "$catalog_slice" ]]; then
+  printf 'architecture boundary: catalog operations slice missing: %s\n' "$catalog_slice" >&2
+  failed=1
+else
+  for symbol in "${extracted_catalog_symbols[@]}"; do
+    if grep -Eq "func[[:space:]]+${symbol}[[:space:](]" "$catalog_root"; then
+      printf 'architecture boundary: %s must not return to %s\n' "$symbol" "$catalog_root" >&2
+      failed=1
+    fi
+    if ! grep -Eq "func[[:space:]]+${symbol}[[:space:](]" "$catalog_slice"; then
+      printf 'architecture boundary: expected %s in %s\n' "$symbol" "$catalog_slice" >&2
+      failed=1
+    fi
+  done
+fi
+
+'''
+          if source.count(anchor) != 1:
+              raise SystemExit('expected architecture failure anchor exactly once')
+          source = source.replace(anchor, guard + anchor, 1)
+          budget_path.write_text(source)
+          print(f'VaultAppServices budget -> {app_size} bytes')
+          print(f'CatalogOperations budget -> {catalog_size} bytes')
           PY
+          ./scripts/check-architecture-budgets.sh
           git diff --check
-      - name: Verify XcodeGen parity
+      - name: Remove temporary workflow and commit final architecture boundary
         run: |
-          if ! command -v xcodegen >/dev/null 2>&1; then
-            brew install xcodegen
-          fi
-          ./scripts/check-xcodegen-parity.sh
-      - name: Compile Swift targets
-        run: |
-          xcodebuild build \
-            -project SVLT.xcodeproj \
-            -scheme AgentSecretVault \
-            -destination 'platform=macOS' \
-            -derivedDataPath "$RUNNER_TEMP/svlt-derived" \
-            CODE_SIGNING_ALLOWED=NO
-      - name: Commit verified access repair
-        run: |
+          git rm .github/workflows/catalog-slice-refactor.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Sources/VaultService/VaultAppServices.swift Sources/VaultService/VaultAppServices+CatalogOperations.swift
-          git commit -m 'refactor: align catalog slice access boundary'
+          git add scripts/check-architecture-budgets.sh
+          git commit -m 'refactor: guard catalog operations slice boundary'
           git push origin HEAD:codex/catalog-agent-operations-slice
