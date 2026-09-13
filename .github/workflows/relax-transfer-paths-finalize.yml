@@ -49,7 +49,7 @@ jobs:
           print(f'server.ts bytes: {path.stat().st_size}')
           PY
 
-          ./scripts/check-architecture-budgets.sh
+          bash scripts/check-architecture-budgets.sh
           git diff --check
 
       - name: Remove temporary workflow and commit
