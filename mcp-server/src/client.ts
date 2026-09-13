@@ -9,6 +9,8 @@ import {
   AgentCallerIdentity,
   CapabilityToken,
   IpcFrameCodec,
+  IpcRequest as BaseIpcRequest,
+  IpcResponse as BaseIpcResponse,
   MAX_FRAME_BYTES
 } from "./protocol.js";
 import {
@@ -17,8 +19,8 @@ import {
 } from "./secretOperations/index.js";
 import type { SecretOperationIpcClient } from "./secretOperations/client.js";
 import {
-  IpcRequest,
-  IpcResponse
+  IpcRequest as LifecycleIpcRequest,
+  IpcResponse as LifecycleIpcResponse
 } from "./secretOperations/protocol.js";
 import { applyContextBoundedRiskJudge } from "./risk-judge.js";
 
@@ -40,7 +42,7 @@ export interface LocalIpcClientOptions {
 const AuthenticatedIpcRequest = z.object({
   capabilityToken: CapabilityToken,
   caller: AgentCallerIdentity.optional(),
-  request: IpcRequest
+  request: LifecycleIpcRequest
 }).strict();
 
 const DEFAULT_UNAVAILABLE_RETRY_COUNT = 8;
@@ -102,16 +104,13 @@ export class LocalIpcClient {
     return CapabilityToken.parse(token);
   }
 
-  async request(request: IpcRequest, caller?: AgentCallerIdentity): Promise<IpcResponse> {
-    // A configured judge is invoked here, after the MCP tool has constructed
-    // the exact operation but before the descriptor enters the daemon. Each
-    // invocation is a fresh stateless model call. It receives only the main
-    // agent's short intendedEffect (used as the problem statement) plus the
-    // canonical operation fields; chat history and the agent's risk rationale
-    // are intentionally excluded. Lifecycle status/cancel control requests do
-    // not carry descriptors and therefore pass through unchanged.
+  // Preserve the established MCP-facing contract. Lifecycle-aware request and
+  // response unions are an internal transport detail until server.ts handlers
+  // are fully migrated; callers that already speak the legacy contract do not
+  // need to widen their types in the same release.
+  async request(request: BaseIpcRequest, caller?: AgentCallerIdentity): Promise<BaseIpcResponse> {
     const riskJudgedRequest = await applyContextBoundedRiskJudge(request);
-    const parsedRequest = IpcRequest.parse(riskJudgedRequest);
+    const parsedRequest = LifecycleIpcRequest.parse(riskJudgedRequest);
     const effectiveCaller = caller ?? this.declaredCaller;
 
     // Keep the old public request shape for in-process compatibility while
@@ -129,13 +128,17 @@ export class LocalIpcClient {
         : { type: "failure", code: result.status };
     }
 
-    return this.requestRaw(parsedRequest, effectiveCaller);
+    const response = await this.requestRaw(parsedRequest, effectiveCaller);
+    // A base request other than executeSecretOperation cannot legitimately
+    // produce a lifecycle-only response. Parsing here turns any accidental
+    // cross-protocol response into an immediate contract failure.
+    return BaseIpcResponse.parse(response);
   }
 
   private async requestRaw(
-    parsedRequest: IpcRequest,
+    parsedRequest: LifecycleIpcRequest,
     caller?: AgentCallerIdentity
-  ): Promise<IpcResponse> {
+  ): Promise<LifecycleIpcResponse> {
     for (let attempt = 0; attempt <= this.unavailableRetryCount; attempt += 1) {
       const response = await this.requestOnce(parsedRequest, caller);
       if (
@@ -152,9 +155,9 @@ export class LocalIpcClient {
   }
 
   private async requestOnce(
-    parsedRequest: IpcRequest,
+    parsedRequest: LifecycleIpcRequest,
     caller?: AgentCallerIdentity
-  ): Promise<IpcResponse> {
+  ): Promise<LifecycleIpcResponse> {
     let token: CapabilityToken;
     try {
       token = await LocalIpcClient.readCapabilityToken(this.tokenPath);
@@ -177,7 +180,7 @@ export class LocalIpcClient {
         IpcFrameCodec.encode(authenticatedRequest),
         this.requestTimeoutMs
       );
-      return IpcFrameCodec.decode(responseFrame, IpcResponse);
+      return IpcFrameCodec.decode(responseFrame, LifecycleIpcResponse);
     } catch (error) {
       if (isUnavailableError(error)) {
         return { type: "failure", code: "APP_UNAVAILABLE" };
