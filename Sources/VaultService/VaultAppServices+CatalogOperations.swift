@@ -1199,7 +1199,7 @@ extension VaultAppServices {
         }
     }
 
-    private func finishSecureInputRequest(
+    func finishSecureInputRequest(
         id: UUID,
         status: CatalogSecureInputStatus,
         action: String,

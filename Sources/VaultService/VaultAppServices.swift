@@ -67,7 +67,7 @@ private struct DestinationBindingRequest: Sendable {
     }
 }
 
-private enum CatalogMutationPhase: String {
+enum CatalogMutationPhase: String {
     case inputValidation = "input-validation"
     case policy = "policy"
     case agentAuthorization = "agent-authorization"
@@ -77,7 +77,7 @@ private enum CatalogMutationPhase: String {
     case store = "store"
 }
 
-private enum SecretOperationAuthorizationPath: Sendable {
+enum SecretOperationAuthorizationPath: Sendable {
     case notRequired
     case freshLocalApproval(LocalAuthenticationContext?)
     case executionWindowReuse
