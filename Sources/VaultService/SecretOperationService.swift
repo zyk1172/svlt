@@ -111,6 +111,17 @@ actor SecretOperationService {
         _ task: Task<SecretOperationOutput, Error>,
         operationID: UUID?
     ) async throws -> SecretOperationOutput {
+        if let operationID {
+            guard let record = records[operationID], !record.state.isTerminal else {
+                // Cancellation may win in the narrow interval after the App
+                // creates an unstructured executor task but before it reaches
+                // this actor. Never register such a task after the lifecycle
+                // has already terminalized.
+                task.cancel()
+                throw CancellationError()
+            }
+        }
+
         let executionID = operationID ?? UUID()
         let registrationID = UUID()
         if let existing = executionTasks[executionID] {
