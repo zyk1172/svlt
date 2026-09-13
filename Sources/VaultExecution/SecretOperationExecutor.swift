@@ -249,10 +249,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     private let processRunner: any ProcessRunning
     private let outputSanitizer: OutputSanitizer
     private let sshSessionManager: SSHSessionManager
-    private let timeout: Duration
     private let outputLimitBytes: Int
     private let batchOutputLimitBytes: Int
-    private let batchTotalTimeout: Duration
     private let adapterRegistry: SecretOperationAdapterRegistry
     private let sshHostKeyDiscovery: SSHHostKeyDiscovery
     private let sshKnownHostsStore: SSHKnownHostsStore
@@ -260,20 +258,16 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
     public init(
         processRunner: any ProcessRunning = FoundationProcessRunner(),
         outputSanitizer: OutputSanitizer = OutputSanitizer(),
-        timeout: Duration = .seconds(30),
         outputLimitBytes: Int = 1_048_576,
         batchOutputLimitBytes: Int = 4_194_304,
-        batchTotalTimeout: Duration = .seconds(60),
         sshSessionManager: SSHSessionManager? = nil,
         adapterRegistry: SecretOperationAdapterRegistry? = nil,
         sshKnownHostsDirectory: URL? = nil
     ) {
         self.processRunner = processRunner
         self.outputSanitizer = outputSanitizer
-        self.timeout = timeout
         self.outputLimitBytes = outputLimitBytes
         self.batchOutputLimitBytes = max(outputLimitBytes, batchOutputLimitBytes)
-        self.batchTotalTimeout = batchTotalTimeout
         self.sshSessionManager = sshSessionManager ?? SSHSessionManager(processRunner: processRunner)
         self.sshKnownHostsStore = SSHKnownHostsStore(directoryURL: sshKnownHostsDirectory)
         self.sshHostKeyDiscovery = SSHHostKeyDiscovery(processRunner: processRunner)
@@ -425,12 +419,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             } catch {
                 return .invalidParameters
             }
-            if let rawTimeout = descriptor.parameters["timeoutMs"],
-               let milliseconds = Int64(rawTimeout) {
-                guard (100...30_000).contains(milliseconds) else { return .invalidParameters }
-            } else if descriptor.parameters["timeoutMs"] != nil {
-                return .invalidParameters
-            }
             return .supported
         case .httpRequest, .apiRequest, .sftpTransfer, .ftpTransfer, .databaseQuery, .browserLogin, .localAppFill,
              .localExecution, .trustedProcess:
@@ -494,7 +482,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             throw SecretOperationExecutionError.batchValidationFailed
         }
 
-        let operationTimeout = try timeout(for: descriptor)
         let scope = SSHSessionScope(
             principal: context.principal,
             host: host,
@@ -510,16 +497,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         var sessionID = descriptor.sessionID
         var firstFailureIndex: Int?
         var totalOutputBytes = 0
-        let batchDeadline = ContinuousClock.now.advanced(by: batchTotalTimeout)
 
         for (index, remoteCommand) in remoteCommands.enumerated() {
-            let commandStart = ContinuousClock.now
-            guard commandStart < batchDeadline else {
-                throw SecretOperationExecutionError.timedOut
-            }
-            let remainingBatchTime = commandStart.duration(to: batchDeadline)
-            let commandTimeout = min(operationTimeout, remainingBatchTime)
-
             let requestedSessionID = index == 0 ? descriptor.sessionID : sessionID
             let execution: SSHSessionCommandExecution
             do {
@@ -534,7 +513,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         username: username,
                         passwordReference: passwordReference,
                         remoteCommand: remoteCommand,
-                        timeout: commandTimeout,
                         hostKeyPin: hostKeyPin,
                         resolve: resolve
                     )
@@ -637,7 +615,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         username: String,
         passwordReference: SecretReference,
         remoteCommand: String,
-        timeout operationTimeout: Duration,
         hostKeyPin: SSHHostKeyPin?,
         resolve: @escaping @Sendable (SecretReference) async throws -> Data
     ) async throws -> SSHSessionCommandExecution {
@@ -656,7 +633,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             throw SecretOperationExecutionError.unavailable
         }
 
-        let timeoutSeconds = Self.expectTimeoutSeconds(for: operationTimeout)
         if access.requiresAuthentication {
             var passwordData = try await resolve(passwordReference)
             defer { passwordData.resetBytes(in: 0..<passwordData.count) }
@@ -679,10 +655,10 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         knownHostsPath: knownHostsPath,
                         username: username,
                         password: password,
-                        timeoutSeconds: timeoutSeconds,
+                        timeoutSeconds: 30, // legacy wrapper frame field; ignored
                         strictHostKeyChecking: hostKeyPin != nil
                     ),
-                    timeout: operationTimeout,
+                    timeout: nil,
                     outputLimitBytes: outputLimitBytes
                 )
             } catch let error as ProcessRunError {
@@ -751,7 +727,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                         // dedicated socket-option boundary. Keep this in sync
                         // with the Expect-backed first channel.
                         "-S", access.controlPath,
-                        "-o", "ConnectTimeout=\(timeoutSeconds)",
                         "-p", String(port),
                         "--",
                         "\(username)@\(host)",
@@ -759,7 +734,7 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                     ]
                 ),
                 stdin: Data(),
-                timeout: operationTimeout,
+                timeout: nil,
                 outputLimitBytes: outputLimitBytes
             )
         } catch let error as ProcessRunError {
@@ -897,18 +872,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             throw SecretOperationExecutionError.invalidParameter
         }
         return uniquePins.first
-    }
-
-    private func timeout(for descriptor: SecretOperationDescriptor) throws -> Duration {
-        guard let rawTimeout = descriptor.parameters["timeoutMs"] else {
-            return timeout
-        }
-        guard let milliseconds = Int64(rawTimeout),
-              (100...30_000).contains(milliseconds)
-        else {
-            throw SecretOperationExecutionError.invalidParameter
-        }
-        return .milliseconds(milliseconds)
     }
 
     static func expectSSHInput(
@@ -1060,7 +1023,8 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
         if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 30} { exit \(SSHWrapperExitCode.argumentValidation) }
         if {$strictHostKeyChecking ne "0" && $strictHostKeyChecking ne "1"} { exit \(SSHWrapperExitCode.argumentValidation) }
-        set timeout $timeoutSeconds
+        # No execution deadline; cancellation is propagated by the owning Task.
+        set timeout -1
         set passwordSent 0
         log_user 1
         set hostKeyCheckingMode accept-new
@@ -1087,7 +1051,6 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
             -o NumberOfPasswordPrompts=1 \
             -o PreferredAuthentications=password,keyboard-interactive \
             -S $controlPath \
-            -o ConnectTimeout=$timeoutSeconds \
             -p $port \
             -- \
             "$username@$host" \

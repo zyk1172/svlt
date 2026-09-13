@@ -7,7 +7,7 @@ public struct FoundationProcessRunner: ProcessRunning {
     public func run(
         _ invocation: ProcessInvocation,
         stdin: Data,
-        timeout: Duration,
+        timeout: Duration?,
         outputLimitBytes: Int
     ) async throws -> ProcessResult {
         let process = Process()
@@ -46,17 +46,19 @@ public struct FoundationProcessRunner: ProcessRunning {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let completion = ProcessRunCompletion(continuation)
-                let timeoutTask = Task {
-                    do {
-                        try await Task.sleep(for: timeout)
-                    } catch {
-                        return
-                    }
+                let timeoutTask = timeout.map { duration in
+                    Task {
+                        do {
+                            try await Task.sleep(for: duration)
+                        } catch {
+                            return
+                        }
 
-                    guard !Task.isCancelled else {
-                        return
+                        guard !Task.isCancelled else {
+                            return
+                        }
+                        runState.markTimedOutAndTerminate()
                     }
-                    runState.markTimedOutAndTerminate()
                 }
 
                 process.terminationHandler = { terminatedProcess in
@@ -65,7 +67,7 @@ public struct FoundationProcessRunner: ProcessRunning {
                     // Output validation may still turn this provisional exit
                     // into outputLimitExceeded while the final bytes drain.
                     _ = runState.markProcessExited()
-                    timeoutTask.cancel()
+                    timeoutTask?.cancel()
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
 
@@ -120,7 +122,7 @@ public struct FoundationProcessRunner: ProcessRunning {
                     try? stdoutPipe.fileHandleForWriting.close()
                     try? stderrPipe.fileHandleForWriting.close()
                 } catch {
-                    timeoutTask.cancel()
+                    timeoutTask?.cancel()
                     cleanup(stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)
                     runState.terminate()
                     completion.resume(
@@ -141,7 +143,7 @@ public struct FoundationProcessRunner: ProcessRunning {
                     try stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
                     try stdinPipe.fileHandleForWriting.close()
                 } catch {
-                    timeoutTask.cancel()
+                    timeoutTask?.cancel()
                     let message = error.localizedDescription
                     guard runState.markStdinWriteFailedAndTerminate(message) else {
                         cleanup(stdoutPipe: stdoutPipe, stderrPipe: stderrPipe)

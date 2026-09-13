@@ -8,6 +8,33 @@ import VaultExecution
 import VaultIPC
 @testable import VaultService
 
+@Test func longRunningOperationDoesNotBlockLaterOperation() async throws {
+    let service = SecretOperationService()
+    let firstGate = ConcurrentOperationGate()
+    let secondStarted = ConcurrentOperationGate()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .localExecution,
+        secretReferences: [],
+        destination: "test",
+        parameters: [:]
+    )
+
+    let first = await service.start(principal: "agent", descriptor: descriptor) { _ in
+        await firstGate.markStartedAndWait()
+        return SecretOperationOutput(status: "FIRST_DONE")
+    }
+    await firstGate.waitUntilStarted()
+
+    let second = await service.start(principal: "agent", descriptor: descriptor) { _ in
+        await secondStarted.markStarted()
+        return SecretOperationOutput(status: "SECOND_DONE")
+    }
+    await secondStarted.waitUntilStarted()
+
+    #expect(first.operationID != second.operationID)
+    await firstGate.release()
+}
+
 @Test func firstOrdinaryOperationTakesOneApprovalAndOpensTheWindow() async throws {
     let fixture = try await OperationServiceFixture()
     defer { fixture.remove() }
@@ -790,6 +817,38 @@ private func expectApprovalFailure(
         #expect(error == .authorizationTimeout)
     }
     #expect(await fixture.executor.count == 0)
+}
+
+private actor ConcurrentOperationGate {
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    func markStartedAndWait() async {
+        markStarted()
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
 }
 
 private enum ApprovalMode: Sendable {

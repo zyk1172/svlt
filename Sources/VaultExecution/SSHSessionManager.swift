@@ -211,6 +211,7 @@ public actor SSHSessionManager {
         var lastUsedTick: UInt64
         var state: RecordState
         var outputFingerprints: [SecretOutputFingerprint]
+        var inFlightCount: Int
     }
 
     /// A single-flight open is keyed by both scope and record ID. The ID
@@ -311,15 +312,12 @@ public actor SSHSessionManager {
             return try await executeOnActiveRecord(existing, operation: operation)
         }
 
-        if let opening = openingTasks[scope] {
-            _ = try await opening.task.value
-            // The opening command can succeed even though ControlMaster did
-            // not persist. Once that flight has settled, re-enter the normal
-            // lookup path: reuse a published master when present, otherwise
-            // create a fresh authenticated connection. A missing optimization
-            // must never turn a concurrent command into
-            // SESSION_CONTROL_UNAVAILABLE.
-            return try await execute(scope: scope, operation: operation)
+        if openingTasks[scope] != nil {
+            // The first command may legitimately run for hours. Never serialize a
+            // later command behind that command just because its reusable master
+            // has not been published yet. Use an isolated one-shot channel until
+            // the shared transport becomes available.
+            return try await executeWhileOpening(scope: scope, operation: operation)
         }
 
         return try await createAndExecute(scope: scope, operation: operation)
@@ -451,7 +449,8 @@ public actor SSHSessionManager {
             lastUsedAt: date,
             lastUsedTick: tick,
             state: .pending,
-            outputFingerprints: []
+            outputFingerprints: [],
+            inFlightCount: 1
         )
         records[id] = record
         let access = SSHSessionAccess(id: id, controlPath: controlPath, requiresAuthentication: true)
@@ -472,7 +471,46 @@ public actor SSHSessionManager {
             }
         }
         openingTasks[scope] = OpeningTask(recordID: id, task: task)
-        return try await task.value
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func executeWhileOpening(
+        scope: SSHSessionScope,
+        operation: @escaping @Sendable (SSHSessionAccess) async throws -> SSHSessionCommandExecution
+    ) async throws -> SSHSessionCommandExecution {
+        let id = Self.makeSessionID()
+        let controlPath = try makeControlPath()
+        let tick = monotonicNow()
+        let date = now()
+        let record = Record(
+            id: id,
+            scope: scope,
+            controlPath: controlPath,
+            createdAt: date,
+            createdTick: tick,
+            lastUsedAt: date,
+            lastUsedTick: tick,
+            state: .pending,
+            outputFingerprints: [],
+            inFlightCount: 1
+        )
+        let access = SSHSessionAccess(
+            id: id,
+            controlPath: controlPath,
+            requiresAuthentication: true
+        )
+        do {
+            let result = try await operation(access)
+            await closeControl(record)
+            return result.assigningSessionID(nil, masterReady: false)
+        } catch {
+            await closeControl(record)
+            throw error
+        }
     }
 
     /// Settles an initial transport before its task becomes observable to
@@ -524,6 +562,7 @@ public actor SSHSessionManager {
         current.lastUsedAt = now()
         current.lastUsedTick = monotonicNow()
         current.outputFingerprints = result.outputFingerprints
+        current.inFlightCount = 0
         records[record.id] = current
         openingTasks.removeValue(forKey: scope)
         return result.assigningSessionID(record.id, masterReady: true)
@@ -551,22 +590,38 @@ public actor SSHSessionManager {
             requiresAuthentication: false,
             outputFingerprints: record.outputFingerprints
         )
-        let result = try await operation(access)
-        guard result.channelState == .remoteCommandCompleted else {
-            await closeRecord(record)
-            return result.assigningSessionID(nil, masterReady: false)
+        guard var active = records[record.id] else {
+            return try await operation(access).assigningSessionID(nil, masterReady: false)
         }
-        guard var current = records[record.id] else {
-            // The record vanished (reaped concurrently) but the command
-            // already ran: return the real result instead of failing it.
-            return result.assigningSessionID(nil, masterReady: false)
+        active.inFlightCount += 1
+        records[record.id] = active
+        do {
+            let result = try await operation(access)
+            guard result.channelState == .remoteCommandCompleted else {
+                await closeRecord(record)
+                return result.assigningSessionID(nil, masterReady: false)
+            }
+            guard var current = records[record.id] else {
+                // Explicit invalidation may remove the cache record while the
+                // command is finishing. Preserve the real command result.
+                return result.assigningSessionID(nil, masterReady: false)
+            }
+            current.inFlightCount = max(0, current.inFlightCount - 1)
+            current.lastUsedAt = now()
+            current.lastUsedTick = monotonicNow()
+            records[record.id] = current
+            return result
+                .assigningFingerprintsIfMissing(record.outputFingerprints)
+                .assigningSessionID(record.id, masterReady: true)
+        } catch {
+            if var current = records[record.id] {
+                current.inFlightCount = max(0, current.inFlightCount - 1)
+                current.lastUsedAt = now()
+                current.lastUsedTick = monotonicNow()
+                records[record.id] = current
+            }
+            throw error
         }
-        current.lastUsedAt = now()
-        current.lastUsedTick = monotonicNow()
-        records[record.id] = current
-        return result
-            .assigningFingerprintsIfMissing(record.outputFingerprints)
-            .assigningSessionID(record.id, masterReady: true)
     }
 
     private func enforceLimits(for principal: String) throws {
@@ -650,6 +705,7 @@ public actor SSHSessionManager {
     }
 
     private func isExpired(_ record: Record) -> Bool {
+        guard record.inFlightCount == 0 else { return false }
         let tick = monotonicNow()
         let idleExpired = tick >= record.lastUsedTick && tick - record.lastUsedTick >= idleNanoseconds
         let absoluteExpired = tick >= record.createdTick && tick - record.createdTick >= absoluteNanoseconds

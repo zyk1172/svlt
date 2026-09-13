@@ -79,6 +79,7 @@ public actor HTTPSessionManager {
         let session: URLSession
         let createdTick: UInt64
         var lastUsedTick: UInt64
+        var inFlightCount: Int
     }
 
     private let idleTTL: Duration
@@ -138,7 +139,15 @@ public actor HTTPSessionManager {
 
         var current = record
         current.lastUsedTick = monotonicNow()
+        current.inFlightCount += 1
         records[current.id] = current
+        defer {
+            if var finished = records[current.id] {
+                finished.inFlightCount = max(0, finished.inFlightCount - 1)
+                finished.lastUsedTick = monotonicNow()
+                records[current.id] = finished
+            }
+        }
 
         do {
             let (bytes, response) = try await current.session.bytes(
@@ -208,6 +217,10 @@ public actor HTTPSessionManager {
         configuration.httpShouldSetCookies = false
         configuration.urlCredentialStorage = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // Approved operations have no SVLT wall-clock execution deadline.
+        // Explicit cancellation and transport/system failures remain authoritative.
+        configuration.timeoutIntervalForRequest = TimeInterval.greatestFiniteMagnitude
+        configuration.timeoutIntervalForResource = TimeInterval.greatestFiniteMagnitude
         let session = URLSession(
             configuration: configuration,
             delegate: nil,
@@ -220,7 +233,8 @@ public actor HTTPSessionManager {
             scope: scope,
             session: session,
             createdTick: tick,
-            lastUsedTick: tick
+            lastUsedTick: tick,
+            inFlightCount: 0
         )
         records[id] = record
         return record
@@ -239,6 +253,7 @@ public actor HTTPSessionManager {
     }
 
     private func isExpired(_ record: Record) -> Bool {
+        guard record.inFlightCount == 0 else { return false }
         let now = monotonicNow()
         return Self.deadlineReached(now, start: record.lastUsedTick, duration: idleNanoseconds)
             || Self.deadlineReached(now, start: record.createdTick, duration: absoluteNanoseconds)

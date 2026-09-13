@@ -252,7 +252,7 @@ private actor TransferCapturingProcessRunner: ProcessRunning {
     func run(
         _ invocation: ProcessInvocation,
         stdin: Data,
-        timeout _: Duration,
+        timeout _: Duration?,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
         self.invocation = invocation

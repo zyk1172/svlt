@@ -784,7 +784,6 @@ const LocalHttpInput = z
     includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
-    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -828,7 +827,6 @@ const SshCommandInput = z
             message: "command must be at most 65536 UTF-8 bytes"
         }),
     sessionID: z.string().min(1).max(128).optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict();
@@ -842,7 +840,6 @@ const SshCommandBatchInput = z
     sessionID: z.string().min(1).max(128).optional(),
     commands: z.array(SSHCommandSpec).min(1).max(32),
     stopOnFailure: z.boolean().default(true),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -879,7 +876,6 @@ const ApiRequestInput = z
     includeBodyPreview: z.boolean().optional().describe("Return at most 16 KiB of a safe JSON response preview; authenticated responses are quarantined if they contain sensitive fields."),
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
-    timeoutMs: z.number().int().min(100).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -905,7 +901,6 @@ const DatabaseQueryInput = z
     usernameRef: SecretReference.optional(),
     passwordRef: SecretReference,
     query: z.string().min(1).max(20_000),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     maxRows: z.number().int().min(1).max(100).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
@@ -934,7 +929,6 @@ const FileTransferInput = z
     passwordRef: SecretReference,
     remotePath: z.string().min(1).max(4_096),
     localPath: z.string().min(1).max(4_096).optional(),
-    timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -965,7 +959,6 @@ const FTPTransferInput = z
     passwordRef: SecretReference,
     remotePath: z.string().min(1).max(4_096),
     localPath: z.string().min(1).max(4_096).optional(),
-    timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -996,7 +989,6 @@ const BrowserLoginInput = z
     passwordSelector: z.string().min(1).max(1_024),
     submitSelector: z.string().min(1).max(1_024).optional(),
     submit: z.boolean().optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -1034,7 +1026,6 @@ const LocalAppFillInput = z
         message: "Each field requires value or valueRef."
       })).min(1).max(20),
     submitButton: z.string().min(1).max(256).optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
     agentAssessment: optionalAgentRiskAssessment
   })
   .strict()
@@ -2328,7 +2319,6 @@ async function handleSshCommandWithSecret(
   const parameters: Record<string, string> = {
     passwordRef: parsed.passwordRef,
     ...(parsed.username === undefined ? {} : { username: parsed.username }),
-    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const output = await executeOpaqueOperation(client, {
     actionType: "sshCommand",
@@ -2366,7 +2356,6 @@ async function handleSshBatchWithSecret(
   const parameters: Record<string, string> = {
     passwordRef: parsed.passwordRef,
     ...(parsed.username === undefined ? {} : { username: parsed.username }),
-    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const batch = SSHCommandBatch.parse({
     commands: parsed.commands,
@@ -2430,7 +2419,6 @@ async function handleLocalHttpRequest(
     ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
     ...(parsed.responseProfileID === undefined ? {} : { responseProfileID: parsed.responseProfileID }),
     ...(parsed.responseFields === undefined ? {} : { responseFields: JSON.stringify(parsed.responseFields) }),
-    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const output = await executeOpaqueOperation(client, {
     actionType: "httpRequest",
@@ -2462,7 +2450,6 @@ async function handleLocalHttpRequest(
           fields: parsed.responseFields ?? [],
           ...(parsed.responseProfileID === undefined ? {} : { profileID: parsed.responseProfileID })
         },
-        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
       }
     },
     requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
@@ -2510,7 +2497,6 @@ async function handleApiRequestWithToken(
     ...(parsed.includeBodyPreview === undefined ? {} : { includeBodyPreview: String(parsed.includeBodyPreview) }),
     ...(parsed.responseProfileID === undefined ? {} : { responseProfileID: parsed.responseProfileID }),
     ...(parsed.responseFields === undefined ? {} : { responseFields: JSON.stringify(parsed.responseFields) }),
-    ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
   };
   const output = await executeOpaqueOperation(client, {
     actionType: "apiRequest",
@@ -2544,7 +2530,6 @@ async function handleApiRequestWithToken(
           fields: parsed.responseFields ?? [],
           ...(parsed.responseProfileID === undefined ? {} : { profileID: parsed.responseProfileID })
         },
-        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
       }
     },
     requestedEffects: [(parsed.method ?? "GET") === "GET" || (parsed.method ?? "GET") === "HEAD" ? "read-only" : "remote-write"],
@@ -2657,7 +2642,6 @@ async function handleDatabaseQueryWithSecret(
         statement: parsed.query,
         parameters: [],
         maxRows: parsed.maxRows ?? 100,
-        ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: parsed.timeoutMs })
       }
     },
     requestedEffects: ["database-read"],
@@ -2667,7 +2651,6 @@ async function handleDatabaseQueryWithSecret(
       ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
       ...(parsed.username === undefined ? {} : { username: parsed.username }),
       ...(parsed.maxRows === undefined ? {} : { maxRows: String(parsed.maxRows) }),
-      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
     },
     agentAssessment: agentAssessment(parsed)
   });
@@ -2719,7 +2702,6 @@ async function handleFileTransferWithSecret(
       ...(parsed.usernameRef === undefined ? {} : { usernameRef: parsed.usernameRef }),
       ...(parsed.username === undefined ? {} : { username: parsed.username }),
       ...(parsed.localPath === undefined ? {} : { localPath: parsed.localPath }),
-      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
     },
     agentAssessment: agentAssessment(parsed)
   });
@@ -2783,7 +2765,6 @@ async function handleBrowserLoginWithSecret(
       passwordSelector: parsed.passwordSelector,
       ...(parsed.submitSelector === undefined ? {} : { submitSelector: parsed.submitSelector }),
       submit: String(parsed.submit ?? false),
-      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
     },
     agentAssessment: agentAssessment(parsed)
   });
@@ -2821,7 +2802,6 @@ async function handleLocalAppFillWithSecret(
       fields: JSON.stringify(parsed.fields),
       ...(parsed.appName === undefined ? {} : { appName: parsed.appName }),
       ...(parsed.submitButton === undefined ? {} : { submitButton: parsed.submitButton }),
-      ...(parsed.timeoutMs === undefined ? {} : { timeoutMs: String(parsed.timeoutMs) })
     },
     agentAssessment: agentAssessment(parsed)
   });

@@ -173,7 +173,7 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter, SSHHostKeyPinn
                     knownHostsPath: knownHostsPath,
                     strictHostKeyChecking: hostKeyPin != nil
                 ),
-                timeout: plan.timeout,
+                timeout: nil,
                 outputLimitBytes: Self.outputLimitBytes
             )
         } catch ProcessRunError.timedOut {
@@ -388,7 +388,8 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter, SSHHostKeyPinn
         if {![string is integer -strict $port] || $port < 1 || $port > 65535} { exit \(wrapperArgumentValidation) }
         if {![string is integer -strict $timeoutSeconds] || $timeoutSeconds < 1 || $timeoutSeconds > 60} { exit \(wrapperArgumentValidation) }
         if {$strictHostKeyChecking ne "0" && $strictHostKeyChecking ne "1"} { exit \(wrapperArgumentValidation) }
-        set timeout $timeoutSeconds
+        # Execution lifetime is controlled only by completion or explicit cancellation.
+        set timeout -1
         set passwordSent 0
         set sessionReady 0
         log_user 1
@@ -415,7 +416,6 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter, SSHHostKeyPinn
             -o KbdInteractiveAuthentication=yes \
             -o NumberOfPasswordPrompts=1 \
             -o PreferredAuthentications=password,keyboard-interactive \
-            -o ConnectTimeout=$timeoutSeconds \
             -P $port \
             "$username@$destinationHost"]
         if {[catch {spawn -noecho {*}$sftpArguments}]} {

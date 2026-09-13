@@ -477,7 +477,7 @@ private actor SessionProcessRunner: ProcessRunning {
     func run(
         _ invocation: ProcessInvocation,
         stdin _: Data,
-        timeout _: Duration,
+        timeout _: Duration?,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
         invocations.append(invocation)

@@ -183,7 +183,7 @@ private struct RecordingProcessRunner: ProcessRunning {
     func run(
         _ invocation: ProcessInvocation,
         stdin: Data,
-        timeout: Duration,
+        timeout: Duration?,
         outputLimitBytes: Int
     ) async throws -> ProcessResult {
         await launches.increment()

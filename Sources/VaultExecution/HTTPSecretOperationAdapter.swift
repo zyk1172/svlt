@@ -38,7 +38,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
 
     private let sessionManager: HTTPSessionManager
     private let outputSanitizer: OutputSanitizer
-    private let defaultTimeout: Duration
     private let outputLimitBytes: Int
     private let responseProjectionProfiles: [String: HTTPResponseProjectionProfile]
     private let invalidResponseProjectionProfileIDs: Set<String>
@@ -46,13 +45,11 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
     public init(
         sessionManager: HTTPSessionManager = HTTPSessionManager(),
         outputSanitizer: OutputSanitizer = OutputSanitizer(),
-        defaultTimeout: Duration = .seconds(30),
         outputLimitBytes: Int = 1_048_576,
         responseProjectionProfiles: [HTTPResponseProjectionProfile] = []
     ) {
         self.sessionManager = sessionManager
         self.outputSanitizer = outputSanitizer
-        self.defaultTimeout = defaultTimeout
         self.outputLimitBytes = max(1, outputLimitBytes)
         var profiles: [String: HTTPResponseProjectionProfile] = [:]
         var invalidProfileIDs = Set<String>()
@@ -135,7 +132,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
 
         var request = URLRequest(url: plan.url)
         request.httpMethod = plan.method.rawValue
-        request.timeoutInterval = plan.timeout.timeInterval
         try applyBody(plan.body, to: &request)
         let hasSecretAuth = try await applyAuthentication(
             plan.auth,
@@ -239,7 +235,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         let auth: HTTPAuthStrategy
         let body: HTTPBody
         let responsePolicy: HTTPResponsePolicy
-        let timeout: Duration
     }
 
     private enum HTTPAdapterError: Error {
@@ -320,7 +315,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
         let auth: HTTPAuthStrategy
         let body: HTTPBody
         let responsePolicy: HTTPResponsePolicy
-        let timeoutMilliseconds: Int?
 
         if let payload = descriptor.payload {
             guard case let .http(operation) = payload else {
@@ -330,7 +324,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             auth = operation.auth
             body = operation.body
             responsePolicy = operation.responsePolicy
-            timeoutMilliseconds = operation.timeoutMs
             guard referencesMatch(operation.auth.referencedSecretReferences, descriptor.secretReferences) else {
                 throw HTTPAdapterError.invalidParameter
             }
@@ -340,7 +333,6 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             responsePolicy = descriptor.parameters["includeBodyPreview"] == "true"
                 ? HTTPResponsePolicy(kind: .sanitizedPreview)
                 : .metadataOnly
-            timeoutMilliseconds = descriptor.parameters["timeoutMs"].flatMap(Int.init)
             if descriptor.actionType == .httpRequest,
                let passwordReference = reference(for: "passwordRef", in: descriptor) {
                 let usernameReference = reference(for: "usernameRef", in: descriptor)
@@ -368,26 +360,12 @@ public struct HTTPSecretOperationAdapter: SecretOperationAdapter {
             }
         }
 
-        guard let timeoutMilliseconds else {
-            return RequestPlan(
-                url: url,
-                method: method,
-                auth: try validateAuth(auth, descriptor: descriptor),
-                body: try validateBody(body),
-                responsePolicy: try validateResponsePolicy(responsePolicy, for: url, method: method),
-                timeout: defaultTimeout
-            )
-        }
-        guard (100...30_000).contains(timeoutMilliseconds) else {
-            throw HTTPAdapterError.invalidParameter
-        }
         return RequestPlan(
             url: url,
             method: method,
             auth: try validateAuth(auth, descriptor: descriptor),
             body: try validateBody(body),
-            responsePolicy: try validateResponsePolicy(responsePolicy, for: url, method: method),
-            timeout: .milliseconds(timeoutMilliseconds)
+            responsePolicy: try validateResponsePolicy(responsePolicy, for: url, method: method)
         )
     }
 
