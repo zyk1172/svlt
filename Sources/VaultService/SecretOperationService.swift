@@ -7,14 +7,14 @@ private enum SecretOperationLifecycleContext {
     @TaskLocal static var operationID: UUID?
 }
 
-/// Owns the durable-in-process lifecycle of Agent secret operations.
+/// Owns the mutable coordination state for Agent secret operations.
 ///
-/// This actor deliberately sits between IPC-facing adapters and the much larger
-/// `VaultAppServices` actor. It owns operation identity, principal isolation,
-/// lifecycle state, cancellation semantics, terminal retention, and the task
-/// that drives one operation to completion. Business execution/authorization
-/// is injected as an async closure so that those responsibilities can migrate
-/// behind this boundary without changing the IPC contract again.
+/// IPC lifecycle records, executor tasks, cancellation and approval-pending
+/// accounting live here instead of in the much larger `VaultAppServices`
+/// actor. Policy evaluation, owner-prompt construction and key resolution are
+/// still injected business responsibilities, which keeps this boundary small
+/// enough to reason about while removing cross-cutting mutable dictionaries
+/// from the God actor.
 actor SecretOperationService {
     struct CancellationResult: Sendable {
         let status: SecretOperationStatus
@@ -30,12 +30,23 @@ actor SecretOperationService {
         var task: Task<Void, Never>?
     }
 
+    private struct ExecutionTaskRecord {
+        let registrationID: UUID
+        let task: Task<SecretOperationOutput, Error>
+    }
+
     private let terminalRetentionLimit: Int
     private var nextSequence: UInt64 = 0
     private var records: [UUID: Record] = [:]
+    private var executionTasks: [UUID: ExecutionTaskRecord] = [:]
+    private var pendingApprovalIDs: Set<UUID> = []
 
     init(terminalRetentionLimit: Int = 128) {
         self.terminalRetentionLimit = max(1, terminalRetentionLimit)
+    }
+
+    var approvalPending: Bool {
+        !pendingApprovalIDs.isEmpty
     }
 
     func start(
@@ -93,16 +104,53 @@ actor SecretOperationService {
         transition(operationID: operationID, to: state)
     }
 
-    func cancelAll() {
-        for operationID in records.keys {
-            guard var record = records[operationID], !record.state.isTerminal else { continue }
-            applyCancellation(to: &record)
-            let task = record.task
-            record.task = nil
-            records[operationID] = record
-            task?.cancel()
+    /// Registers the actual executor task under the lifecycle operation ID and
+    /// waits for it. Cancellation can therefore reach the side-effecting task
+    /// without `VaultAppServices` owning a parallel task dictionary.
+    func awaitExecutionTask(
+        _ task: Task<SecretOperationOutput, Error>,
+        operationID: UUID?
+    ) async throws -> SecretOperationOutput {
+        let executionID = operationID ?? UUID()
+        let registrationID = UUID()
+        if let existing = executionTasks[executionID] {
+            existing.task.cancel()
         }
-        trimTerminalRecords()
+        executionTasks[executionID] = ExecutionTaskRecord(
+            registrationID: registrationID,
+            task: task
+        )
+        defer {
+            guard executionTasks[executionID]?.registrationID == registrationID else { return }
+            executionTasks.removeValue(forKey: executionID)
+        }
+        return try await task.value
+    }
+
+    /// Approval status is reference-counted by opaque IDs rather than a single
+    /// Bool. Two overlapping local approvals can no longer make Workbench
+    /// report `approvalPending = false` when only the first one finishes.
+    @discardableResult
+    func beginApproval(id: UUID = UUID()) -> UUID {
+        pendingApprovalIDs.insert(id)
+        return id
+    }
+
+    @discardableResult
+    func finishApproval(id: UUID) -> Bool {
+        pendingApprovalIDs.remove(id) != nil
+    }
+
+    /// Security invalidation is the single mutable-state reset for this slice.
+    /// The caller remains responsible for invalidating external authorization
+    /// leases and executor-owned security state after these tasks are latched.
+    func invalidateAllCoordination() {
+        cancelAllLifecycleOperations()
+        for execution in executionTasks.values {
+            execution.task.cancel()
+        }
+        executionTasks.removeAll()
+        pendingApprovalIDs.removeAll()
     }
 
     nonisolated static var currentOperationID: UUID? {
@@ -177,12 +225,28 @@ actor SecretOperationService {
         }
 
         applyCancellation(to: &record)
-        let task = record.task
+        let driverTask = record.task
         record.task = nil
         records[operationID] = record
-        task?.cancel()
+        let executionTask = executionTasks.removeValue(forKey: operationID)?.task
+        driverTask?.cancel()
+        executionTask?.cancel()
         trimTerminalRecords()
         return status(operationID: operationID, record: record)
+    }
+
+    private func cancelAllLifecycleOperations() {
+        for operationID in records.keys {
+            guard var record = records[operationID], !record.state.isTerminal else { continue }
+            applyCancellation(to: &record)
+            let driverTask = record.task
+            record.task = nil
+            records[operationID] = record
+            let executionTask = executionTasks.removeValue(forKey: operationID)?.task
+            driverTask?.cancel()
+            executionTask?.cancel()
+        }
+        trimTerminalRecords()
     }
 
     private func applyCancellation(to record: inout Record) {
@@ -243,7 +307,3 @@ actor SecretOperationService {
         )
     }
 }
-
-// Keep the stored-property spelling in VaultAppServices source-compatible while
-// the architectural boundary migrates. New code should use SecretOperationService.
-typealias SecretOperationCoordinator = SecretOperationService
