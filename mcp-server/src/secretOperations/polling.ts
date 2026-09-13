@@ -7,7 +7,6 @@ import {
   getSecretOperationStatus,
   type SecretOperationIpcClient
 } from "./client.js";
-import { OPERATION_NOT_FOUND } from "./protocol.js";
 import {
   terminalSecretOperationResult,
   transportOutcomeUnknown,
@@ -44,10 +43,10 @@ export async function pollSecretOperation(
       return transportOutcomeUnknown();
     }
 
-    if (control.kind === "failure") {
-      return controlFailureAfterStart(control.code);
-    }
-    if (control.kind === "unexpected") {
+    if (control.kind === "failure" || control.kind === "unexpected") {
+      // Once a handle has been acknowledged, even OPERATION_NOT_FOUND cannot
+      // prove that nothing happened: the terminal record may have been evicted
+      // or daemon state may have been lost after an external side effect.
       return transportOutcomeUnknown();
     }
 
@@ -77,10 +76,9 @@ async function cancelTrackedOperation(
     return transportOutcomeUnknown();
   }
 
-  if (control.kind === "failure") {
-    return controlFailureAfterStart(control.code);
-  }
-  if (control.kind === "unexpected") {
+  if (control.kind === "failure" || control.kind === "unexpected") {
+    // Failure to obtain a definitive cancellation receipt for an acknowledged
+    // operation is itself outcome-unknown, regardless of the control error.
     return transportOutcomeUnknown();
   }
 
@@ -90,15 +88,6 @@ async function cancelTrackedOperation(
   }
   await options.onState?.(status.state, operationID);
   return terminalSecretOperationResult(status);
-}
-
-function controlFailureAfterStart(code: string): SecretOperationExecutionResult {
-  // OPERATION_NOT_FOUND is an explicit principal-safe lifecycle result from
-  // the daemon and is safe to preserve. Other control-plane failures after a
-  // start acknowledgement do not establish whether the side effect ran.
-  return code === OPERATION_NOT_FOUND
-    ? { status: code }
-    : transportOutcomeUnknown();
 }
 
 function isTerminal(status: SecretOperationStatus): boolean {
