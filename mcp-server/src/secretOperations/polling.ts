@@ -1,7 +1,7 @@
 import type {
   SecretOperationState,
   SecretOperationStatus
-} from "../protocol.js";
+} from "./protocol.js";
 import {
   cancelSecretOperation,
   getSecretOperationStatus,
@@ -102,15 +102,13 @@ async function waitForNextPoll(milliseconds: number, signal?: AbortSignal): Prom
   if (milliseconds <= 0 || signal?.aborted === true) return;
 
   await new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const finish = () => {
-      signal?.removeEventListener("abort", onAbort);
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
       resolve();
     };
-    const timer = setTimeout(finish, milliseconds);
-    const onAbort = () => {
-      clearTimeout(timer);
-      finish();
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
+    timer = setTimeout(finish, milliseconds);
+    signal?.addEventListener("abort", finish, { once: true });
   });
 }
