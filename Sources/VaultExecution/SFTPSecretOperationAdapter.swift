@@ -44,7 +44,7 @@ public struct SFTPSecretOperationAdapter: SecretOperationAdapter, SSHHostKeyPinn
             status: available ? .supported : .unavailable,
             operations: [.sftpTransfer],
             reason: available
-                ? "受控 SFTP/SCP list/download/upload/delete；本地文件仅限 SVLT Downloads 目录"
+                ? "SFTP/SCP list/download/upload/delete；本地文件可使用任意绝对路径，远端路径不限定目录"
                 : "macOS expect 或 sftp executable 不可用",
             features: SecretOperationCapabilityFeatures(
                 auth: ["password"],
