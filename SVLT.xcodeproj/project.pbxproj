@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		014BD93BDE2560F69C0D7C88 /* SecretOperationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E9F04AD16693BB9A98AA71 /* SecretOperationService.swift */; };
 		03B37392D9683727CF41933C /* VaultIPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7949F97D51F7993375EDB3D4 /* VaultIPC.swift */; };
 		03BA28D0A46E40432E263072 /* FileTransferAdapterSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 079D76A1270895CA1C110D67 /* FileTransferAdapterSupport.swift */; };
 		03D46F37D78F371178048F5A /* SSHSessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6F7162122C992E041DC4B8B /* SSHSessionManagerTests.swift */; };
@@ -779,6 +780,7 @@
 		768013F2F7664CD707423121 /* EncryptedRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedRecord.swift; sourceTree = "<group>"; };
 		770AC7FF5754FF7C5CAEDCFD /* SecretOperationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationCoordinator.swift; sourceTree = "<group>"; };
 		7727CE9668BF5CB515AC8D33 /* SecretCatalogMutation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretCatalogMutation.swift; sourceTree = "<group>"; };
+		77E9F04AD16693BB9A98AA71 /* SecretOperationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretOperationService.swift; sourceTree = "<group>"; };
 		789685CA898EE7C3A92A1E10 /* SensitiveCatalogEditorPresetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogEditorPresetTests.swift; sourceTree = "<group>"; };
 		78BBA1FE6BD05465B9F51546 /* ExecutionBroker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExecutionBroker.swift; sourceTree = "<group>"; };
 		78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogDocumentStore.swift; sourceTree = "<group>"; };
@@ -1139,6 +1141,7 @@
 				E11BCA848A8DC9F55C6927BB /* ScopedMasterKeyCoordinator.swift */,
 				3A6300F93F6DE1FCF5878A1B /* SecretCatalogEntrySearchService.swift */,
 				770AC7FF5754FF7C5CAEDCFD /* SecretOperationCoordinator.swift */,
+				77E9F04AD16693BB9A98AA71 /* SecretOperationService.swift */,
 				A9102C620288830743DCE954 /* SecureExportWriter.swift */,
 				2EFA1BB5A9BA6A905587BD89 /* SelectionReplacing.swift */,
 				78D3AD281E4B42C3B1179CE9 /* SensitiveCatalogDocumentStore.swift */,
@@ -2146,6 +2149,7 @@
 				4D92ABAD9A4BD9B43270811B /* ScopedMasterKeyCoordinator.swift in Sources */,
 				7FAB5EC4851D3FCD9AABC450 /* SecretCatalogEntrySearchService.swift in Sources */,
 				AF1E002158A218586B796533 /* SecretOperationCoordinator.swift in Sources */,
+				014BD93BDE2560F69C0D7C88 /* SecretOperationService.swift in Sources */,
 				CE9D716F6E22883FE8DC29BD /* SecureExportWriter.swift in Sources */,
 				FF3AAEA2FFE618B22AB224C9 /* SelectionReplacing.swift in Sources */,
 				123818C146EE46994E42B89B /* SensitiveCatalogDocumentStore+Operation.swift in Sources */,
