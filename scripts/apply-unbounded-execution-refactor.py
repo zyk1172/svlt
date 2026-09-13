@@ -701,8 +701,8 @@ p = Path("mcp-server/src/server.ts")
 text = p.read_text()
 timeout_schema_pattern = re.compile(r'^\s*timeoutMs: z\.number\(\)\.int\(\)\.min\([^\n]+\n', re.MULTILINE)
 text, schema_count = timeout_schema_pattern.subn("", text)
-if schema_count != 7:
-    raise SystemExit(f"expected 7 operation timeout schema fields, found {schema_count}")
+if schema_count != 9:
+    raise SystemExit(f"expected 9 operation timeout schema fields, found {schema_count}")
 timeout_spread_pattern = re.compile(r'^\s*\.\.\.\(parsed\.timeoutMs === undefined \? \{\} : \{ timeoutMs: (?:String\(parsed\.timeoutMs\)|parsed\.timeoutMs) \}\),?\n', re.MULTILINE)
 text, spread_count = timeout_spread_pattern.subn("", text)
 if spread_count != 11:

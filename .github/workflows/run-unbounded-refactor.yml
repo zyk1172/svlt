@@ -21,14 +21,6 @@ jobs:
 
       - name: Apply source refactor
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/apply-unbounded-execution-refactor.py')
-          s = p.read_text()
-          old = 'if schema_count != 7:'
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, 'if schema_count != 9:', 1))
-          PY
           python3 scripts/apply-unbounded-execution-refactor.py
           git diff --check
 
