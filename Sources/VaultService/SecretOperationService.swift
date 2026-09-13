@@ -132,8 +132,9 @@ actor SecretOperationService {
             task: task
         )
         defer {
-            guard executionTasks[executionID]?.registrationID == registrationID else { return }
-            executionTasks.removeValue(forKey: executionID)
+            if executionTasks[executionID]?.registrationID == registrationID {
+                executionTasks.removeValue(forKey: executionID)
+            }
         }
         return try await task.value
     }

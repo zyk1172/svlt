@@ -7,7 +7,7 @@ set -euo pipefail
 # existing monoliths. Whenever a refactor shrinks one of these files, lower
 # the matching ceiling in the same PR; never raise a ceiling to make CI pass.
 readonly budgets=(
-  "Sources/VaultService/VaultAppServices.swift:253083"
+  "Sources/VaultService/VaultAppServices.swift:252567"
   "Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift:190886"
   "Sources/VaultService/SensitiveCatalogDocumentStore.swift:136876"
   "mcp-server/src/server.ts:128848"

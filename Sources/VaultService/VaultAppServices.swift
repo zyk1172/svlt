@@ -163,7 +163,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let revealSessionCoordinator: RevealSessionCoordinator
     private let authorizationSession: AuthorizationSession
     private let scopedMasterKeyCoordinator: ScopedMasterKeyCoordinator
-    let secretOperationCoordinator = SecretOperationCoordinator()
+    let secretOperationService = SecretOperationService()
     private let operationPolicyEngine: SecretOperationPolicyEngine
     private let approvalTicketStore: ApprovalTicketStore
     private let operationApprover: any OperationApproving
@@ -204,10 +204,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private var pendingCatalogDraftDocumentPaths: [String: String] = [:]
     private var catalogFormatRepairDocumentPaths: [String: String] = [:]
     private var secureInputCatalogOperations: [UUID: CatalogDocumentOperation] = [:]
-    private var approvalPending = false
     private var executionApprovalFlights: [ExecutionAuthorizationScope: ExecutionApprovalFlight] = [:]
-    private var pendingExecutionApprovalIDs: Set<UUID> = []
-    var inFlightSecretOperations: [UUID: Task<SecretOperationOutput, Error>] = [:]
     private var securityGeneration: UInt64 = 0
     private var secureInputLifecycle = CatalogSecureInputLifecycle()
     /// Keep cancellation/expiry latched during suspended submission so a late
@@ -406,7 +403,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             ipcAvailable: true,
             available: true,
             ready: true,
-            approvalPending: approvalPending,
+            approvalPending: await secretOperationService.approvalPending,
             activeKnowledgeBaseRoot: activeRoot?.path,
             pluginConnected: isPluginConnected()
         )
@@ -427,14 +424,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             flight.task.cancel()
         }
         executionApprovalFlights.removeAll()
+        await secretOperationService.invalidateAllCoordination()
         await scopedMasterKeyCoordinator.invalidateAll()
-        pendingExecutionApprovalIDs.removeAll()
-        await invalidateTrackedSecretOperations()
-        for operation in inFlightSecretOperations.values {
-            operation.cancel()
-        }
-        inFlightSecretOperations.removeAll()
-        approvalPending = false
         await cancelAllSecureInputRequests()
         await authorizationSession.invalidate()
         await operationExecutor.invalidateSecurityState()
@@ -784,7 +775,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
         try ensureTrackedSecretOperationIsActive()
 
-        let executionID = trackedSecretOperationID() ?? UUID()
         let executionContext = SecretOperationExecutionContext(
             principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue,
             securityGeneration: operationGeneration
@@ -807,12 +797,11 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 }
             )
         }
-        inFlightSecretOperations[executionID] = executionTask
-        defer {
-            inFlightSecretOperations.removeValue(forKey: executionID)
-        }
         do {
-            let output = try await executionTask.value
+            let output = try await secretOperationService.awaitExecutionTask(
+                executionTask,
+                operationID: trackedSecretOperationID()
+            )
             guard operationGeneration == securityGeneration else {
                 throw SecretOperationError.authorizationCancelled
             }
@@ -4084,7 +4073,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             decision: decision,
             hostKeyReview: hostKeyReview
         )
-        approvalPending = true
+        let approvalID = await secretOperationService.beginApproval()
         await statusObserver?(status())
 
         var authenticationContext: LocalAuthenticationContext?
@@ -4113,8 +4102,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 authorizationMode: .freshLocalApproval
             )
         } catch let error as SecretOperationError {
-            approvalPending = false
-            await statusObserver?(status())
+            if await secretOperationService.finishApproval(id: approvalID) {
+                await statusObserver?(status())
+            }
             await emitAudit(
                 action: "本机授权失败",
                 target: decision.normalizedDestination ?? "local",
@@ -4126,8 +4116,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             )
             throw error
         } catch let error as OperationAuthorizationError {
-            approvalPending = false
-            await statusObserver?(status())
+            if await secretOperationService.finishApproval(id: approvalID) {
+                await statusObserver?(status())
+            }
             switch error {
             case .cancelled:
                 await emitAudit(action: "本机授权取消", target: decision.normalizedDestination ?? "local", referenceCount: descriptor.secretReferences.count, result: "已取消", operation: .authorization, authorizationOutcome: .cancelled, status: .cancelled)
@@ -4143,8 +4134,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw SecretOperationError.authorizationUnavailable
             }
         } catch {
-            approvalPending = false
-            await statusObserver?(status())
+            if await secretOperationService.finishApproval(id: approvalID) {
+                await statusObserver?(status())
+            }
             await emitAudit(
                 action: "本机授权失败",
                 target: decision.normalizedDestination ?? "local",
@@ -4157,8 +4149,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationDenied
         }
 
-        approvalPending = false
-        await statusObserver?(status())
+        if await secretOperationService.finishApproval(id: approvalID) {
+            await statusObserver?(status())
+        }
         try ensureTrackedSecretOperationIsActive()
         await noteTrackedSecretOperationState(.running)
         return .freshLocalApproval(authenticationContext)
@@ -4258,8 +4251,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             generation: generation,
             task: task
         )
-        pendingExecutionApprovalIDs.insert(approvalID)
-        approvalPending = true
+        await secretOperationService.beginApproval(id: approvalID)
         await statusObserver?(status())
 
         do {
@@ -4474,21 +4466,22 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
               flight.id == approvalID,
               flight.generation == generation
         else {
-            pendingExecutionApprovalIDs.remove(approvalID)
+            if await secretOperationService.finishApproval(id: approvalID) {
+                await statusObserver?(status())
+            }
             return
         }
         flight.task.cancel()
         executionApprovalFlights.removeValue(forKey: scope)
-        pendingExecutionApprovalIDs.remove(approvalID)
-        approvalPending = !pendingExecutionApprovalIDs.isEmpty
-        await statusObserver?(status())
+        if await secretOperationService.finishApproval(id: approvalID) {
+            await statusObserver?(status())
+        }
     }
 
     private func markExecutionApprovalCompleted(_ approvalID: UUID) async {
-        guard pendingExecutionApprovalIDs.remove(approvalID) != nil else {
+        guard await secretOperationService.finishApproval(id: approvalID) else {
             return
         }
-        approvalPending = !pendingExecutionApprovalIDs.isEmpty
         await statusObserver?(status())
     }
 
@@ -4506,11 +4499,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 await authorizationSession.invalidateExecutionAuthorization(for: scope)
                 return .needsFreshApproval
             }
-            if let flight = executionApprovalFlights.removeValue(forKey: scope) {
-                if pendingExecutionApprovalIDs.remove(flight.id) != nil {
-                    approvalPending = !pendingExecutionApprovalIDs.isEmpty
-                    await statusObserver?(status())
-                }
+            if let flight = executionApprovalFlights.removeValue(forKey: scope),
+               await secretOperationService.finishApproval(id: flight.id) {
+                await statusObserver?(status())
             }
             return .leaseReused
         }
@@ -4546,8 +4537,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
             if executionApprovalFlights[scope]?.id == flight.id {
                 executionApprovalFlights.removeValue(forKey: scope)
-                if pendingExecutionApprovalIDs.remove(flight.id) != nil {
-                    approvalPending = !pendingExecutionApprovalIDs.isEmpty
+                if await secretOperationService.finishApproval(id: flight.id) {
                     await statusObserver?(status())
                 }
             }
@@ -4577,8 +4567,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         )
 
         executionApprovalFlights.removeValue(forKey: scope)
-        if pendingExecutionApprovalIDs.remove(flight.id) != nil {
-            approvalPending = !pendingExecutionApprovalIDs.isEmpty
+        if await secretOperationService.finishApproval(id: flight.id) {
             await statusObserver?(status())
         }
         return expiresAt == nil ? .approvedWithoutLease : .leaseEstablished
@@ -4592,8 +4581,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         }
         if let flight = executionApprovalFlights.removeValue(forKey: scope) {
             flight.task.cancel()
-            if pendingExecutionApprovalIDs.remove(flight.id) != nil {
-                approvalPending = !pendingExecutionApprovalIDs.isEmpty
+            if await secretOperationService.finishApproval(id: flight.id) {
                 await statusObserver?(status())
             }
         }
