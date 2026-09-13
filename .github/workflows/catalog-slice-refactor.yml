@@ -1,0 +1,75 @@
+name: Catalog slice refactor
+
+on:
+  push:
+    branches: [codex/catalog-agent-operations-slice]
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/catalog-agent-operations-slice
+          fetch-depth: 0
+      - name: Extract catalog operation slice
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('Sources/VaultService/VaultAppServices.swift')
+          source = path.read_text()
+          start_marker = '    public func searchSecrets('
+          end_marker = '    public func openRevealSession('
+          start = source.index(start_marker)
+          end = source.index(end_marker, start)
+          block = source[start:end].rstrip() + '\n'
+
+          target = Path('Sources/VaultService/VaultAppServices+CatalogOperations.swift')
+          if target.exists():
+              raise SystemExit('catalog slice already exists')
+
+          # Cross-file extensions cannot see file-private implementation details.
+          # Relax only declarations actually referenced by the extracted slice;
+          # every unrelated VaultAppServices private member stays private.
+          remaining = source[:start] + source[end:]
+          referenced = block
+
+          patterns = [
+              re.compile(r'^(?P<indent>\s*)private (?P<rest>(?:static )?(?:lazy )?(?:let|var) (?P<name>[A-Za-z_][A-Za-z0-9_]*))', re.M),
+              re.compile(r'^(?P<indent>\s*)private (?P<rest>(?:static )?func (?P<name>[A-Za-z_][A-Za-z0-9_]*))', re.M),
+              re.compile(r'^(?P<indent>\s*)private (?P<rest>(?:static )?(?:struct|enum|class) (?P<name>[A-Za-z_][A-Za-z0-9_]*))', re.M),
+          ]
+
+          for pattern in patterns:
+              def expose(match):
+                  name = match.group('name')
+                  if re.search(rf'\b{re.escape(name)}\b', referenced):
+                      return f"{match.group('indent')}{match.group('rest')}"
+                  return match.group(0)
+              remaining = pattern.sub(expose, remaining)
+
+          imports = '''import CryptoKit\nimport Foundation\nimport os\nimport VaultAuthorization\nimport VaultCore\nimport VaultExecution\nimport VaultIPC\n\n'''
+          target.write_text(imports + 'extension VaultAppServices {\n' + block + '}\n')
+          path.write_text(remaining)
+          PY
+
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate --quiet --spec project.yml --project . --project-root .
+          git diff --check
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Sources/VaultService/VaultAppServices.swift \
+                  Sources/VaultService/VaultAppServices+CatalogOperations.swift \
+                  SVLT.xcodeproj
+          git commit -m 'refactor: extract catalog operation slice'
+          git push origin HEAD:codex/catalog-agent-operations-slice
