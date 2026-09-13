@@ -63,24 +63,75 @@ private let transferReferenceText = "secret://0123456789ABCDEFGHJKMNPQRS"
     #expect(result.exitCode == 122)
 }
 
-@Test func fileTransferPathsStayInsideTheControlledDownloadRoot() throws {
+@Test func fileTransferAcceptsArbitraryLocalAndRemotePaths() throws {
     let reference = try SecretReference(transferReferenceText)
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("svlt-transfer-root-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let outside = transferDescriptor(
+    let uploadPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Downloads/source archive.zip")
+        .path
+    let upload = transferDescriptor(
+        action: .sftpTransfer,
+        protocolType: .sftp,
+        operation: .upload,
+        reference: reference,
+        host: "nas.local",
+        remotePath: "../../other-share/incoming/archive.zip",
+        localPath: uploadPath
+    )
+    let uploadPlan = try FileTransferAdapterSupport.makePlan(
+        for: upload,
+        action: .sftpTransfer,
+        protocols: [.sftp, .scp],
+        defaultPort: 22,
+        localRoot: root
+    )
+    #expect(uploadPlan.localURL?.path == uploadPath)
+    #expect(uploadPlan.remotePath == "../../other-share/incoming/archive.zip")
+
+    let downloadPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Desktop/NAS/report.txt")
+        .path
+    let download = transferDescriptor(
         action: .sftpTransfer,
         protocolType: .sftp,
         operation: .download,
         reference: reference,
         host: "nas.local",
-        remotePath: "/share/report.txt",
-        localPath: "/tmp/report.txt"
+        remotePath: "share/reports/../final/report.txt",
+        localPath: downloadPath
     )
-    #expect(throws: FileTransferAdapterError.invalidLocalPath) {
+    let downloadPlan = try FileTransferAdapterSupport.makePlan(
+        for: download,
+        action: .sftpTransfer,
+        protocols: [.sftp, .scp],
+        defaultPort: 22,
+        localRoot: root
+    )
+    #expect(downloadPlan.localURL?.path == downloadPath)
+    #expect(downloadPlan.remotePath == "share/reports/../final/report.txt")
+}
+
+@Test func fileTransferStillRejectsUnrepresentablePaths() throws {
+    let reference = try SecretReference(transferReferenceText)
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("svlt-transfer-root-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let remoteControlCharacter = transferDescriptor(
+        action: .sftpTransfer,
+        protocolType: .sftp,
+        operation: .upload,
+        reference: reference,
+        host: "nas.local",
+        remotePath: "share/bad\nname.txt",
+        localPath: "/tmp/source.txt"
+    )
+    #expect(throws: FileTransferAdapterError.invalidParameter) {
         _ = try FileTransferAdapterSupport.makePlan(
-            for: outside,
+            for: remoteControlCharacter,
             action: .sftpTransfer,
             protocols: [.sftp, .scp],
             defaultPort: 22,
@@ -88,17 +139,18 @@ private let transferReferenceText = "secret://0123456789ABCDEFGHJKMNPQRS"
         )
     }
 
-    let traversal = transferDescriptor(
+    let relativeLocalPath = transferDescriptor(
         action: .sftpTransfer,
         protocolType: .sftp,
-        operation: .list,
+        operation: .upload,
         reference: reference,
         host: "nas.local",
-        remotePath: "/share/../etc"
+        remotePath: "incoming/source.txt",
+        localPath: "Downloads/source.txt"
     )
-    #expect(throws: FileTransferAdapterError.invalidParameter) {
+    #expect(throws: FileTransferAdapterError.invalidLocalPath) {
         _ = try FileTransferAdapterSupport.makePlan(
-            for: traversal,
+            for: relativeLocalPath,
             action: .sftpTransfer,
             protocols: [.sftp, .scp],
             defaultPort: 22,
