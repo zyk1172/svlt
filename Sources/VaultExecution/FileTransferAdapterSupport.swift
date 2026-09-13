@@ -207,15 +207,10 @@ public enum FileTransferAdapterSupport {
         return candidate
     }
 
-    private static func timeout(from descriptor: SecretOperationDescriptor) throws -> Duration {
-        guard let rawTimeout = descriptor.parameters["timeoutMs"] else {
-            return .seconds(60)
-        }
-        guard let milliseconds = Int64(rawTimeout),
-              (1_000...60_000).contains(milliseconds) else {
-            throw FileTransferAdapterError.invalidParameter
-        }
-        return .milliseconds(milliseconds)
+    private static func timeout(from _: SecretOperationDescriptor) throws -> Duration {
+        // Legacy wire field retained for decoding compatibility only. File transfers
+        // have no SVLT wall-clock execution deadline; cancellation remains explicit.
+        .zero
     }
 
     private static func exactlyOne(_ username: String?, _ reference: SecretReference?) -> Bool {

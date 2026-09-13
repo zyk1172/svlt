@@ -107,7 +107,7 @@ public struct ExecutionBroker: Sendable {
     private let processRunner: any ProcessRunning
     private let sanitizer: OutputSanitizer
     private let validator: TemplateValidator
-    private let timeout: Duration
+    private let timeout: Duration?
     private let outputLimitBytes: Int
 
     public init(
@@ -116,7 +116,7 @@ public struct ExecutionBroker: Sendable {
         processRunner: any ProcessRunning,
         sanitizer: OutputSanitizer = OutputSanitizer(),
         validator: TemplateValidator = TemplateValidator(),
-        timeout: Duration = .seconds(30),
+        timeout: Duration? = nil,
         outputLimitBytes: Int = 1_048_576
     ) {
         self.authorizer = authorizer

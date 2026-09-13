@@ -424,6 +424,134 @@ import VaultCore
     #expect(await manager.statuses(for: scope.principal).isEmpty)
 }
 
+
+@Test func SSHSessionManagerCountsOpeningFallbackAgainstPerPrincipalLimit() async throws {
+    let root = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manager = SSHSessionManager(
+        processRunner: SessionProcessRunner(),
+        sessionDirectory: root,
+        maxSessionsPerPrincipal: 1,
+        maxGlobalSessions: 32
+    )
+    let scope = sessionScope()
+    let gate = BlockingSessionOperationGate()
+    let first = Task {
+        try await manager.execute(scope: scope) { _ in
+            await gate.markStartedAndWait()
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                channelState: .remoteCommandCompleted
+            )
+        }
+    }
+    await gate.waitUntilStarted()
+
+    do {
+        _ = try await manager.execute(scope: scope) { _ in
+            SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                channelState: .remoteCommandCompleted
+            )
+        }
+        Issue.record("An opening fallback bypassed the per-principal session limit.")
+    } catch SSHSessionManagerError.sessionLimitReached {
+        // Expected.
+    } catch {
+        Issue.record("Unexpected opening fallback limit error: \(error)")
+    }
+
+    await gate.release()
+    _ = try await first.value
+}
+
+@Test func SSHSessionManagerCountsOpeningFallbackAgainstGlobalLimit() async throws {
+    let root = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manager = SSHSessionManager(
+        processRunner: SessionProcessRunner(),
+        sessionDirectory: root,
+        maxSessionsPerPrincipal: 8,
+        maxGlobalSessions: 1
+    )
+    let scope = sessionScope()
+    let gate = BlockingSessionOperationGate()
+    let first = Task {
+        try await manager.execute(scope: scope) { _ in
+            await gate.markStartedAndWait()
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                channelState: .remoteCommandCompleted
+            )
+        }
+    }
+    await gate.waitUntilStarted()
+
+    do {
+        _ = try await manager.execute(scope: scope) { _ in
+            SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data()),
+                channelState: .remoteCommandCompleted
+            )
+        }
+        Issue.record("An opening fallback bypassed the global session limit.")
+    } catch SSHSessionManagerError.sessionLimitReached {
+        // Expected.
+    } catch {
+        Issue.record("Unexpected global opening fallback limit error: \(error)")
+    }
+
+    await gate.release()
+    _ = try await first.value
+}
+
+@Test func SSHSessionManagerDefersSharedMasterCloseUntilConcurrentCommandsFinish() async throws {
+    let root = try makeTemporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let runner = SessionProcessRunner()
+    let manager = SSHSessionManager(processRunner: runner, sessionDirectory: root)
+    let scope = sessionScope()
+    let opened = try await open(manager: manager, scope: scope)
+    let sessionID = try #require(opened.sessionID)
+    let failingGate = BlockingSessionOperationGate()
+    let successfulGate = BlockingSessionOperationGate()
+
+    let failing = Task {
+        try await manager.execute(scope: scope, requestedSessionID: sessionID) { _ in
+            await failingGate.markStartedAndWait()
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 255, stdout: Data(), stderr: Data()),
+                channelState: .transportFailed
+            )
+        }
+    }
+    await failingGate.waitUntilStarted()
+
+    let successful = Task {
+        try await manager.execute(scope: scope, requestedSessionID: sessionID) { _ in
+            await successfulGate.markStartedAndWait()
+            return SSHSessionCommandExecution(
+                processResult: ProcessResult(exitCode: 0, stdout: Data("done".utf8), stderr: Data()),
+                channelState: .remoteCommandCompleted
+            )
+        }
+    }
+    await successfulGate.waitUntilStarted()
+
+    await failingGate.release()
+    let failedResult = try await failing.value
+    #expect(failedResult.channelState == .transportFailed)
+    #expect(await runner.invocations.contains { $0.arguments.contains("exit") } == false)
+
+    await successfulGate.release()
+    let successfulResult = try await successful.value
+    #expect(successfulResult.processResult.stdout == Data("done".utf8))
+    #expect(successfulResult.sessionID == nil)
+    #expect(!successfulResult.masterReady)
+    #expect(await runner.invocations.filter { $0.arguments.contains("exit") }.count == 1)
+    #expect(await manager.statuses(for: scope.principal).isEmpty)
+}
+
 private func open(
     manager: SSHSessionManager,
     scope: SSHSessionScope
@@ -458,6 +586,39 @@ private func makeTemporaryDirectory() throws -> URL {
     return directory
 }
 
+
+private actor BlockingSessionOperationGate {
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStartedAndWait() async {
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+}
+
 private actor SessionProcessRunner: ProcessRunning {
     private(set) var invocations: [ProcessInvocation] = []
     let checkExitCode: Int32
@@ -477,7 +638,7 @@ private actor SessionProcessRunner: ProcessRunning {
     func run(
         _ invocation: ProcessInvocation,
         stdin _: Data,
-        timeout _: Duration,
+        timeout _: Duration?,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
         invocations.append(invocation)

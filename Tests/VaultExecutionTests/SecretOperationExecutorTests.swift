@@ -13,10 +13,7 @@ import VaultCore
             stderr: Data("warning ASV_CANARY_AGENT_PASSWORD".utf8)
         )
     )
-    let executor = LocalSecretOperationExecutor(
-        processRunner: runner,
-        timeout: .seconds(5)
-    )
+    let executor = LocalSecretOperationExecutor(processRunner: runner)
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
         secretReferences: [reference],
@@ -277,14 +274,16 @@ import VaultCore
     #expect(output.stage == .remoteCommand)
 }
 
-@Test func sshExecutorReportsProcessTimeoutAndHonorsDescriptorTimeout() async throws {
+@Test func sshExecutorIgnoresLegacyDescriptorTimeoutAndUsesNoExecutionDeadline() async throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
-    let runner = TimeoutProcessRunner()
-    let executor = LocalSecretOperationExecutor(processRunner: runner, timeout: .seconds(30))
+    let runner = CapturingProcessRunner(
+        result: ProcessResult(exitCode: 0, stdout: Data("ok".utf8), stderr: Data())
+    )
+    let executor = LocalSecretOperationExecutor(processRunner: runner)
     let descriptor = sshDescriptor(reference: reference, parameters: [
         "passwordRef": reference.description,
         "username": "admin",
-        "timeoutMs": "1200"
+        "timeoutMs": "1"
     ])
 
     let output = try await executor.execute(
@@ -293,9 +292,8 @@ import VaultCore
         resolve: { _ in Data("ASV_CANARY_TIMEOUT_SECRET".utf8) }
     )
 
-    #expect(output.status == "TIMED_OUT")
-    #expect(output.stage == .timeout)
-    #expect(await runner.timeout == .milliseconds(1200))
+    #expect(output.status == "COMPLETED")
+    #expect(await runner.timeout == nil)
 }
 
 @Test func sshExecutorReportsAuthenticationFailureWithoutRetryingTheSecret() async throws {
@@ -316,7 +314,7 @@ import VaultCore
     #expect(output.exitCode == 126)
 }
 
-@Test func sshExecutorRejectsSecretUsernameAndInvalidTimeout() async throws {
+@Test func sshExecutorRejectsSecretAndOptionLikeUsername() async throws {
     let reference = try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")
     let executor = LocalSecretOperationExecutor(processRunner: CapturingProcessRunner(
         result: ProcessResult(exitCode: 0, stdout: Data(), stderr: Data())
@@ -338,14 +336,6 @@ import VaultCore
         _ = try await executor.execute(optionLikeUsername, metadata: [], resolve: { _ in Data("unused".utf8) })
     }
 
-    let invalidTimeout = sshDescriptor(reference: reference, parameters: [
-        "passwordRef": reference.description,
-        "username": "admin",
-        "timeoutMs": "30001"
-    ])
-    await #expect(throws: SecretOperationExecutionError.invalidParameter) {
-        _ = try await executor.execute(invalidTimeout, metadata: [], resolve: { _ in Data("unused".utf8) })
-    }
 }
 
 @Test func sshBatchUsesOneAuthenticatedTransportAndIndependentResults() async throws {
@@ -479,7 +469,7 @@ private actor CapturingProcessRunner: ProcessRunning {
     func run(
         _ invocation: ProcessInvocation,
         stdin: Data,
-        timeout: Duration,
+        timeout: Duration?,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
         if self.invocation == nil {
@@ -507,7 +497,7 @@ private actor TimeoutProcessRunner: ProcessRunning {
     func run(
         _: ProcessInvocation,
         stdin _: Data,
-        timeout: Duration,
+        timeout: Duration?,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
         self.timeout = timeout
@@ -525,7 +515,7 @@ private actor ThrowingProcessRunner: ProcessRunning {
     func run(
         _: ProcessInvocation,
         stdin _: Data,
-        timeout _: Duration,
+        timeout _: Duration?,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
         throw error
@@ -545,7 +535,7 @@ private actor BatchProcessRunner: ProcessRunning {
     func run(
         _ invocation: ProcessInvocation,
         stdin _: Data,
-        timeout _: Duration,
+        timeout _: Duration?,
         outputLimitBytes _: Int
     ) async throws -> ProcessResult {
         invocations.append(invocation)

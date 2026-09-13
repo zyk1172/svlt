@@ -226,7 +226,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approvalTicketStore: ApprovalTicketStore = ApprovalTicketStore(),
         operationApprover: any OperationApproving = LocalOperationApprover(),
         operationExecutor: any SecretOperationExecuting = LocalSecretOperationExecutor(),
-        operationApprovalTimeout: Duration = .seconds(30),
+        operationApprovalTimeout: Duration = .seconds(120),
         agentDecryptAuthorizationTTL: TimeInterval? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
@@ -325,7 +325,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         approvalTicketStore: ApprovalTicketStore = ApprovalTicketStore(),
         operationApprover: any OperationApproving = LocalOperationApprover(),
         operationExecutor: any SecretOperationExecuting = LocalSecretOperationExecutor(),
-        operationApprovalTimeout: Duration = .seconds(30),
+        operationApprovalTimeout: Duration = .seconds(120),
         agentDecryptAuthorizationTTL: TimeInterval? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
@@ -2497,31 +2497,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             timeout: operationApprovalTimeout,
             summary: summary
         )
-    }
-
-    static func approveWithTimeout(
-        approver: any OperationApproving,
-        timeout: Duration,
-        summary: String
-    ) async throws -> LocalAuthenticationContext? {
-        try await withThrowingTaskGroup(of: LocalAuthenticationContext?.self) { group in
-            group.addTask {
-                if let contextApprover = approver as? any OperationApprovalContextProviding {
-                    return try await contextApprover.approveWithAuthenticationContext(summary: summary)
-                }
-                try await approver.approve(summary: summary)
-                return nil
-            }
-            group.addTask {
-                try await Task.sleep(for: timeout)
-                throw OperationAuthorizationError.timeout
-            }
-            defer { group.cancelAll() }
-            guard let result = try await group.next() else {
-                throw OperationAuthorizationError.cancelled
-            }
-            return result
-        }
     }
 
     func authorizeCatalogDiff(

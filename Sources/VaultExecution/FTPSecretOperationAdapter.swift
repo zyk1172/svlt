@@ -165,6 +165,8 @@ public struct FTPSecretOperationAdapter: SecretOperationAdapter {
                 remotePath: plan.remotePath,
                 redacted: true
             )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return SecretOperationOutput(
                 status: "FAILED",
@@ -266,7 +268,8 @@ private final class FTPWire: @unchecked Sendable {
 
     func start() async throws {
         let gate = FTPContinuationGate()
-        try await withCheckedThrowingContinuation { continuation in
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
@@ -279,54 +282,69 @@ private final class FTPWire: @unchecked Sendable {
                     break
                 }
             }
-            connection.start(queue: queue)
+                connection.start(queue: queue)
+            }
+        } onCancel: {
+            connection.cancel()
         }
     }
 
     func send(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if error == nil {
-                    continuation.resume()
-                } else {
-                    continuation.resume(throwing: FTPClientError.connection)
-                }
-            })
-        }
-    }
-
-    func finishSending() async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            connection.send(
-                content: nil,
-                contentContext: .finalMessage,
-                isComplete: true,
-                completion: .contentProcessed { error in
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                connection.send(content: data, completion: .contentProcessed { error in
                     if error == nil {
                         continuation.resume()
                     } else {
                         continuation.resume(throwing: FTPClientError.connection)
                     }
-                }
-            )
+                })
+            }
+        } onCancel: {
+            connection.cancel()
+        }
+    }
+
+    func finishSending() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                connection.send(
+                    content: nil,
+                    contentContext: .finalMessage,
+                    isComplete: true,
+                    completion: .contentProcessed { error in
+                        if error == nil {
+                            continuation.resume()
+                        } else {
+                            continuation.resume(throwing: FTPClientError.connection)
+                        }
+                    }
+                )
+            }
+        } onCancel: {
+            connection.cancel()
         }
     }
 
     func receive(maxLength: Int) async throws -> FTPReceiveResult {
-        try await withCheckedThrowingContinuation { continuation in
-            connection.receive(
-                minimumIncompleteLength: 1,
-                maximumLength: maxLength
-            ) { content, _, isComplete, error in
-                if error != nil {
-                    continuation.resume(throwing: FTPClientError.connection)
-                } else {
-                    continuation.resume(returning: FTPReceiveResult(
-                        data: content ?? Data(),
-                        isComplete: isComplete
-                    ))
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                connection.receive(
+                    minimumIncompleteLength: 1,
+                    maximumLength: maxLength
+                ) { content, _, isComplete, error in
+                    if error != nil {
+                        continuation.resume(throwing: FTPClientError.connection)
+                    } else {
+                        continuation.resume(returning: FTPReceiveResult(
+                            data: content ?? Data(),
+                            isComplete: isComplete
+                        ))
+                    }
                 }
             }
+        } onCancel: {
+            connection.cancel()
         }
     }
 
@@ -420,7 +438,7 @@ private struct FTPClient: Sendable {
         defer { control.cancel() }
 
         do {
-            try await withFTPTimeout(timeout) { try await control.start() }
+            try await runFTPStage { try await control.start() }
             let greeting = try await readReply(on: control, reader: &reader)
             guard (200...399).contains(greeting.code) else {
                 throw FTPClientError.server(greeting.code)
@@ -561,7 +579,7 @@ private struct FTPClient: Sendable {
         } catch let error as FTPClientError {
             throw error
         } catch is CancellationError {
-            throw FTPClientError.timedOut
+            throw CancellationError()
         } catch {
             throw FTPClientError.connection
         }
@@ -617,7 +635,7 @@ private struct FTPClient: Sendable {
         guard let commandData = encoding.data(for: value + "\r\n") else {
             throw FTPClientError.connection
         }
-        try await withFTPTimeout(timeout) {
+        try await runFTPStage {
             try await wire.send(commandData)
         }
         return try await readReply(on: wire, reader: &reader)
@@ -654,7 +672,10 @@ private struct FTPClient: Sendable {
         }
         let data = FTPWire(host: host, port: dataPort)
         do {
-            try await withFTPTimeout(timeout) { try await data.start() }
+            try await runFTPStage { try await data.start() }
+        } catch is CancellationError {
+            data.cancel()
+            throw CancellationError()
         } catch {
             data.cancel()
             throw FTPClientError.connection
@@ -667,7 +688,7 @@ private struct FTPClient: Sendable {
         while true {
             let received: FTPReceiveResult
             do {
-                received = try await withFTPTimeout(timeout) {
+                received = try await runFTPStage {
                     try await wire.receive(maxLength: 64 * 1024)
                 }
             } catch FTPClientError.connection {
@@ -689,7 +710,7 @@ private struct FTPClient: Sendable {
         while true {
             let received: FTPReceiveResult
             do {
-                received = try await withFTPTimeout(timeout) {
+                received = try await runFTPStage {
                     try await wire.receive(maxLength: 64 * 1024)
                 }
             } catch FTPClientError.connection {
@@ -709,11 +730,13 @@ private struct FTPClient: Sendable {
     private func sendData(from handle: FileHandle, to wire: FTPWire) async throws {
         do {
             while let data = try handle.read(upToCount: 64 * 1024), !data.isEmpty {
-                try await withFTPTimeout(timeout) { try await wire.send(data) }
+                try await runFTPStage { try await wire.send(data) }
             }
-            try await withFTPTimeout(timeout) { try await wire.finishSending() }
+            try await runFTPStage { try await wire.finishSending() }
         } catch let error as FTPClientError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw FTPClientError.localIO
         }
@@ -784,7 +807,7 @@ private struct FTPReplyReader: Sendable {
             guard buffer.count <= 64 * 1024 else {
                 throw FTPClientError.connection
             }
-            let received = try await withFTPTimeout(timeout) {
+            let received = try await runFTPStage {
                 try await wire.receive(maxLength: 8 * 1024)
             }
             buffer.append(received.data)
@@ -795,20 +818,16 @@ private struct FTPReplyReader: Sendable {
     }
 }
 
-private func withFTPTimeout<T: Sendable>(
-    _ duration: Duration,
+func runFTPStage<T: Sendable>(
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask(operation: operation)
-        group.addTask {
-            try await Task.sleep(for: duration)
-            throw FTPClientError.timedOut
-        }
-        defer { group.cancelAll() }
-        guard let result = try await group.next() else {
-            throw FTPClientError.timedOut
-        }
+    try Task.checkCancellation()
+    do {
+        let result = try await operation()
+        try Task.checkCancellation()
         return result
+    } catch {
+        try Task.checkCancellation()
+        throw error
     }
 }
