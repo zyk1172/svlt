@@ -65,6 +65,7 @@
 		2DF5864404D1FD343A07D271 /* VaultExecution.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3344061D1CB333FC44C63D40 /* VaultExecution.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		2F994CA46273EEBD4223FCA9 /* VaultIPC.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 892621C9C26F5216B8775FB1 /* VaultIPC.framework */; };
 		30371264025700FF2353F001 /* SVLTAgentCatalogPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E703A5D3FEA6B27316988B5 /* SVLTAgentCatalogPolicy.swift */; };
+		3042F13596567AD2966BD477 /* VaultAppServices+CatalogOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1964CB8BB283C3F42A4B281 /* VaultAppServices+CatalogOperations.swift */; };
 		307FF8408D14E63800E91E7D /* EncryptSelectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0A6EB02EBDB05DDB71F9AE4 /* EncryptSelectionCoordinator.swift */; };
 		3098964BDE2709A670A2FB4C /* ExecutionTemplate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F493ADB940C048778F17BD54 /* ExecutionTemplate.swift */; };
 		3113AEEC84665E188C35B782 /* WorkbenchCatalogPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D984450AC03090236653AC29 /* WorkbenchCatalogPresentationTests.swift */; };
@@ -855,6 +856,7 @@
 		CE3EF0D35D8599FB7BD2CFA7 /* SensitiveCatalogDocumentCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveCatalogDocumentCodec.swift; sourceTree = "<group>"; };
 		D021D5BFEF12AD46E4276682 /* MetalTelemetryCompatibility.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MetalTelemetryCompatibility.m; sourceTree = "<group>"; };
 		D16AE216DF7C50EA186BEC52 /* SensitiveInformationDocumentStore+UIProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SensitiveInformationDocumentStore+UIProbe.swift"; sourceTree = "<group>"; };
+		D1964CB8BB283C3F42A4B281 /* VaultAppServices+CatalogOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "VaultAppServices+CatalogOperations.swift"; sourceTree = "<group>"; };
 		D21DAFAB58E97A24C38E5094 /* RecoveryKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoveryKeyStore.swift; sourceTree = "<group>"; };
 		D2ADE20C5E56DA874102A756 /* SSHSessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHSessionManager.swift; sourceTree = "<group>"; };
 		D4806DEE54554EB6A38F4A83 /* SSHRemoteCommandEncoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHRemoteCommandEncoderTests.swift; sourceTree = "<group>"; };
@@ -1150,6 +1152,7 @@
 				0D6F389D72B025EC38DA3F70 /* SVLTPosixFileReader.c */,
 				90FBD36E7696C9F92345494A /* SVLTPosixFileReader.h */,
 				1D3AAEC8E0FDA3FAF8C10253 /* VaultAppServices.swift */,
+				D1964CB8BB283C3F42A4B281 /* VaultAppServices+CatalogOperations.swift */,
 				114E878E0FB68A4D79741DB1 /* VaultDaemonCore.swift */,
 				3F7DDA3AE88C763204AF4663 /* VaultDaemonLifecycleMonitor.swift */,
 				53ED259C8601F64088E01811 /* VaultRecordResolver.swift */,
@@ -2155,6 +2158,7 @@
 				123818C146EE46994E42B89B /* SensitiveCatalogDocumentStore+Operation.swift in Sources */,
 				61D65BE67C6D3C352B19CBA0 /* SensitiveCatalogDocumentStore+UIProbe.swift in Sources */,
 				75382AF607CE48DAB8135325 /* SensitiveCatalogDocumentStore.swift in Sources */,
+				3042F13596567AD2966BD477 /* VaultAppServices+CatalogOperations.swift in Sources */,
 				AD6B6DA95EB7CC299C682AA5 /* VaultAppServices.swift in Sources */,
 				5D8C0DB8724D081EAD209385 /* VaultDaemonCore.swift in Sources */,
 				326A441AE261774E05D67B76 /* VaultDaemonLifecycleMonitor.swift in Sources */,
