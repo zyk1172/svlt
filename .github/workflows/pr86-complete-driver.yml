@@ -13,10 +13,11 @@ jobs:
         with:
           ref: codex/intent-first-authorization
           fetch-depth: 0
-      - name: Apply remaining review fixes
+      - name: Apply remaining review fixes and migrate tests
         run: |
           python3 scripts/pr86-repair-marker.py
           python3 scripts/pr86-complete.py
+          python3 scripts/pr86-migrate-tests.py
       - name: Repository checks
         run: |
           git diff --check
@@ -34,7 +35,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm scripts/pr86-complete.py scripts/pr86-repair-marker.py .github/workflows/pr86-complete-driver.yml
+          git rm scripts/pr86-complete.py scripts/pr86-repair-marker.py scripts/pr86-migrate-tests.py .github/workflows/pr86-complete-driver.yml
           git add Sources Tests mcp-server docs ProtocolFixtures || true
           git diff --cached --check
           git commit -m 'fix: finish daemon-owned semantic preflight'
