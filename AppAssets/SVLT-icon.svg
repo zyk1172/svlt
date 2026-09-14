@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">SVLT secure AI vault icon</title>
+  <desc id="desc">A dark blue vault door with a shield, keyhole, neural circuit traces, and connected AI nodes.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a3158"/>
+      <stop offset="0.52" stop-color="#061d39"/>
+      <stop offset="1" stop-color="#031225"/>
+    </linearGradient>
+    <linearGradient id="steel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#86d7ff"/>
+      <stop offset="0.35" stop-color="#348bd7"/>
+      <stop offset="0.72" stop-color="#1c5d9d"/>
+      <stop offset="1" stop-color="#0e3f73"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#20d7ff"/>
+      <stop offset="0.5" stop-color="#19f1ee"/>
+      <stop offset="1" stop-color="#5bffb0"/>
+    </linearGradient>
+    <radialGradient id="node" cx="50%" cy="42%" r="60%">
+      <stop offset="0" stop-color="#d0ffff"/>
+      <stop offset="0.35" stop-color="#55f7ff"/>
+      <stop offset="1" stop-color="#16d7d9"/>
+    </radialGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#001022" flood-opacity=".65"/>
+    </filter>
+  </defs>
+
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bg)" stroke="#21cfff" stroke-width="4" filter="url(#soft)"/>
+  <path d="M82 97c68-40 270-57 357 7" fill="none" stroke="#71eaff" stroke-width="4" stroke-linecap="round" opacity=".38"/>
+
+  <!-- vault ring -->
+  <circle cx="250" cy="260" r="146" fill="#071a31" stroke="url(#steel)" stroke-width="34"/>
+  <circle cx="250" cy="260" r="116" fill="none" stroke="#123b66" stroke-width="3"/>
+  <circle cx="250" cy="260" r="107" fill="none" stroke="#20e6f6" stroke-width="4" stroke-dasharray="56 32" opacity=".9"/>
+
+  <!-- vault spokes -->
+  <g stroke="url(#steel)" stroke-width="13" stroke-linecap="round" opacity=".95">
+    <path d="M250 131v54"/><path d="M250 335v55"/>
+    <path d="M129 260h51"/><path d="M321 260h50"/>
+    <path d="M164 174l36 36"/><path d="M300 310l36 36"/>
+    <path d="M336 174l-36 36"/><path d="M200 310l-36 36"/>
+  </g>
+
+  <!-- hinge -->
+  <g fill="url(#steel)" stroke="#0a2a4b" stroke-width="5">
+    <rect x="82" y="160" width="49" height="60" rx="8"/>
+    <rect x="82" y="229" width="49" height="71" rx="8"/>
+    <rect x="82" y="309" width="49" height="61" rx="8"/>
+    <rect x="127" y="176" width="28" height="176" rx="10"/>
+  </g>
+
+  <!-- external AI/network traces -->
+  <g fill="none" stroke="url(#cyan)" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)">
+    <path d="M334 206h22l19-17v-35l26-25"/>
+    <path d="M368 260h43"/>
+    <path d="M334 314h22l22 20v32l23 22"/>
+  </g>
+
+  <g fill="#08243e" stroke="url(#cyan)" stroke-width="7" filter="url(#glow)">
+    <circle cx="417" cy="112" r="34"/><circle cx="438" cy="260" r="34"/><circle cx="417" cy="404" r="34"/>
+  </g>
+  <g fill="url(#node)">
+    <circle cx="417" cy="112" r="19"/><circle cx="438" cy="260" r="19"/><circle cx="417" cy="404" r="19"/>
+  </g>
+
+  <!-- central shield -->
+  <path d="M250 158 323 197v69c0 63-32 103-73 126-41-23-73-63-73-126v-69z" fill="#06233f" stroke="url(#cyan)" stroke-width="10" filter="url(#glow)"/>
+
+  <!-- AI neural traces inside shield -->
+  <g fill="none" stroke="#69f8ff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M214 223v-26M214 223h-21l-13 13v25h17"/>
+    <path d="M202 278h-17l-11 11v20h26"/>
+    <path d="M226 204v-31M226 316v31"/>
+    <path d="M286 223v-26M286 223h21l13 13v25h-17"/>
+    <path d="M298 278h17l11 11v20h-26"/>
+    <path d="M274 204v-31M274 316v31"/>
+  </g>
+  <g fill="#6af9ff" filter="url(#glow)">
+    <circle cx="214" cy="193" r="7"/><circle cx="193" cy="261" r="7"/><circle cx="200" cy="309" r="7"/><circle cx="226" cy="173" r="7"/><circle cx="226" cy="347" r="7"/>
+    <circle cx="286" cy="193" r="7"/><circle cx="307" cy="261" r="7"/><circle cx="300" cy="309" r="7"/><circle cx="274" cy="173" r="7"/><circle cx="274" cy="347" r="7"/>
+  </g>
+
+  <!-- keyhole core -->
+  <path d="M250 228c-18 0-32 14-32 32 0 10 5 19 13 25l-12 38h62l-12-38a32 32 0 0 0-19-57z" fill="#061a31" stroke="#8cffff" stroke-width="7"/>
+  <circle cx="250" cy="260" r="12" fill="url(#node)" filter="url(#glow)"/>
+  <path d="M250 270l-10 31h20z" fill="url(#cyan)"/>
+
+  <!-- ring bolts -->
+  <g fill="url(#steel)" stroke="#062342" stroke-width="5">
+    <circle cx="250" cy="115" r="11"/><circle cx="250" cy="405" r="11"/><circle cx="395" cy="260" r="11"/>
+  </g>
+</svg>
