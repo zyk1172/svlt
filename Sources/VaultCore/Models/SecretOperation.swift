@@ -124,12 +124,12 @@ public struct AgentRiskAssessment: Codable, Equatable, Sendable {
         intendedEffect: String,
         expectedEffect: String = "Perform the intended operation",
         expectedResult: String = "Complete the requested task",
-        intentAlignment: IntentAlignment = .direct,
-        effectSeverity: EffectSeverity = .bounded,
-        reversibility: Reversibility = .recoverable,
-        secretHandling: SecretHandling = .credentialUse,
-        executionRecommendation: ExecutionRecommendation = .reusableApproval,
-        confidence: Double = 0.90
+        intentAlignment: IntentAlignment = .unclear,
+        effectSeverity: EffectSeverity = .unknown,
+        reversibility: Reversibility = .unknown,
+        secretHandling: SecretHandling = .unknown,
+        executionRecommendation: ExecutionRecommendation = .uncertain,
+        confidence: Double = 0
     ) {
         self.source = source
         self.declaredRisk = declaredRisk
@@ -159,9 +159,50 @@ public struct AgentRiskAssessment: Codable, Equatable, Sendable {
         effectSeverity: .unknown,
         reversibility: .unknown,
         secretHandling: .unknown,
-        executionRecommendation: .reusableApproval,
+        executionRecommendation: .uncertain,
         confidence: 0
     )
+}
+
+public struct SecretOperationPreflight: Codable, Equatable, Sendable {
+    public enum Route: String, Codable, CaseIterable, Sendable {
+        case fast
+        case hard
+        case gray
+        case denied
+    }
+
+    public enum BlastRadius: String, Codable, CaseIterable, Sendable {
+        case none
+        case tiny
+        case bounded
+        case broad
+        case systemic
+        case unknown
+    }
+
+    public let route: Route
+    public let policyRuleID: String
+    public let authorizationRequirement: AuthorizationRequirement
+    public let blastRadius: BlastRadius
+    public let reasons: [String]
+    public let technicalFailure: Bool
+
+    public init(
+        route: Route,
+        policyRuleID: String,
+        authorizationRequirement: AuthorizationRequirement,
+        blastRadius: BlastRadius,
+        reasons: [String],
+        technicalFailure: Bool = false
+    ) {
+        self.route = route
+        self.policyRuleID = policyRuleID
+        self.authorizationRequirement = authorizationRequirement
+        self.blastRadius = blastRadius
+        self.reasons = reasons
+        self.technicalFailure = technicalFailure
+    }
 }
 
 public enum SecretOperationAction: String, Codable, CaseIterable, Sendable {

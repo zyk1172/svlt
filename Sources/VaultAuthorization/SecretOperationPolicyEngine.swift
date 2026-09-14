@@ -45,6 +45,93 @@ public struct SecretOperationPolicyEngine: Sendable {
         return databaseStatementClassifier.classify(statement).scopeFamily
     }
 
+    public func semanticPreflight(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata]
+    ) -> SecretOperationPreflight {
+        let normalizedDestination = descriptor.normalizedDestination
+        let local = localDecision(
+  descriptor,
+  metadata: metadata,
+  normalizedDestination: normalizedDestination
+        )
+        if local.authorizationRequirement == .denied || local.technicalFailure {
+  return SecretOperationPreflight(
+      route: .denied,
+      policyRuleID: local.policyRuleID,
+      authorizationRequirement: .denied,
+      blastRadius: .unknown,
+      reasons: local.reasons,
+      technicalFailure: true
+  )
+        }
+
+        let semantic = descriptor.agentAssessment
+        let blastRadius = Self.blastRadius(for: semantic, ruleID: local.policyRuleID)
+        if local.authorizationRequirement == .freshApprovalRequired,
+ Self.isNonDowngradableFreshRule(local.policyRuleID) {
+  return SecretOperationPreflight(
+      route: .hard,
+      policyRuleID: local.policyRuleID,
+      authorizationRequirement: .freshApprovalRequired,
+      blastRadius: blastRadius,
+      reasons: local.reasons
+  )
+        }
+        if semantic.executionRecommendation == .freshApproval {
+  return SecretOperationPreflight(
+      route: .hard,
+      policyRuleID: local.policyRuleID,
+      authorizationRequirement: .freshApprovalRequired,
+      blastRadius: blastRadius,
+      reasons: local.reasons + ["Main Agent already requests fresh approval"]
+  )
+        }
+
+        let binding = bindingDecision(
+  descriptor,
+  metadata: metadata,
+  normalizedDestination: normalizedDestination
+        )
+        let semanticUnresolved = semantic.executionRecommendation == .uncertain
+  || semantic.intentAlignment == .unclear
+  || semantic.intentAlignment == .unrelated
+  || semantic.effectSeverity == .unknown
+  || semantic.reversibility == .unknown
+  || semantic.secretHandling == .unknown
+        let semanticConflict = semantic.executionRecommendation == .automatic
+  && Self.automaticRecommendationNeedsReview(semantic)
+        let localConflict = semantic.executionRecommendation == .automatic
+  && Self.isSemanticGrayRule(local.policyRuleID)
+        let scopeConflict = semantic.executionRecommendation == .automatic
+  && !binding.reasons.isEmpty
+        let opaqueExecution = Self.looksSemanticallyOpaque(descriptor)
+
+        if semanticUnresolved || semanticConflict || localConflict || scopeConflict || opaqueExecution {
+  var reasons = local.reasons
+  if semanticUnresolved { reasons.append("语义字段仍有未决项") }
+  if semanticConflict { reasons.append("主模型 automatic 建议与高影响语义冲突") }
+  if localConflict { reasons.append("本地分类器检测到需要独立语义复核的操作族") }
+  if scopeConflict { reasons.append("凭据执行目标或协议超出既有绑定范围") }
+  if opaqueExecution { reasons.append("操作包含动态或不透明执行") }
+  return SecretOperationPreflight(
+      route: .gray,
+      policyRuleID: local.policyRuleID,
+      authorizationRequirement: .freshApprovalRequired,
+      blastRadius: blastRadius,
+      reasons: reasons
+  )
+        }
+
+        return SecretOperationPreflight(
+  route: .fast,
+  policyRuleID: local.policyRuleID,
+  authorizationRequirement: Self.normalizedSemanticRequirement(semantic),
+  blastRadius: blastRadius,
+  reasons: local.reasons
+        )
+    }
+
     public func evaluate(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata]
@@ -126,9 +213,7 @@ public struct SecretOperationPolicyEngine: Sendable {
             localRisk = .approvalRequired
             reasons = ["明文暴露、数据删除或安全设置变更，每次都需要设备所有者重新认证"]
             ruleID = "sensitive-control.fresh-approval"
-            localRequirement = descriptor.actionType == .exportPlaintext
-                ? .reusableApproval
-                : .freshApprovalRequired
+            localRequirement = .freshApprovalRequired
         case .sshCommand:
             let commandDecision = descriptor.sshCommandBatch == nil
                 ? sshCommandClassifier.classify(command: descriptor.command)
