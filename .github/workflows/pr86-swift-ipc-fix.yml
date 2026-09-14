@@ -1,0 +1,53 @@
+name: PR86 Swift IPC fix
+on:
+  push:
+    branches: [codex/intent-first-authorization]
+permissions:
+  contents: write
+jobs:
+  verify-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: codex/intent-first-authorization
+          fetch-depth: 0
+      - name: Inspect and migrate Swift IPC tests
+        run: |
+          wc -l Tests/VaultIPCTests/IPCMessageTests.swift
+          grep -n -F 'switch (request, decoded)' Tests/VaultIPCTests/IPCMessageTests.swift || true
+          python3 scripts/pr86-swift-ipc-migrate.py
+          git diff --check
+      - name: Run macOS test suite
+        run: |
+          xcodebuild_log="$RUNNER_TEMP/svlt-xcodebuild.log"
+          set -o pipefail
+          set +e
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/svlt-derived" \
+            -parallel-testing-enabled NO \
+            -retry-tests-on-failure \
+            -test-iterations 3 \
+            -test-repetition-relaunch-enabled YES \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$xcodebuild_log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo '::group::xcodebuild error diagnostics'
+            grep -nE '(^|[[:space:]])(fatal )?error:' "$xcodebuild_log" || true
+            echo '::endgroup::'
+          fi
+          exit "$status"
+      - name: Commit verified migration
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -f scripts/pr86-swift-ipc-migrate.py .github/workflows/pr86-swift-ipc-fix.yml
+          git add Tests/VaultIPCTests/IPCMessageTests.swift
+          git diff --cached --check
+          git commit -m 'test: migrate Swift IPC preflight coverage'
+          git push origin HEAD:codex/intent-first-authorization
