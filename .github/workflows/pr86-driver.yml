@@ -27,12 +27,7 @@ jobs:
               if inside and line.startswith('      - name: Commit source and test changes'):
                   break
               if inside:
-                  if line.startswith('          '):
-                      out.append(line[10:])
-                  elif line.strip():
-                      raise SystemExit(f'unexpected patch block indentation: {line!r}')
-                  else:
-                      out.append('')
+                  out.append(line[10:] if line.startswith('          ') else line)
           if not out:
               raise SystemExit('patch block not found')
           Path('/tmp/apply-pr86.sh').write_text('\n'.join(out) + '\n')
