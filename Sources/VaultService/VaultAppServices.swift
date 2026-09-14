@@ -163,6 +163,9 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
     private let operationApprover: any OperationApproving
     private let operationExecutor: any SecretOperationExecuting
     private let operationApprovalTimeout: Duration
+    // Internal for the semantic-review extension; the containing actor remains
+    // the only mutable owner of this value.
+    var semanticReviewStore: SemanticReviewStore
     private let agentDecryptAuthorizationTTL: TimeInterval?
     private let credentialAuthorizationTTL: TimeInterval
     private let externalSendAuthorizationTTL: TimeInterval
@@ -227,6 +230,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         operationApprover: any OperationApproving = LocalOperationApprover(),
         operationExecutor: any SecretOperationExecuting = LocalSecretOperationExecutor(),
         operationApprovalTimeout: Duration = .seconds(120),
+        semanticReviewTTL: TimeInterval = 120,
         agentDecryptAuthorizationTTL: TimeInterval? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
@@ -276,6 +280,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         self.operationApprover = operationApprover
         self.operationExecutor = operationExecutor
         self.operationApprovalTimeout = operationApprovalTimeout
+        self.semanticReviewStore = SemanticReviewStore(ttl: semanticReviewTTL)
         self.agentDecryptAuthorizationTTL = agentDecryptAuthorizationTTL
         self.credentialAuthorizationTTL = agentDecryptAuthorizationTTL ?? credentialAuthorizationTTL
         self.externalSendAuthorizationTTL = externalSendAuthorizationTTL
@@ -326,6 +331,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         operationApprover: any OperationApproving = LocalOperationApprover(),
         operationExecutor: any SecretOperationExecuting = LocalSecretOperationExecutor(),
         operationApprovalTimeout: Duration = .seconds(120),
+        semanticReviewTTL: TimeInterval = 120,
         agentDecryptAuthorizationTTL: TimeInterval? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
@@ -364,6 +370,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             operationApprover: operationApprover,
             operationExecutor: operationExecutor,
             operationApprovalTimeout: operationApprovalTimeout,
+            semanticReviewTTL: semanticReviewTTL,
             agentDecryptAuthorizationTTL: agentDecryptAuthorizationTTL,
             credentialAuthorizationTTL: credentialAuthorizationTTL,
             externalSendAuthorizationTTL: externalSendAuthorizationTTL,
@@ -496,13 +503,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return reference.description
     }
 
-    public func preflightSecretOperation(
-        _ descriptor: SecretOperationDescriptor
-    ) async throws -> SecretOperationPreflight {
-        let metadata = try await policyMetadata(for: descriptor.secretReferences)
-        return operationPolicyEngine.semanticPreflight(descriptor, metadata: metadata)
-    }
-
     public func performSecretOperation(
         _ descriptor: SecretOperationDescriptor
     ) async throws -> SecretOperationOutput {
@@ -523,7 +523,16 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 generation: operationGeneration
             )
         }
-        let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
+        let verifiedSemanticReviewRuleID = consumeSemanticReviewIfValid(
+            descriptor,
+            metadata: metadata,
+            principal: AuditContext.current?.principal ?? AuditSource.agent.rawValue
+        )
+        let decision = evaluateSecretOperation(
+            descriptor,
+            metadata: metadata,
+            verifiedSemanticReviewRuleID: verifiedSemanticReviewRuleID
+        )
         guard decision.risk != .denied else {
             await emitAudit(
                 action: "智能体操作请求无效",
@@ -595,9 +604,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         } catch {
             throw SecretOperationError.actionExecutionFailed
         }
-        var currentDecision = operationPolicyEngine.evaluate(
+        var currentDecision = evaluateSecretOperation(
             descriptor,
-            metadata: currentMetadata
+            metadata: currentMetadata,
+            verifiedSemanticReviewRuleID: verifiedSemanticReviewRuleID
         )
         guard currentDecision.risk != .denied else {
             await emitAudit(
@@ -638,9 +648,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             } catch {
                 throw SecretOperationError.actionExecutionFailed
             }
-            currentDecision = operationPolicyEngine.evaluate(
+            currentDecision = evaluateSecretOperation(
                 descriptor,
-                metadata: currentMetadata
+                metadata: currentMetadata,
+                verifiedSemanticReviewRuleID: verifiedSemanticReviewRuleID
             )
             guard currentDecision.risk != .denied else {
                 throw policyDecisionError(for: currentDecision)
@@ -701,9 +712,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 } catch {
                     throw SecretOperationError.actionExecutionFailed
                 }
-                let refreshedDecision = operationPolicyEngine.evaluate(
+                let refreshedDecision = evaluateSecretOperation(
                     descriptor,
-                    metadata: refreshedMetadata
+                    metadata: refreshedMetadata,
+                    verifiedSemanticReviewRuleID: verifiedSemanticReviewRuleID
                 )
                 guard refreshedDecision.risk != .denied else {
                     throw policyDecisionError(for: refreshedDecision)

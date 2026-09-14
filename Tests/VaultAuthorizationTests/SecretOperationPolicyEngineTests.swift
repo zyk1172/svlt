@@ -98,7 +98,7 @@ import VaultExecution
     #expect(decision.reasons.contains { $0.contains("Independent review") })
 }
 
-@Test func lexicalFilesystemDeletionCanBeReducedBySemantics() throws {
+@Test func lexicalFilesystemDeletionCanBeReducedByVerifiedJudgeSemantics() throws {
     let reference = try testReference()
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -116,7 +116,7 @@ import VaultExecution
         )
     )
 
-    let decision = engine().evaluate(descriptor, metadata: [
+    let decision = engine().evaluateWithVerifiedIndependentJudge(descriptor, metadata: [
         policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
     ])
 
@@ -125,7 +125,7 @@ import VaultExecution
     #expect(decision.policyRuleID == "\(SSHFreshRules.filesystemDelete)+intent-first")
 }
 
-@Test func lexicalContainerDestructionCanBeReducedBySemantics() throws {
+@Test func lexicalContainerDestructionCanBeReducedByVerifiedJudgeSemantics() throws {
     let reference = try testReference()
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -143,7 +143,7 @@ import VaultExecution
         )
     )
 
-    let decision = engine().evaluate(descriptor, metadata: [
+    let decision = engine().evaluateWithVerifiedIndependentJudge(descriptor, metadata: [
         policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
     ])
 
@@ -248,7 +248,7 @@ import VaultExecution
     #expect(decision.policyRuleID == "\(SecretOperationPolicyEngine.HTTPFreshRules.secretNetworkSend)+intent-first")
 }
 
-@Test func httpDeleteIsASemanticSignalRatherThanAHardVeto() throws {
+@Test func httpDeleteIsASemanticSignalAfterVerifiedJudgeReview() throws {
     let reference = try testReference()
     let descriptor = httpDescriptor(
         reference: reference,
@@ -263,7 +263,7 @@ import VaultExecution
         )
     )
 
-    let decision = engine().evaluate(descriptor, metadata: [
+    let decision = engine().evaluateWithVerifiedIndependentJudge(descriptor, metadata: [
         policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])
     ])
 
@@ -320,7 +320,7 @@ import VaultExecution
     #expect(decision.policyRuleID == "\(SecretOperationPolicyEngine.HTTPFreshRules.credentialInURL)+intent-first")
 }
 
-@Test func databaseDataDeletionCanBeReducedBySemantics() throws {
+@Test func databaseDataDeletionCanBeReducedByVerifiedJudgeSemantics() throws {
     let reference = try testReference()
     let descriptor = databaseDescriptor(
         reference: reference,
@@ -334,7 +334,7 @@ import VaultExecution
         )
     )
 
-    let decision = engine().evaluate(descriptor, metadata: [
+    let decision = engine().evaluateWithVerifiedIndependentJudge(descriptor, metadata: [
         policyMetadata(reference, destinations: ["db.local:5432"], protocols: ["postgres"])
     ])
 
@@ -384,16 +384,17 @@ import VaultExecution
     #expect(decision.policyRuleID == "\(SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin)+intent-first")
 }
 
-@Test func dynamicOrUnknownDatabaseClassificationCanStillUseSemanticDecision() throws {
+@Test func dynamicOrUnknownDatabaseClassificationCanUseVerifiedJudgeDecision() throws {
     let reference = try testReference()
     let metadata = [policyMetadata(reference, destinations: ["db.local:5432"], protocols: ["postgres"])]
 
     for statement in ["CALL rotate_credentials()", "MYSTERY_OPERATION 1"] {
-        let decision = engine().evaluate(
+        let decision = engine().evaluateWithVerifiedIndependentJudge(
             databaseDescriptor(
                 reference: reference,
                 statement: statement,
                 assessment: semanticAssessment(
+                    source: .independentJudge,
                     recommendation: .reusableApproval,
                     severity: .bounded,
                     reversibility: .recoverable,
@@ -428,7 +429,7 @@ import VaultExecution
             )
         )
 
-        let decision = engine().evaluate(descriptor, metadata: metadata)
+        let decision = engine().evaluateWithVerifiedIndependentJudge(descriptor, metadata: metadata)
         #expect(decision.authorizationRequirement == .none, "operation: \(operation)")
         #expect(decision.policyRuleID.hasSuffix("+intent-first"), "operation: \(operation)")
     }
@@ -802,10 +803,13 @@ import VaultExecution
     #expect(hard.blastRadius == .systemic)
 }
 
-@Test func mainAgentCannotDirectlyDowngradeGrayDeletionButIndependentJudgeCan() throws {
+@Test func grayDeletionRequiresVerifiedIndependentJudgeReview() throws {
     let reference = try testReference()
     let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
-    func descriptor(source: AgentRiskAssessment.Source) -> SecretOperationDescriptor {
+    func descriptor(
+        source: AgentRiskAssessment.Source,
+        recommendation: AgentRiskAssessment.ExecutionRecommendation = .automatic
+    ) -> SecretOperationDescriptor {
         SecretOperationDescriptor(
             actionType: .sshCommand,
             secretReferences: [reference],
@@ -815,7 +819,7 @@ import VaultExecution
             command: "rm -rf /share/task-owned-temp",
             agentAssessment: semanticAssessment(
                 source: source,
-                recommendation: .automatic,
+                recommendation: recommendation,
                 severity: .bounded,
                 reversibility: .recoverable,
                 reason: "Delete one task-owned temporary directory"
@@ -823,7 +827,9 @@ import VaultExecution
         )
     }
     #expect(engine().evaluate(descriptor(source: .mainAgent), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
-    #expect(engine().evaluate(descriptor(source: .independentJudge), metadata: metadata).authorizationRequirement == .none)
+    #expect(engine().evaluate(descriptor(source: .mainAgent, recommendation: .reusableApproval), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+    #expect(engine().evaluate(descriptor(source: .independentJudge), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+    #expect(engine().evaluateWithVerifiedIndependentJudge(descriptor(source: .independentJudge), metadata: metadata).authorizationRequirement == .none)
 }
 
 @Test func newCredentialScopeRoutesAutomaticRecommendationToGray() throws {

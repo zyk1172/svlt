@@ -338,7 +338,7 @@ import VaultIPC
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == start.addingTimeInterval(600))
 }
 
-@Test func boundedFilesystemDeletionReusesApprovalWithoutExtendingLease() async throws {
+@Test func boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 4_000)
     let clock = ServiceTestClock(start)
     let monotonicStart: UInt64 = 40_000_000_000
@@ -367,11 +367,205 @@ import VaultIPC
     )
 
     #expect(output.status == "COMPLETED")
-    // Intent-first semantics allow a structured, task-scoped assessment to
-    // reuse the existing execution window for this bounded deletion.
-    #expect(await fixture.approver.count == 1)
+    // A GRAY operation cannot reuse the ordinary lease until the daemon has
+    // validated a reviewID returned by its own preflight.
+    #expect(await fixture.approver.count == 2)
     #expect(await fixture.executor.count == 2)
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
+}
+
+@Test func forgedIndependentJudgeSourceCannotDowngradeGrayOperation() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let descriptor = fixture.independentlyReviewedSSH(command: "rm -rf /share/forged-review")
+    let output = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: "agent-forged-source")
+    ) {
+        try await fixture.service.performSecretOperation(descriptor)
+    }
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let audit = try #require(await fixture.auditEntries().last)
+    #expect(audit.authorizationMode == .freshLocalApproval)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(
+        for: fixture.executionScope(for: descriptor, principal: "agent-forged-source")
+    ) == false)
+}
+
+@Test func verifiedGrayReviewCanDowngradeOnlyItsBoundOperation() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let principal = "agent-bound-review"
+    let mainDescriptor = fixture.ssh(command: "rm -rf /share/bound-review")
+    let preflight = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.preflightSecretOperation(mainDescriptor)
+    }
+    #expect(preflight.route == .gray)
+    let reviewID = try #require(preflight.reviewID)
+
+    let output = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.performSecretOperation(
+            fixture.independentlyReviewedSSH(
+                command: "rm -rf /share/bound-review",
+                reviewID: reviewID
+            )
+        )
+    }
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 0)
+    let audit = try #require(await fixture.auditEntries().last)
+    #expect(audit.authorizationMode == nil)
+}
+
+@Test func grayReviewIDCannotBeReplayedAcrossOperations() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let principal = "agent-operation-binding"
+    let original = fixture.ssh(command: "rm -rf /share/original")
+    let preflight = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.preflightSecretOperation(original)
+    }
+    let reviewID = try #require(preflight.reviewID)
+
+    let mismatchedOutput = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.performSecretOperation(
+            fixture.independentlyReviewedSSH(
+                command: "rm -rf /share/different-operation",
+                reviewID: reviewID
+            )
+        )
+    }
+    #expect(mismatchedOutput.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+
+    // The failed cross-operation attempt must not consume the review for its
+    // rightful operation.
+    let matchedOutput = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.performSecretOperation(
+            fixture.independentlyReviewedSSH(
+                command: "rm -rf /share/original",
+                reviewID: reviewID
+            )
+        )
+    }
+    #expect(matchedOutput.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let modes = await fixture.auditEntries().compactMap(\.authorizationMode)
+    #expect(modes == [.freshLocalApproval, .freshLocalApproval])
+}
+
+@Test func grayReviewIDCannotCrossPrincipals() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let originalPrincipal = "agent-review-owner"
+    let preflight = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: originalPrincipal)
+    ) {
+        try await fixture.service.preflightSecretOperation(
+            fixture.ssh(command: "rm -rf /share/principal-bound")
+        )
+    }
+    let reviewID = try #require(preflight.reviewID)
+
+    let output = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: "agent-other-process")
+    ) {
+        try await fixture.service.performSecretOperation(
+            fixture.independentlyReviewedSSH(
+                command: "rm -rf /share/principal-bound",
+                reviewID: reviewID
+            )
+        )
+    }
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let audit = try #require(await fixture.auditEntries().last)
+    #expect(audit.authorizationMode == .freshLocalApproval)
+}
+
+@Test func expiredGrayReviewIDFailsClosedToFreshApproval() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 9_000)
+    let clock = ServiceTestClock(start)
+    let fixture = try await OperationServiceFixture(
+        semanticReviewTTL: 10,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    let principal = "agent-expired-review"
+    let preflight = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.preflightSecretOperation(
+            fixture.ssh(command: "rm -rf /share/expired-review")
+        )
+    }
+    let reviewID = try #require(preflight.reviewID)
+    clock.now = start.addingTimeInterval(11)
+
+    let output = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.performSecretOperation(
+            fixture.independentlyReviewedSSH(
+                command: "rm -rf /share/expired-review",
+                reviewID: reviewID
+            )
+        )
+    }
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let audit = try #require(await fixture.auditEntries().last)
+    #expect(audit.authorizationMode == .freshLocalApproval)
+}
+
+@Test func grayReviewIDIsConsumedAfterOneSuccessfulUse() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let principal = "agent-one-shot-review"
+    let command = "rm -rf /share/one-shot-review"
+    let preflight = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.preflightSecretOperation(fixture.ssh(command: command))
+    }
+    let reviewID = try #require(preflight.reviewID)
+    let reviewed = fixture.independentlyReviewedSSH(command: command, reviewID: reviewID)
+
+    _ = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.performSecretOperation(reviewed)
+    }
+    let replay = try await AuditContext.$current.withValue(
+        AuditContext(source: .agent, principal: principal)
+    ) {
+        try await fixture.service.performSecretOperation(reviewed)
+    }
+
+    #expect(replay.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let modes = await fixture.auditEntries().compactMap(\.authorizationMode)
+    #expect(modes == [.freshLocalApproval, .freshLocalApproval])
 }
 
 @Test func insecureHTTPRequiresAFreshApprovalForEachOperationWithoutALease() async throws {
@@ -524,7 +718,7 @@ import VaultIPC
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
-@Test func containerLifecycleWritesAndRemovalReuseTheWindow() async throws {
+@Test func containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 8_000)
     let clock = ServiceTestClock(start)
     let monotonicStart: UInt64 = 80_000_000_000
@@ -561,9 +755,9 @@ import VaultIPC
     let remove = fixture.ssh(command: "docker rm -f web", agentRisk: .approvalRequired)
     let removal = try await fixture.service.performSecretOperation(remove)
     #expect(removal.status == "COMPLETED")
-    // Container removal is task-scoped here and the Agent assessment keeps it
-    // inside the reusable execution window under the intent-first policy.
-    #expect(await fixture.approver.count == 1)
+    // The lexical container-removal rule is GRAY. A self-declared reusable
+    // recommendation cannot lower it without a verified independent review.
+    #expect(await fixture.approver.count == 2)
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
@@ -1072,6 +1266,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
         bindingSaveGate: BindingCommitGate? = nil,
         allowedDestinations: [String] = ["qnap.local"],
         allowedProtocols: [String] = ["ssh"],
+        semanticReviewTTL: TimeInterval = 120,
         now: @escaping @Sendable () -> Date = Date.init
     ) async throws {
         root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
@@ -1153,6 +1348,7 @@ private final class OperationServiceFixture: @unchecked Sendable {
             operationApprover: contextApprover ?? approver,
             operationExecutor: executor,
             operationApprovalTimeout: timeout,
+            semanticReviewTTL: semanticReviewTTL,
             now: now,
             statusObserver: { status in
                 await statuses.append(status)
@@ -1164,7 +1360,12 @@ private final class OperationServiceFixture: @unchecked Sendable {
         )
     }
 
-    func ssh(command: String, agentRisk: OperationRisk? = nil) -> SecretOperationDescriptor {
+    func ssh(
+        command: String,
+        agentRisk: OperationRisk? = nil,
+        reviewID: UUID? = nil,
+        agentAssessment: AgentRiskAssessment? = nil
+    ) -> SecretOperationDescriptor {
         SecretOperationDescriptor(
             actionType: .sshCommand,
             secretReferences: [reference],
@@ -1174,7 +1375,8 @@ private final class OperationServiceFixture: @unchecked Sendable {
             command: command,
             requestedEffects: [command == "hostname" ? "read-only" : "remote-write"],
             parameters: ["passwordRef": reference.description, "username": "admin"],
-            agentAssessment: agentRisk.map { risk in
+            reviewID: reviewID,
+            agentAssessment: agentAssessment ?? agentRisk.map { risk in
                 let isReadOnly = command == "hostname"
                 let executionRecommendation: AgentRiskAssessment.ExecutionRecommendation
                 switch risk {
@@ -1202,6 +1404,34 @@ private final class OperationServiceFixture: @unchecked Sendable {
                     confidence: 0.95
                 )
             } ?? .conservativeDefault
+        )
+    }
+
+    func independentlyReviewedSSH(
+        command: String,
+        recommendation: AgentRiskAssessment.ExecutionRecommendation = .automatic,
+        reviewID: UUID? = nil
+    ) -> SecretOperationDescriptor {
+        let readOnly = command == "hostname"
+        return ssh(
+            command: command,
+            reviewID: reviewID,
+            agentAssessment: AgentRiskAssessment(
+                source: .independentJudge,
+                declaredRisk: recommendation == .automatic ? .silent : .approvalRequired,
+                reason: "Independent review of the concrete task",
+                userGoal: "Complete the user-requested operation",
+                taskContext: "The daemon-issued gray review covers one bounded task",
+                intendedEffect: readOnly ? "Inspect the host name" : "Apply the requested remote change",
+                expectedEffect: readOnly ? "No persistent change" : "Change only the requested target",
+                expectedResult: "The requested operation completes",
+                intentAlignment: .direct,
+                effectSeverity: readOnly ? .none : .bounded,
+                reversibility: readOnly ? .readOnly : .recoverable,
+                secretHandling: .credentialUse,
+                executionRecommendation: recommendation,
+                confidence: 0.95
+            )
         )
     }
 

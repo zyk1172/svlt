@@ -78,7 +78,8 @@ const grayPreflight = {
   authorizationRequirement: "freshApprovalRequired" as const,
   blastRadius: "unknown" as const,
   reasons: ["local classifier detected deletion"],
-  technicalFailure: false
+  technicalFailure: false,
+  reviewID: "00000000-0000-4000-8000-000000000086"
 };
 const hardPreflight = {
   route: "hard" as const,
@@ -121,6 +122,7 @@ describe("intent-first semantic routing", () => {
     if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
     expect(judged.descriptor.agentAssessment.source).toBe("independentJudge");
     expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("automatic");
+    expect(judged.descriptor.reviewID).toBe(grayPreflight.reviewID);
   });
 
   it("routes daemon GRAY preflight to the independent judge", async () => {
@@ -130,6 +132,21 @@ describe("intent-first semantic routing", () => {
     let calls = 0;
     await applyContextBoundedRiskJudge(dynamic, grayPreflight, configuration, transportReturning(ordinary, () => { calls += 1; }));
     expect(calls).toBe(1);
+  });
+
+  it("fails closed when a gray preflight has no daemon review binding", async () => {
+    let calls = 0;
+    const judged = await applyContextBoundedRiskJudge(
+      request({ intentAlignment: "unclear", executionRecommendation: "uncertain" }),
+      { ...grayPreflight, reviewID: undefined },
+      configuration,
+      { async fetch() { calls += 1; throw new Error("not expected"); } }
+    );
+    expect(calls).toBe(0);
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.source).toBe("mainAgent");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("freshApproval");
+    expect(judged.descriptor.reviewID).toBeUndefined();
   });
 
   it("normalizes clearly dangerous semantics to fresh approval without shopping for a second opinion", async () => {

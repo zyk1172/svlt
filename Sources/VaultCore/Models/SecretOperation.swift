@@ -187,6 +187,10 @@ public struct SecretOperationPreflight: Codable, Equatable, Sendable {
     public let blastRadius: BlastRadius
     public let reasons: [String]
     public let technicalFailure: Bool
+    /// A daemon-issued, short-lived binding for a GRAY preflight. This is
+    /// evidence that the daemon is willing to accept one independent review;
+    /// it is not trusted merely because it is present on a later descriptor.
+    public let reviewID: UUID?
 
     public init(
         route: Route,
@@ -194,7 +198,8 @@ public struct SecretOperationPreflight: Codable, Equatable, Sendable {
         authorizationRequirement: AuthorizationRequirement,
         blastRadius: BlastRadius,
         reasons: [String],
-        technicalFailure: Bool = false
+        technicalFailure: Bool = false,
+        reviewID: UUID? = nil
     ) {
         self.route = route
         self.policyRuleID = policyRuleID
@@ -202,6 +207,7 @@ public struct SecretOperationPreflight: Codable, Equatable, Sendable {
         self.blastRadius = blastRadius
         self.reasons = reasons
         self.technicalFailure = technicalFailure
+        self.reviewID = reviewID
     }
 }
 
@@ -797,6 +803,9 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
     public let payload: SecretOperationPayload?
     public let requestedEffects: [String]
     public let parameters: [String: String]
+    /// A daemon-issued semantic-review binding. It is not an authorization
+    /// grant by itself and is excluded from `operationHash`.
+    public let reviewID: UUID?
     public let agentAssessment: AgentRiskAssessment
 
     public init(
@@ -817,6 +826,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         payload: SecretOperationPayload? = nil,
         requestedEffects: [String] = [],
         parameters: [String: String] = [:],
+        reviewID: UUID? = nil,
         agentAssessment: AgentRiskAssessment = .conservativeDefault
     ) {
         self.actionType = actionType
@@ -836,6 +846,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         self.payload = payload
         self.requestedEffects = requestedEffects
         self.parameters = parameters
+        self.reviewID = reviewID
         self.agentAssessment = agentAssessment
     }
 
@@ -886,7 +897,9 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
     /// metadata is excluded for the same reason: it is untrusted explanatory
     /// input that the policy engine re-evaluates on every request, and two
     /// byte-identical operations must share one lease regardless of how the
-    /// Agent words its assessment.
+    /// Agent words its assessment. The daemon-issued reviewID is excluded as
+    /// well: it binds evidence to this operation, but is not the operation
+    /// being authorized.
     public var operationHash: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -951,6 +964,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
             payload: payload,
             requestedEffects: requestedEffects,
             parameters: parameters,
+            reviewID: reviewID,
             agentAssessment: agentAssessment
         )
     }

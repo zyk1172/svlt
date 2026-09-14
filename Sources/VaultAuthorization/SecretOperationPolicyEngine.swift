@@ -7,7 +7,8 @@ import VaultCore
 /// explicit Secret plaintext exposure, and a small set of genuinely
 /// destructive high-impact operations. An independent judge is called by the
 /// MCP boundary only for semantic gray zones and arrives here as a structured
-/// `AgentRiskAssessment` with `source == .independentJudge`.
+/// `AgentRiskAssessment`. The assessment source is an audit label, not proof
+/// that a daemon-issued gray review was actually completed.
 public struct SecretOperationPolicyEngine: Sendable {
     public struct Configuration: Sendable {
         public let maxCommandLength: Int
@@ -101,8 +102,10 @@ public struct SecretOperationPolicyEngine: Sendable {
             || semantic.secretHandling == .unknown
         let semanticConflict = semantic.executionRecommendation == .automatic
             && Self.automaticRecommendationNeedsReview(semantic)
-        let localConflict = semantic.executionRecommendation == .automatic
-            && Self.isSemanticGrayRule(local.policyRuleID)
+        // A local gray rule remains gray regardless of the recommendation in
+        // the untrusted descriptor. Otherwise a caller could avoid the gray
+        // route simply by changing `automatic` to `reusableApproval`.
+        let localConflict = Self.isSemanticGrayRule(local.policyRuleID)
         let scopeConflict = semantic.executionRecommendation == .automatic
             && !binding.reasons.isEmpty
         let opaqueExecution = Self.looksSemanticallyOpaque(descriptor)
@@ -136,6 +139,33 @@ public struct SecretOperationPolicyEngine: Sendable {
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata]
     ) -> PolicyDecision {
+        evaluate(
+            descriptor,
+            metadata: metadata,
+            allowingVerifiedIndependentJudge: false
+        )
+    }
+
+    /// Evaluates an assessment returned by the independent judge after the
+    /// daemon has validated and consumed its in-memory, principal- and
+    /// operation-bound review record. Callers must not use the wire-level
+    /// `source` field as that validation.
+    public func evaluateWithVerifiedIndependentJudge(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata]
+    ) -> PolicyDecision {
+        evaluate(
+            descriptor,
+            metadata: metadata,
+            allowingVerifiedIndependentJudge: true
+        )
+    }
+
+    private func evaluate(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata],
+        allowingVerifiedIndependentJudge: Bool
+    ) -> PolicyDecision {
         let normalizedDestination = descriptor.normalizedDestination
         let local = localDecision(
             descriptor,
@@ -155,13 +185,20 @@ public struct SecretOperationPolicyEngine: Sendable {
             if local.authorizationRequirement == .freshApprovalRequired,
                Self.isNonDowngradableFreshRule(local.policyRuleID) {
                 effectiveRequirement = .freshApprovalRequired
-            } else if preflight.route == .gray,
-                      semantic.source == .mainAgent,
-                      semantic.executionRecommendation == .automatic {
-                // A main-Agent automatic recommendation cannot bypass a
-                // daemon-owned gray signal. The independent judge must first
-                // replace it with source == .independentJudge.
-                effectiveRequirement = .freshApprovalRequired
+            } else if preflight.route == .gray {
+                if allowingVerifiedIndependentJudge,
+                   semantic.source == .independentJudge {
+                    // `allowingVerifiedIndependentJudge` is supplied only by
+                    // VaultAppServices after it consumes the daemon-owned
+                    // review record. `source` remains an audit label and is
+                    // not sufficient to reach this branch.
+                    effectiveRequirement = Self.normalizedSemanticRequirement(semantic)
+                } else {
+                    // GRAY without a validated judge review stays fresh,
+                    // regardless of whether the descriptor claims automatic
+                    // or reusable approval.
+                    effectiveRequirement = .freshApprovalRequired
+                }
             } else {
                 effectiveRequirement = Self.normalizedSemanticRequirement(semantic)
             }

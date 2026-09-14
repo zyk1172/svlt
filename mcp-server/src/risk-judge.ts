@@ -74,6 +74,19 @@ export async function applyContextBoundedRiskJudge(
   }
   if (preflight.route === "fast") return replaceAssessment(request, main);
 
+  // A GRAY route is only eligible for an independent review when the daemon
+  // issued a binding for this exact preflight. Without it, keep the operation
+  // fresh and do not ask a judge whose answer the daemon cannot verify.
+  if (preflight.reviewID === undefined) {
+    return replaceAssessment(request, normalizeAssessment({
+      ...main,
+      source: "mainAgent",
+      reason: `Independent semantic review binding missing: ${preflight.policyRuleID}`,
+      executionRecommendation: "freshApproval",
+      confidence: 0
+    }));
+  }
+
   if (configuration === undefined) {
     return replaceAssessment(request, normalizeAssessment({
       ...main,
@@ -90,7 +103,7 @@ export async function applyContextBoundedRiskJudge(
       ...main,
       ...judged,
       source: "independentJudge"
-    }));
+    }), preflight.reviewID);
   } catch {
     return replaceAssessment(request, normalizeAssessment({
       ...main,
@@ -191,9 +204,17 @@ function normalizeAssessment(assessment: AgentRiskAssessment): AgentRiskAssessme
   return { ...assessment, declaredRisk, executionRecommendation };
 }
 
-function replaceAssessment<T extends IpcRequest>(request: T, assessment: AgentRiskAssessment): T {
+function replaceAssessment<T extends IpcRequest>(request: T, assessment: AgentRiskAssessment, reviewID?: string): T {
   if (request.type !== "executeSecretOperation" && request.type !== "startSecretOperation") return request;
-  return { ...request, descriptor: { ...request.descriptor, agentAssessment: assessment } } as T;
+  const { reviewID: _untrustedReviewID, ...descriptor } = request.descriptor;
+  return {
+    ...request,
+    descriptor: {
+      ...descriptor,
+      ...(reviewID === undefined ? {} : { reviewID }),
+      agentAssessment: assessment
+    }
+  } as T;
 }
 
 function canonicalOperation(descriptor: SecretOperationDescriptor): Record<string, unknown> {

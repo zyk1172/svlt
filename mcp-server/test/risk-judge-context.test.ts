@@ -59,7 +59,8 @@ describe("semantic judge context privacy", () => {
       authorizationRequirement: "freshApprovalRequired",
       blastRadius: "unknown",
       reasons: ["dynamic execution"],
-      technicalFailure: false
+      technicalFailure: false,
+      reviewID: "00000000-0000-4000-8000-000000000087"
     }, configuration, transport);
     expect(body).toContain("<secret-reference>");
     expect(body).not.toContain(reference);

@@ -9,6 +9,7 @@ import VaultExecution
 private let testIndexID = "0123456789ABCDEFGHJKMNPQRS"
 private let testEntryID = "0123456789ABCDEFGHJKMNPQRT"
 private let testSecretReference = "secret://0123456789ABCDEFGHJKMNPQRS"
+private let testSemanticReviewID = UUID(uuidString: "00000000-0000-4000-8000-000000000086")!
 
 private func ipcTestSSHHostKeyPin(byte: UInt8 = 0x41) throws -> SSHHostKeyPin {
     try SSHHostKeyPin(
@@ -63,6 +64,7 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         command: "hostname",
         requestedEffects: ["read-only"],
         parameters: ["passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"],
+        reviewID: testSemanticReviewID,
         agentAssessment: AgentRiskAssessment(
             declaredRisk: .silent,
             reason: "read-only diagnostic",
@@ -270,7 +272,8 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             policyRuleID: "test.fast",
             authorizationRequirement: .none,
             blastRadius: .tiny,
-            reasons: ["routine bounded operation"]
+            reasons: ["routine bounded operation"],
+            reviewID: testSemanticReviewID
         )),
         .secretOperation(SecretOperationOutput(status: "COMPLETED", httpStatus: 200, contentType: "application/json", bodyPreview: "{\"ok\":true}")),
         .secretOperation(SecretOperationOutput(

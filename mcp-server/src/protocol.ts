@@ -104,7 +104,11 @@ export const SecretOperationPreflight = z.object({
   authorizationRequirement: z.enum(["none", "reusableApproval", "freshApprovalRequired", "denied"]),
   blastRadius: z.enum(["none", "tiny", "bounded", "broad", "systemic", "unknown"]),
   reasons: z.array(z.string()),
-  technicalFailure: z.boolean()
+  technicalFailure: z.boolean(),
+  // Only a GRAY preflight should carry this daemon-issued binding. The MCP
+  // layer must return a fresh-approval request if an older daemon omits it;
+  // it must never invent or trust a judge result without the binding.
+  reviewID: z.string().uuid().optional()
 }).strict();
 export type SecretOperationPreflight = z.infer<typeof SecretOperationPreflight>;
 
@@ -991,6 +995,7 @@ export const SecretOperationDescriptor = z
     payload: SecretOperationPayload.nullable().optional(),
     requestedEffects: z.array(z.string()),
     parameters: z.record(z.string(), z.string()),
+    reviewID: z.string().uuid().optional(),
     agentAssessment: AgentRiskAssessment
   })
   .strict();
