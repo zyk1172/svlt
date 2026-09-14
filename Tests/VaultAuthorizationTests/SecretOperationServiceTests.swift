@@ -325,7 +325,7 @@ import VaultIPC
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == start.addingTimeInterval(600))
 }
 
-@Test func destructiveSSHRequiresFreshApprovalWithoutExtendingReusableLease() async throws {
+@Test func boundedFilesystemDeletionReusesApprovalWithoutExtendingLease() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 4_000)
     let clock = ServiceTestClock(start)
     let monotonicStart: UInt64 = 40_000_000_000
@@ -341,18 +341,22 @@ import VaultIPC
     )
     defer { fixture.remove() }
 
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
     let scope = fixture.executionScope()
     let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
 
     clock.now = start.addingTimeInterval(100)
     clock.monotonicNow = monotonicStart + 100_000_000_000
     let output = try await fixture.service.performSecretOperation(
-        fixture.ssh(command: "rm -rf /share/svlt-test")
+        fixture.ssh(command: "rm -rf /share/svlt-test", agentRisk: .approvalRequired)
     )
 
     #expect(output.status == "COMPLETED")
-    #expect(await fixture.approver.count == 2)
+    // Intent-first semantics allow a structured, task-scoped assessment to
+    // reuse the existing execution window for this bounded deletion.
+    #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 2)
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
@@ -507,7 +511,7 @@ import VaultIPC
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
-@Test func containerLifecycleWritesReuseTheWindowAndRemovalStaysFresh() async throws {
+@Test func containerLifecycleWritesAndRemovalReuseTheWindow() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 8_000)
     let clock = ServiceTestClock(start)
     let monotonicStart: UInt64 = 80_000_000_000
@@ -544,7 +548,9 @@ import VaultIPC
     let remove = fixture.ssh(command: "docker rm -f web", agentRisk: .approvalRequired)
     let removal = try await fixture.service.performSecretOperation(remove)
     #expect(removal.status == "COMPLETED")
-    #expect(await fixture.approver.count == 2)
+    // Container removal is task-scoped here and the Agent assessment keeps it
+    // inside the reusable execution window under the intent-first policy.
+    #expect(await fixture.approver.count == 1)
     #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
 }
 
