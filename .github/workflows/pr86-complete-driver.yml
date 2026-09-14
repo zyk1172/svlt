@@ -15,27 +15,7 @@ jobs:
           fetch-depth: 0
       - name: Apply remaining review fixes
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/pr86-complete.py')
-          s = p.read_text()
-          old = '''response_marker = '  z.object({ type: z.literal("secretOperation"), output: SecretOperationOutput }).strict(),'
-if response_marker not in text:
-    raise SystemExit("protocol secretOperation response marker missing")
-text = text.replace(response_marker, response_marker + '\\n  z.object({ type: z.literal("secretOperationPreflight"), result: SecretOperationPreflight }).strict(),', 1)'''
-          new = '''response_marker = \'''  z
-    .object({
-      type: z.literal("secretOperation"),
-      output: SecretOperationOutput
-    })
-    .strict(),\'''
-if response_marker not in text:
-    raise SystemExit("protocol secretOperation response marker missing")
-text = text.replace(response_marker, response_marker + '\\n  z.object({ type: z.literal("secretOperationPreflight"), result: SecretOperationPreflight }).strict(),', 1)'''
-          if old not in s:
-              raise SystemExit('runtime repair marker missing')
-          p.write_text(s.replace(old, new, 1))
-          PY
+          python3 scripts/pr86-repair-marker.py
           python3 scripts/pr86-complete.py
       - name: Repository checks
         run: |
@@ -54,7 +34,7 @@ text = text.replace(response_marker, response_marker + '\\n  z.object({ type: z.
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git rm scripts/pr86-complete.py .github/workflows/pr86-complete-driver.yml
+          git rm scripts/pr86-complete.py scripts/pr86-repair-marker.py .github/workflows/pr86-complete-driver.yml
           git add Sources Tests mcp-server docs ProtocolFixtures || true
           git diff --cached --check
           git commit -m 'fix: finish daemon-owned semantic preflight'
