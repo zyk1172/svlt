@@ -71,7 +71,7 @@ Requirements for normal use:
 - macOS 14 or newer
 - Node.js 24 or newer for the MCP server
 
-中文教程：[docs/zh-CN.md](docs/zh-CN.md)  
+中文教程：[docs/zh-CN.md](docs/zh-CN.md)
 Agent integration: [docs/universal-agent-usage.md](docs/universal-agent-usage.md)
 
 ## Catalog and Obsidian workflow
