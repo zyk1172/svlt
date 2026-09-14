@@ -51,84 +51,84 @@ public struct SecretOperationPolicyEngine: Sendable {
     ) -> SecretOperationPreflight {
         let normalizedDestination = descriptor.normalizedDestination
         let local = localDecision(
-  descriptor,
-  metadata: metadata,
-  normalizedDestination: normalizedDestination
+            descriptor,
+            metadata: metadata,
+            normalizedDestination: normalizedDestination
         )
         if local.authorizationRequirement == .denied || local.technicalFailure {
-  return SecretOperationPreflight(
-      route: .denied,
-      policyRuleID: local.policyRuleID,
-      authorizationRequirement: .denied,
-      blastRadius: .unknown,
-      reasons: local.reasons,
-      technicalFailure: true
-  )
+            return SecretOperationPreflight(
+                route: .denied,
+                policyRuleID: local.policyRuleID,
+                authorizationRequirement: .denied,
+                blastRadius: .unknown,
+                reasons: local.reasons,
+                technicalFailure: true
+            )
         }
 
         let semantic = descriptor.agentAssessment
         let blastRadius = Self.blastRadius(for: semantic, ruleID: local.policyRuleID)
         if local.authorizationRequirement == .freshApprovalRequired,
- Self.isNonDowngradableFreshRule(local.policyRuleID) {
-  return SecretOperationPreflight(
-      route: .hard,
-      policyRuleID: local.policyRuleID,
-      authorizationRequirement: .freshApprovalRequired,
-      blastRadius: blastRadius,
-      reasons: local.reasons
-  )
+           Self.isNonDowngradableFreshRule(local.policyRuleID) {
+            return SecretOperationPreflight(
+                route: .hard,
+                policyRuleID: local.policyRuleID,
+                authorizationRequirement: .freshApprovalRequired,
+                blastRadius: blastRadius,
+                reasons: local.reasons
+            )
         }
         if semantic.executionRecommendation == .freshApproval {
-  return SecretOperationPreflight(
-      route: .hard,
-      policyRuleID: local.policyRuleID,
-      authorizationRequirement: .freshApprovalRequired,
-      blastRadius: blastRadius,
-      reasons: local.reasons + ["Main Agent already requests fresh approval"]
-  )
+            return SecretOperationPreflight(
+                route: .hard,
+                policyRuleID: local.policyRuleID,
+                authorizationRequirement: .freshApprovalRequired,
+                blastRadius: blastRadius,
+                reasons: local.reasons + ["Main Agent already requests fresh approval"]
+            )
         }
 
         let binding = bindingDecision(
-  descriptor,
-  metadata: metadata,
-  normalizedDestination: normalizedDestination
+            descriptor,
+            metadata: metadata,
+            normalizedDestination: normalizedDestination
         )
         let semanticUnresolved = semantic.executionRecommendation == .uncertain
-  || semantic.intentAlignment == .unclear
-  || semantic.intentAlignment == .unrelated
-  || semantic.effectSeverity == .unknown
-  || semantic.reversibility == .unknown
-  || semantic.secretHandling == .unknown
+            || semantic.intentAlignment == .unclear
+            || semantic.intentAlignment == .unrelated
+            || semantic.effectSeverity == .unknown
+            || semantic.reversibility == .unknown
+            || semantic.secretHandling == .unknown
         let semanticConflict = semantic.executionRecommendation == .automatic
-  && Self.automaticRecommendationNeedsReview(semantic)
+            && Self.automaticRecommendationNeedsReview(semantic)
         let localConflict = semantic.executionRecommendation == .automatic
-  && Self.isSemanticGrayRule(local.policyRuleID)
+            && Self.isSemanticGrayRule(local.policyRuleID)
         let scopeConflict = semantic.executionRecommendation == .automatic
-  && !binding.reasons.isEmpty
+            && !binding.reasons.isEmpty
         let opaqueExecution = Self.looksSemanticallyOpaque(descriptor)
 
         if semanticUnresolved || semanticConflict || localConflict || scopeConflict || opaqueExecution {
-  var reasons = local.reasons
-  if semanticUnresolved { reasons.append("语义字段仍有未决项") }
-  if semanticConflict { reasons.append("主模型 automatic 建议与高影响语义冲突") }
-  if localConflict { reasons.append("本地分类器检测到需要独立语义复核的操作族") }
-  if scopeConflict { reasons.append("凭据执行目标或协议超出既有绑定范围") }
-  if opaqueExecution { reasons.append("操作包含动态或不透明执行") }
-  return SecretOperationPreflight(
-      route: .gray,
-      policyRuleID: local.policyRuleID,
-      authorizationRequirement: .freshApprovalRequired,
-      blastRadius: blastRadius,
-      reasons: reasons
-  )
+            var reasons = local.reasons
+            if semanticUnresolved { reasons.append("语义字段仍有未决项") }
+            if semanticConflict { reasons.append("主模型 automatic 建议与高影响语义冲突") }
+            if localConflict { reasons.append("本地分类器检测到需要独立语义复核的操作族") }
+            if scopeConflict { reasons.append("凭据执行目标或协议超出既有绑定范围") }
+            if opaqueExecution { reasons.append("操作包含动态或不透明执行") }
+            return SecretOperationPreflight(
+                route: .gray,
+                policyRuleID: local.policyRuleID,
+                authorizationRequirement: .freshApprovalRequired,
+                blastRadius: blastRadius,
+                reasons: reasons
+            )
         }
 
         return SecretOperationPreflight(
-  route: .fast,
-  policyRuleID: local.policyRuleID,
-  authorizationRequirement: Self.normalizedSemanticRequirement(semantic),
-  blastRadius: blastRadius,
-  reasons: local.reasons
+            route: .fast,
+            policyRuleID: local.policyRuleID,
+            authorizationRequirement: Self.normalizedSemanticRequirement(semantic),
+            blastRadius: blastRadius,
+            reasons: local.reasons
         )
     }
 
@@ -151,11 +151,19 @@ public struct SecretOperationPolicyEngine: Sendable {
             && !descriptor.secretReferences.isEmpty
 
         if semanticParticipated {
+            let preflight = semanticPreflight(descriptor, metadata: metadata)
             if local.authorizationRequirement == .freshApprovalRequired,
                Self.isNonDowngradableFreshRule(local.policyRuleID) {
                 effectiveRequirement = .freshApprovalRequired
+            } else if preflight.route == .gray,
+                      semantic.source == .mainAgent,
+                      semantic.executionRecommendation == .automatic {
+                // A main-Agent automatic recommendation cannot bypass a
+                // daemon-owned gray signal. The independent judge must first
+                // replace it with source == .independentJudge.
+                effectiveRequirement = .freshApprovalRequired
             } else {
-                effectiveRequirement = semantic.executionRecommendation.authorizationRequirement
+                effectiveRequirement = Self.normalizedSemanticRequirement(semantic)
             }
 
             reasons.append(
@@ -903,6 +911,90 @@ public struct SecretOperationPolicyEngine: Sendable {
             requiresFreshApprovalOnFirstUse: false,
             technicalFailure: technicalFailure
         )
+    }
+
+    private static func normalizedSemanticRequirement(
+        _ assessment: AgentRiskAssessment
+    ) -> AuthorizationRequirement {
+        if assessment.executionRecommendation == .automatic,
+           automaticRecommendationNeedsReview(assessment) {
+            return .freshApprovalRequired
+        }
+        return assessment.executionRecommendation.authorizationRequirement
+    }
+
+    private static func automaticRecommendationNeedsReview(_ assessment: AgentRiskAssessment) -> Bool {
+        assessment.intentAlignment == .unclear
+            || assessment.intentAlignment == .unrelated
+            || assessment.effectSeverity == .broad
+            || assessment.effectSeverity == .systemic
+            || assessment.effectSeverity == .unknown
+            || assessment.reversibility == .difficult
+            || assessment.reversibility == .irreversible
+            || assessment.reversibility == .unknown
+            || assessment.secretHandling == .thirdPartyExposure
+            || assessment.secretHandling == .plaintextSecretExposure
+            || assessment.secretHandling == .unknown
+    }
+
+    private static func isSemanticGrayRule(_ ruleID: String) -> Bool {
+        [
+            SSHFreshRules.filesystemDelete,
+            SSHFreshRules.containerDestruction,
+            HTTPFreshRules.delete,
+            DatabaseFreshRules.destructiveWrite,
+            DatabaseFreshRules.dynamicExecution,
+            DatabaseFreshRules.unknown,
+            SFTPFreshRules.delete,
+            SFTPFreshRules.overwriteExisting,
+            SFTPFreshRules.replaceExistingTarget
+        ].contains(ruleID)
+    }
+
+    private static func blastRadius(
+        for assessment: AgentRiskAssessment,
+        ruleID: String
+    ) -> SecretOperationPreflight.BlastRadius {
+        if [
+            SSHFreshRules.powerControl,
+            SSHFreshRules.blockDeviceFilesystem,
+            SSHFreshRules.storageRaidDestruction
+        ].contains(ruleID) {
+            return .systemic
+        }
+        if [
+            DatabaseFreshRules.destructiveStructure,
+            DatabaseFreshRules.privilegeAccountAdmin
+        ].contains(ruleID) {
+            return .broad
+        }
+        if isSemanticGrayRule(ruleID) {
+            switch assessment.effectSeverity {
+            case .systemic: return .systemic
+            case .broad: return .broad
+            default: return .unknown
+            }
+        }
+        switch assessment.effectSeverity {
+        case .none: return .none
+        case .minor: return .tiny
+        case .bounded: return .bounded
+        case .broad: return .broad
+        case .systemic: return .systemic
+        case .unknown: return .unknown
+        }
+    }
+
+    private static func looksSemanticallyOpaque(_ descriptor: SecretOperationDescriptor) -> Bool {
+        let components: [String] = [descriptor.command, descriptor.databaseStatement].compactMap { $0 }
+            + (descriptor.sshCommandBatch?.commands.flatMap { [$0.executable] + $0.arguments } ?? [])
+        let text = components.joined(separator: "\n").lowercased()
+        guard !text.isEmpty else { return false }
+        if text.contains("curl ") && (text.contains("| sh") || text.contains("| bash") || text.contains("| zsh")) { return true }
+        if text.contains("wget ") && (text.contains("| sh") || text.contains("| bash") || text.contains("| zsh")) { return true }
+        if text.contains("eval ") || text.contains("execute immediate") { return true }
+        if text.contains("base64") && (text.contains("| sh") || text.contains("| bash") || text.contains("| zsh")) { return true }
+        return false
     }
 
     private static func isNonDowngradableFreshRule(_ ruleID: String) -> Bool {

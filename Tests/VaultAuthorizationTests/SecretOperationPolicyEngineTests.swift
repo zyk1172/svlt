@@ -108,10 +108,11 @@ import VaultExecution
         protocolType: .ssh,
         command: "rm -rf /share/svlt-test",
         agentAssessment: semanticAssessment(
+            source: .independentJudge,
             recommendation: .automatic,
             severity: .bounded,
             reversibility: .recoverable,
-            reason: "Remove the bounded temporary directory explicitly requested by the user"
+            reason: "Independent review confirms one bounded task-owned directory"
         )
     )
 
@@ -134,10 +135,11 @@ import VaultExecution
         protocolType: .ssh,
         command: "docker rm old-preview-container",
         agentAssessment: semanticAssessment(
+            source: .independentJudge,
             recommendation: .automatic,
             severity: .bounded,
             reversibility: .recoverable,
-            reason: "Remove one disposable preview container created for this task"
+            reason: "Independent review confirms one disposable preview container"
         )
     )
 
@@ -253,10 +255,11 @@ import VaultExecution
         method: "DELETE",
         url: "https://qnap.local:8080/api/items/temporary-1",
         assessment: semanticAssessment(
+            source: .independentJudge,
             recommendation: .automatic,
             severity: .bounded,
             reversibility: .recoverable,
-            reason: "Delete one disposable object created by this task"
+            reason: "Independent review confirms one disposable object"
         )
     )
 
@@ -323,10 +326,11 @@ import VaultExecution
         reference: reference,
         statement: "DELETE FROM logs WHERE id = 1",
         assessment: semanticAssessment(
+            source: .independentJudge,
             recommendation: .automatic,
             severity: .bounded,
             reversibility: .recoverable,
-            reason: "Delete the single task-owned row requested by the user"
+            reason: "Independent review confirms one task-owned row"
         )
     )
 
@@ -416,10 +420,11 @@ import VaultExecution
             fileOperation: operation,
             fileTarget: "/share/task-owned-file",
             agentAssessment: semanticAssessment(
+                source: .independentJudge,
                 recommendation: .automatic,
                 severity: .bounded,
                 reversibility: .recoverable,
-                reason: "Bounded task-owned file mutation"
+                reason: "Independent review confirms bounded task-owned file mutation"
             )
         )
 
@@ -729,6 +734,188 @@ import VaultExecution
     #expect(SecretOperationPolicyEngine.HTTPFreshRules.all.count <= 5)
     #expect(SecretOperationPolicyEngine.DatabaseFreshRules.all.count <= 5)
     #expect(SecretOperationPolicyEngine.SFTPFreshRules.all.count <= 5)
+}
+
+
+@Test func preflightRoutesOrdinaryHardAndGrayOperationsBeforeJudge() throws {
+    let reference = try testReference()
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    let policy = engine()
+
+    let fast = policy.semanticPreflight(
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: "systemctl status jellyfin",
+            agentAssessment: semanticAssessment(
+                recommendation: .automatic,
+                severity: .none,
+                reversibility: .readOnly,
+                reason: "Read requested service status"
+            )
+        ),
+        metadata: metadata
+    )
+    #expect(fast.route == .fast)
+
+    let gray = policy.semanticPreflight(
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: "rm -rf /share/photos",
+            agentAssessment: semanticAssessment(
+                recommendation: .automatic,
+                severity: .bounded,
+                reversibility: .recoverable,
+                reason: "Deliberately optimistic main-Agent assessment"
+            )
+        ),
+        metadata: metadata
+    )
+    #expect(gray.route == .gray)
+    #expect(gray.blastRadius == .unknown)
+
+    let hard = policy.semanticPreflight(
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: "zpool destroy tank",
+            agentAssessment: semanticAssessment(
+                recommendation: .automatic,
+                severity: .minor,
+                reversibility: .easy,
+                reason: "Deliberately optimistic main-Agent assessment"
+            )
+        ),
+        metadata: metadata
+    )
+    #expect(hard.route == .hard)
+    #expect(hard.blastRadius == .systemic)
+}
+
+@Test func mainAgentCannotDirectlyDowngradeGrayDeletionButIndependentJudgeCan() throws {
+    let reference = try testReference()
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    func descriptor(source: AgentRiskAssessment.Source) -> SecretOperationDescriptor {
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: "rm -rf /share/task-owned-temp",
+            agentAssessment: semanticAssessment(
+                source: source,
+                recommendation: .automatic,
+                severity: .bounded,
+                reversibility: .recoverable,
+                reason: "Delete one task-owned temporary directory"
+            )
+        )
+    }
+    #expect(engine().evaluate(descriptor(source: .mainAgent), metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+    #expect(engine().evaluate(descriptor(source: .independentJudge), metadata: metadata).authorizationRequirement == .none)
+}
+
+@Test func newCredentialScopeRoutesAutomaticRecommendationToGray() throws {
+    let reference = try testReference()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "other-nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname",
+        agentAssessment: semanticAssessment(
+            recommendation: .automatic,
+            severity: .none,
+            reversibility: .readOnly,
+            reason: "Read hostname from a newly targeted machine"
+        )
+    )
+    let preflight = engine().semanticPreflight(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+    #expect(preflight.route == .gray)
+}
+
+@Test func plaintextExportIsAlwaysFreshApproval() throws {
+    let reference = try testReference()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .exportPlaintext,
+        secretReferences: [reference],
+        protocolType: .file,
+        agentAssessment: semanticAssessment(
+            source: .independentJudge,
+            recommendation: .automatic,
+            severity: .none,
+            reversibility: .readOnly,
+            secretHandling: .userVisibleSensitiveData,
+            reason: "Explicit plaintext export remains owner-approved"
+        )
+    )
+    let decision = engine().evaluate(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: [], protocols: [])]
+    )
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+}
+
+@Test func classifierRegressionCoverageSurvivesIntentFirstRouting() {
+    let ssh = SSHCommandRiskClassifier()
+    let dangerous: [(String, String)] = [
+        ("/usr/bin/rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("sudo /bin/rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("env MODE=maintenance rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("sh -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
+        ("sudo bash -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
+        ("find /tmp -exec rm -rf {} \\;", SSHFreshRules.filesystemDelete),
+        ("xargs rm -rf /tmp/a", SSHFreshRules.filesystemDelete),
+        ("bash -c 'reboot'", SSHFreshRules.powerControl),
+        ("docker system prune", SSHFreshRules.containerDestruction),
+        ("zpool destroy tank", SSHFreshRules.storageRaidDestruction),
+        ("mdadm --zero-superblock /dev/md0", SSHFreshRules.storageRaidDestruction),
+        ("systemctl isolate rescue.target", SSHFreshRules.powerControl)
+    ]
+    for (command, rule) in dangerous {
+        #expect(ssh.classify(command: command).ruleID == rule, "command: \(command)")
+    }
+
+    let ordinary = [
+        "bash -c 'echo hello'", "python3 -c 'print(1)'", "find /tmp -exec echo {} \\;",
+        "sudo systemctl restart jellyfin", "docker ps", "docker restart web", "zpool status",
+        "echo rm", "grep reboot logfile", "cat /backup/dd"
+    ]
+    for command in ordinary {
+        #expect(ssh.classify(command: command).authorizationRequirement == .reusableApproval, "command: \(command)")
+    }
+
+    let sql = DatabaseStatementClassifier()
+    let expected: [(String, String)] = [
+        ("WITH doomed AS (SELECT id FROM logs) DELETE FROM logs USING doomed WHERE logs.id = doomed.id", SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite),
+        ("MERGE INTO inventory AS target USING incoming AS source ON target.id = source.id WHEN MATCHED THEN UPDATE SET count = source.count", SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite),
+        ("CREATE USER app_user IDENTIFIED BY 'fixture'", SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin),
+        ("ALTER ROLE app_user SET statement_timeout = 0", SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin),
+        ("GRANT SELECT ON app TO app_user", SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin),
+        ("DO $$ BEGIN DELETE FROM logs; END $$", SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution),
+        ("PREPARE purge AS DELETE FROM logs", SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution)
+    ]
+    for (statement, rule) in expected {
+        #expect(sql.classify(statement).ruleID == rule, "statement: \(statement)")
+    }
+    for statement in ["-- DELETE FROM logs\nSELECT 1", "SELECT 'DROP TABLE logs'", "/* GRANT ALL */ SELECT 1"] {
+        #expect(sql.classify(statement).scopeFamily == "database.read", "statement: \(statement)")
+    }
 }
 
 private func engine() -> SecretOperationPolicyEngine {

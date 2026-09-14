@@ -5,10 +5,11 @@ SVLT is an Agent collaboration layer, not a generic command firewall. The user s
 ## Decision order
 
 1. The main Agent sends a structured semantic assessment with `userGoal`, `taskContext`, `intendedEffect`, `expectedEffect`, `expectedResult`, task alignment, effect severity, reversibility, Secret handling, recommendation, and confidence.
-2. Ordinary, high-confidence, user-aligned operations use the main-Agent fast path. There is no second model call.
-3. SVLT calls its separately configured semantic judge only for a gray zone: uncertainty, unclear/unrelated task alignment, low confidence, unresolved semantic dimensions, dynamic/opaque execution, or an internally contradictory automatic recommendation.
-4. The daemon consumes the structured assessment directly. String marker protocols such as `SVLT_JUDGE_V1`, `SVLT_JUDGE_V2`, and `SVLT_AGENT_V2` are retired rather than supported as a compatibility layer.
-5. Malformed or identity-invalid operations are still denied. Fixed hard-floor rules still require fresh approval regardless of semantic recommendation.
+2. The MCP boundary first asks the daemon for deterministic preflight. The daemon returns `FAST`, `HARD`, `GRAY`, or `DENIED` together with the local rule, approval floor, blast radius, and sanitized reasons. TypeScript does not duplicate the Swift classifier registry.
+3. `FAST` proceeds with the main Agent assessment and no second model call. `HARD` goes directly to fresh owner approval. `DENIED` stays denied. Only `GRAY` invokes SVLT's separately configured semantic judge.
+4. Gray routing includes unresolved Agent semantics, dynamic/opaque execution, a new credential scope, and conflicts between an `automatic` recommendation and deterministic soft-risk families such as deletion or destructive data mutation.
+5. The daemon rechecks the deterministic floor on execution. A main-Agent `automatic` assessment cannot directly lower a daemon `GRAY` signal; an independent judgment is required.
+6. String marker protocols such as `SVLT_JUDGE_V1`, `SVLT_JUDGE_V2`, and `SVLT_AGENT_V2` are retired rather than preserved for compatibility.
 
 ## Sensitive is not dangerous
 

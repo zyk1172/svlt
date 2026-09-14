@@ -130,6 +130,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case exportResolvedText(references: [String], context: RevealContext, destinationPath: String)
     case scanOrphans(markdownReferences: [String])
     case execute(ExecutionRequest)
+    case preflightSecretOperation(SecretOperationDescriptor)
     case executeSecretOperation(SecretOperationDescriptor)
     case startSecretOperation(SecretOperationDescriptor)
     case secretOperationStatus(operationID: UUID)
@@ -215,6 +216,7 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case exportResolvedText
         case scanOrphans
         case execute
+        case preflightSecretOperation
         case executeSecretOperation
         case startSecretOperation
         case secretOperationStatus
@@ -375,6 +377,8 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             )
         case .execute:
             self = .execute(try container.decode(ExecutionRequest.self, forKey: .request))
+        case .preflightSecretOperation:
+            self = .preflightSecretOperation(try container.decode(SecretOperationDescriptor.self, forKey: .descriptor))
         case .executeSecretOperation:
             self = .executeSecretOperation(try container.decode(SecretOperationDescriptor.self, forKey: .descriptor))
         case .startSecretOperation:
@@ -532,6 +536,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .execute(request):
             try container.encode(RequestType.execute, forKey: .type)
             try container.encode(request, forKey: .request)
+        case let .preflightSecretOperation(descriptor):
+            try container.encode(RequestType.preflightSecretOperation, forKey: .type)
+            try container.encode(descriptor, forKey: .descriptor)
         case let .executeSecretOperation(descriptor):
             try container.encode(RequestType.executeSecretOperation, forKey: .type)
             try container.encode(descriptor, forKey: .descriptor)
@@ -747,6 +754,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case orphanScan(OrphanScanResult)
     case execution(SanitizedExecutionResult)
     case secretOperation(SecretOperationOutput)
+    case secretOperationPreflight(SecretOperationPreflight)
     case secretOperationHandle(SecretOperationHandle)
     case secretOperationStatus(SecretOperationStatus)
     case sshHostKeyReview(SSHHostKeyReview)
@@ -805,6 +813,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case orphanScan
         case execution
         case secretOperation
+        case secretOperationPreflight
         case secretOperationHandle
         case secretOperationStatus
         case sshHostKeyReview
@@ -879,6 +888,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .execution(try container.decode(SanitizedExecutionResult.self, forKey: .result))
         case .secretOperation:
             self = .secretOperation(try container.decode(SecretOperationOutput.self, forKey: .output))
+        case .secretOperationPreflight:
+            self = .secretOperationPreflight(try container.decode(SecretOperationPreflight.self, forKey: .result))
         case .secretOperationHandle:
             self = .secretOperationHandle(try container.decode(SecretOperationHandle.self, forKey: .result))
         case .secretOperationStatus:
@@ -974,6 +985,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .secretOperation(output):
             try container.encode(ResponseType.secretOperation, forKey: .type)
             try container.encode(output, forKey: .output)
+        case let .secretOperationPreflight(preflight):
+            try container.encode(ResponseType.secretOperationPreflight, forKey: .type)
+            try container.encode(preflight, forKey: .result)
         case let .secretOperationHandle(handle):
             try container.encode(ResponseType.secretOperationHandle, forKey: .type)
             try container.encode(handle, forKey: .result)

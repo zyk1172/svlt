@@ -496,6 +496,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return reference.description
     }
 
+    public func preflightSecretOperation(
+        _ descriptor: SecretOperationDescriptor
+    ) async throws -> SecretOperationPreflight {
+        let metadata = try await policyMetadata(for: descriptor.secretReferences)
+        return operationPolicyEngine.semanticPreflight(descriptor, metadata: metadata)
+    }
+
     public func performSecretOperation(
         _ descriptor: SecretOperationDescriptor
     ) async throws -> SecretOperationOutput {

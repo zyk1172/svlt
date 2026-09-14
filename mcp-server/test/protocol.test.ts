@@ -937,9 +937,9 @@ describe("local IPC client", () => {
     await writeFile(tokenPath, validToken, { mode: 0o600 });
     await chmod(tokenPath, 0o600);
 
-    let receivedRequestType: string | undefined;
+    const receivedRequestTypes: string[] = [];
     const server = net.createServer({ allowHalfOpen: true }, (socket) => {
-      socket.setTimeout(25, () => socket.destroy());
+      socket.setTimeout(100, () => socket.destroy());
       const chunks: Buffer[] = [];
       socket.on("data", (chunk) => chunks.push(chunk));
       socket.on("end", () => {
@@ -949,11 +949,24 @@ describe("local IPC client", () => {
         const envelope = JSON.parse(frame.subarray(4).toString("utf8")) as {
           request?: { type?: string };
         };
-        receivedRequestType = envelope.request?.type;
-        // Deliberately do not reply. A lifecycle start/status/cancel request is
-        // a bounded control request; if the daemon does not acknowledge it in
-        // time the caller must surface uncertainty rather than hold one long
-        // execution socket open or retry the side effect.
+        const requestType = envelope.request?.type;
+        if (requestType !== undefined) receivedRequestTypes.push(requestType);
+        if (requestType === "preflightSecretOperation") {
+          socket.end(IpcFrameCodec.encode({
+            type: "secretOperationPreflight",
+            result: {
+              route: "fast",
+              policyRuleID: "test.fast",
+              authorizationRequirement: "none",
+              blastRadius: "tiny",
+              reasons: [],
+              technicalFailure: false
+            }
+          }));
+          return;
+        }
+        // Deliberately do not reply to lifecycle start. A start/status/cancel
+        // IPC is a bounded control request; timeout means outcome uncertainty.
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -965,7 +978,7 @@ describe("local IPC client", () => {
     const client = new LocalIpcClient({
       socketPath,
       tokenPath,
-      requestTimeoutMs: 10,
+      requestTimeoutMs: 50,
       unavailableRetryCount: 0
     });
     const result = await client.request({
@@ -1001,7 +1014,7 @@ describe("local IPC client", () => {
       }
     });
 
-    expect(receivedRequestType).toBe("startSecretOperation");
+    expect(receivedRequestTypes).toEqual(["preflightSecretOperation", "startSecretOperation"]);
     expect(result).toEqual({
       type: "failure",
       code: "OPERATION_OUTCOME_UNKNOWN"

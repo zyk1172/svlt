@@ -98,6 +98,16 @@ export const AgentRiskAssessment = z
   .strict();
 export type AgentRiskAssessment = z.infer<typeof AgentRiskAssessment>;
 
+export const SecretOperationPreflight = z.object({
+  route: z.enum(["fast", "hard", "gray", "denied"]),
+  policyRuleID: z.string().min(1),
+  authorizationRequirement: z.enum(["none", "reusableApproval", "freshApprovalRequired", "denied"]),
+  blastRadius: z.enum(["none", "tiny", "bounded", "broad", "systemic", "unknown"]),
+  reasons: z.array(z.string()),
+  technicalFailure: z.boolean()
+}).strict();
+export type SecretOperationPreflight = z.infer<typeof SecretOperationPreflight>;
+
 // This is display-only metadata supplied by the MCP client. The Swift IPC
 // layer derives the security principal from the peer process and never uses
 // this value for authorization or lease isolation.
@@ -1165,6 +1175,12 @@ export const IpcRequest = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("preflightSecretOperation"),
+      descriptor: SecretOperationDescriptor
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("executeSecretOperation"),
       descriptor: SecretOperationDescriptor
     })
@@ -1315,6 +1331,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
       output: SecretOperationOutput
     })
     .strict(),
+  z.object({ type: z.literal("secretOperationPreflight"), result: SecretOperationPreflight }).strict(),
   z
     .object({
       type: z.literal("sshSessionStatus"),

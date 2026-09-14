@@ -53,7 +53,14 @@ describe("semantic judge context privacy", () => {
       }
     };
 
-    await applyContextBoundedRiskJudge(request, configuration, transport);
+    await applyContextBoundedRiskJudge(request, {
+      route: "gray",
+      policyRuleID: "ssh.semantic.opaque",
+      authorizationRequirement: "freshApprovalRequired",
+      blastRadius: "unknown",
+      reasons: ["dynamic execution"],
+      technicalFailure: false
+    }, configuration, transport);
     expect(body).toContain("<secret-reference>");
     expect(body).not.toContain(reference);
     expect(body).not.toContain("VERY_SECRET_TOKEN_VALUE");

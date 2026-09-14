@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { AgentRiskAssessment, SecretOperationDescriptor } from "./protocol.js";
+import type { AgentRiskAssessment, SecretOperationDescriptor, SecretOperationPreflight } from "./protocol.js";
 import type { IpcRequest } from "./secretOperations/protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 3_500;
@@ -58,27 +58,34 @@ export function riskJudgeConfigurationFromEnvironment(
 
 export async function applyContextBoundedRiskJudge(
   request: IpcRequest,
+  preflight: SecretOperationPreflight,
   configuration: RiskJudgeConfiguration | undefined = riskJudgeConfigurationFromEnvironment(),
   transport: RiskJudgeTransport = defaultTransport
 ): Promise<IpcRequest> {
   if (request.type !== "executeSecretOperation" && request.type !== "startSecretOperation") return request;
 
   const main = normalizeAssessment({ ...request.descriptor.agentAssessment, source: "mainAgent" });
-  const grayReason = semanticGrayReason(request.descriptor, main);
-  if (grayReason === undefined) return replaceAssessment(request, main);
+  if (preflight.route === "denied") return replaceAssessment(request, main);
+  if (preflight.route === "hard") {
+    return replaceAssessment(request, normalizeAssessment({
+      ...main,
+      executionRecommendation: "freshApproval"
+    }));
+  }
+  if (preflight.route === "fast") return replaceAssessment(request, main);
 
   if (configuration === undefined) {
     return replaceAssessment(request, normalizeAssessment({
       ...main,
       source: "mainAgent",
-      reason: `Independent semantic review required but not configured: ${grayReason}`,
+      reason: `Independent semantic review required but not configured: ${preflight.policyRuleID}`,
       executionRecommendation: "freshApproval",
       confidence: 0
     }));
   }
 
   try {
-    const judged = await judgeOperation(request.descriptor, main, grayReason, configuration, transport);
+    const judged = await judgeOperation(request.descriptor, main, preflight, configuration, transport);
     return replaceAssessment(request, normalizeAssessment({
       ...main,
       ...judged,
@@ -99,42 +106,10 @@ export async function applyContextBoundedRiskJudge(
   }
 }
 
-function semanticGrayReason(descriptor: SecretOperationDescriptor, assessment: AgentRiskAssessment): string | undefined {
-  if (assessment.executionRecommendation === "uncertain") return "main Agent marked the operation uncertain";
-  if (assessment.intentAlignment === "unclear" || assessment.intentAlignment === "unrelated") return `task alignment is ${assessment.intentAlignment}`;
-  if (assessment.confidence < 0.70) return "main Agent confidence is below 0.70";
-  if (assessment.effectSeverity === "unknown" || assessment.reversibility === "unknown" || assessment.secretHandling === "unknown") {
-    return "one or more semantic dimensions are unresolved";
-  }
-  if (looksSemanticallyOpaque(descriptor)) return "operation contains dynamic or opaque execution";
-  if (assessment.executionRecommendation === "automatic" && isClearlyHighImpact(assessment)) {
-    return "automatic recommendation conflicts with high-impact semantics";
-  }
-  return undefined;
-}
-
-function isClearlyHighImpact(assessment: AgentRiskAssessment): boolean {
-  return assessment.effectSeverity === "broad"
-    || assessment.effectSeverity === "systemic"
-    || assessment.reversibility === "irreversible"
-    || assessment.secretHandling === "thirdPartyExposure"
-    || assessment.secretHandling === "plaintextSecretExposure";
-}
-
-function looksSemanticallyOpaque(descriptor: SecretOperationDescriptor): boolean {
-  const text = [
-    descriptor.command,
-    descriptor.databaseStatement,
-    ...(descriptor.sshCommandBatch?.commands.flatMap((command) => [command.executable, ...command.arguments]) ?? [])
-  ].filter((value): value is string => typeof value === "string").join("\n");
-  if (!text) return false;
-  return /\b(?:eval|exec)\b|\b(?:curl|wget)\b[^\n|]{0,4096}\|\s*(?:ba|z|k)?sh\b|\b(?:ba|z|k)?sh\s+-c\s+["']?\$\(|\bbase64\b[^\n|]{0,1024}\|\s*(?:ba|z|k)?sh\b|\bEXECUTE\s+IMMEDIATE\b|\bPREPARE\b[\s\S]{0,2048}\bFROM\b/iu.test(text);
-}
-
 async function judgeOperation(
   descriptor: SecretOperationDescriptor,
   main: AgentRiskAssessment,
-  grayReason: string,
+  preflight: SecretOperationPreflight,
   configuration: RiskJudgeConfiguration,
   transport: RiskJudgeTransport
 ): Promise<JudgeResult> {
@@ -161,7 +136,11 @@ async function judgeOperation(
       },
       operation: canonicalOperation(descriptor),
       svltSignals: {
-        grayReason,
+        route: preflight.route,
+        localRuleID: preflight.policyRuleID,
+        localRequirement: preflight.authorizationRequirement,
+        blastRadius: preflight.blastRadius,
+        reasons: preflight.reasons.slice(0, 12).map((reason) => safeContextText(reason, 1_024)),
         operatingPrinciple: "Complete ordinary user-aligned work automatically; confirmation is for genuine destructive/high-impact actions or unnecessary Secret plaintext exposure."
       }
     };
@@ -206,7 +185,7 @@ async function judgeOperation(
 
 function normalizeAssessment(assessment: AgentRiskAssessment): AgentRiskAssessment {
   let executionRecommendation = assessment.executionRecommendation;
-  if (isClearlyHighImpact(assessment)) executionRecommendation = "freshApproval";
+  if (assessment.executionRecommendation === "automatic" && (assessment.effectSeverity === "broad" || assessment.effectSeverity === "systemic" || assessment.reversibility === "irreversible" || assessment.secretHandling === "thirdPartyExposure" || assessment.secretHandling === "plaintextSecretExposure")) executionRecommendation = "freshApproval";
   if (assessment.source === "independentJudge" && assessment.confidence < 0.65) executionRecommendation = "freshApproval";
   const declaredRisk = executionRecommendation === "automatic" ? "silent" : "approvalRequired";
   return { ...assessment, declaredRisk, executionRecommendation };
