@@ -210,14 +210,16 @@ import VaultIPC
     let fixture = try await OperationServiceFixture(approval: .allow)
     defer { fixture.remove() }
 
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
 
     let summary = await fixture.approver.summaries.first ?? ""
     #expect(summary.contains("复用最多 300 秒"))
     #expect(summary.contains("不会授权其他凭据、目标或协议"))
 }
 
-@Test func exportReusesScopedAuthorizationAndFreshKeyAcrossLeafFiles() async throws {
+@Test func plaintextExportRequiresFreshApprovalAndKeyForEachLeafFile() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 7_000)
     let clock = ServiceTestClock(start)
     let monotonicStart: UInt64 = 90_000_000_000
@@ -261,12 +263,15 @@ import VaultIPC
         )
     }
 
-    #expect(await fixture.approver.count == 1)
+    // Plaintext export is a non-downgradable sensitive-control operation. It
+    // must not establish or reuse an execution lease, even when two files
+    // share the same owner-only export root.
+    #expect(await fixture.approver.count == 2)
     let keyProvider = try #require(fixture.keyProvider)
-    #expect(await keyProvider.freshCount == 1)
+    #expect(await keyProvider.freshCount == 2)
     #expect(await authorizationSession.hasActiveExecutionAuthorization(
         for: fixture.exportScope(principal: "agent-exporter")
-    ))
+    ) == false)
     #expect(try String(contentsOf: firstDestination, encoding: .utf8).contains("ASV_CANARY_OPERATION_SECRET"))
     #expect(try String(contentsOf: secondDestination, encoding: .utf8).contains("ASV_CANARY_OPERATION_SECRET"))
 }
@@ -275,7 +280,9 @@ import VaultIPC
     let fixture = try await OperationServiceFixture(executorStatus: "FAILED")
     defer { fixture.remove() }
 
-    let output = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
 
     // §10/§11: the 300-second lease records that the owner authorized this
     // scope. A remote execution failure is reported honestly but never
@@ -301,13 +308,17 @@ import VaultIPC
     )
     defer { fixture.remove() }
 
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
     let scope = fixture.executionScope()
     let firstExpiration = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
 
     clock.now = start.addingTimeInterval(299.999)
     clock.monotonicNow = monotonicStart + 299_999_000_000
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "touch /share/svlt-test"))
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
+    )
 
     #expect(firstExpiration == start.addingTimeInterval(300))
     #expect(await fixture.approver.count == 1)
@@ -318,7 +329,9 @@ import VaultIPC
 
     clock.now = start.addingTimeInterval(300)
     clock.monotonicNow = monotonicStart + 300_000_000_000
-    _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test-2"))
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test-2", agentRisk: .approvalRequired)
+    )
 
     #expect(await fixture.approver.count == 2)
     #expect(await fixture.executor.count == 3)
@@ -565,7 +578,7 @@ import VaultIPC
         for command in ["mkdir /share/svlt-a", "touch /share/svlt-b", "mkdir /share/svlt-c"] {
             group.addTask {
                 try await fixture.service.performSecretOperation(
-                    fixture.ssh(command: command)
+                    fixture.ssh(command: command, agentRisk: .approvalRequired)
                 )
             }
         }
@@ -669,7 +682,9 @@ import VaultIPC
 
     let operation = Task { () -> SecretOperationError? in
         do {
-            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
+            _ = try await fixture.service.performSecretOperation(
+                fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+            )
             return nil
         } catch let error as SecretOperationError {
             return error
@@ -727,7 +742,9 @@ import VaultIPC
 
     let operation = Task { () -> SecretOperationError? in
         do {
-            _ = try await fixture.service.performSecretOperation(fixture.ssh(command: "mkdir /share/svlt-test"))
+            _ = try await fixture.service.performSecretOperation(
+                fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+            )
             return nil
         } catch let error as SecretOperationError {
             return error
@@ -1158,10 +1175,31 @@ private final class OperationServiceFixture: @unchecked Sendable {
             requestedEffects: [command == "hostname" ? "read-only" : "remote-write"],
             parameters: ["passwordRef": reference.description, "username": "admin"],
             agentAssessment: agentRisk.map { risk in
-                AgentRiskAssessment(
+                let isReadOnly = command == "hostname"
+                let executionRecommendation: AgentRiskAssessment.ExecutionRecommendation
+                switch risk {
+                case .silent:
+                    executionRecommendation = .automatic
+                case .approvalRequired, .denied:
+                    // The legacy denied hint is intentionally only a visible
+                    // Agent warning; the daemon still evaluates the concrete
+                    // operation and the structured assessment independently.
+                    executionRecommendation = .reusableApproval
+                }
+                return AgentRiskAssessment(
                     declaredRisk: risk,
                     reason: "agent-reported risk",
-                    intendedEffect: command == "hostname" ? "inspect host name" : "remote write"
+                    userGoal: "Complete the requested SSH operation",
+                    taskContext: "A bounded task-scoped SSH operation with one declared credential",
+                    intendedEffect: isReadOnly ? "inspect host name" : "remote write",
+                    expectedEffect: isReadOnly ? "Read the host name" : "Change only the requested remote target",
+                    expectedResult: "The requested SSH operation completes",
+                    intentAlignment: .direct,
+                    effectSeverity: isReadOnly ? .none : .bounded,
+                    reversibility: isReadOnly ? .readOnly : .recoverable,
+                    secretHandling: .credentialUse,
+                    executionRecommendation: executionRecommendation,
+                    confidence: 0.95
                 )
             } ?? .conservativeDefault
         )
