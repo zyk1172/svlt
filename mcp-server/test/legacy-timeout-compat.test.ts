@@ -4,6 +4,20 @@ import type { IpcRequest, IpcResponse } from "../src/protocol.js";
 import { createVaultToolDefinitions, type VaultIpcClient } from "../src/server.js";
 
 const reference = "secret://0123456789ABCDEFGHJKMNPQRS";
+const assessment = {
+  reason: "legacy timeout compatibility fixture",
+  userGoal: "Exercise the historical timeoutMs input shape",
+  taskContext: "Schema compatibility test",
+  intendedEffect: "Perform the requested bounded operation",
+  expectedEffect: "Only the requested operation runs",
+  expectedResult: "The operation input remains accepted",
+  intentAlignment: "direct",
+  effectSeverity: "minor",
+  reversibility: "easy",
+  secretHandling: "credentialUse",
+  executionRecommendation: "automatic",
+  confidence: 0.95
+};
 
 class NoopClient implements VaultIpcClient {
   async request(_request: IpcRequest): Promise<IpcResponse> {
@@ -32,7 +46,7 @@ describe("legacy timeoutMs compatibility", () => {
     ];
 
     for (const [name, input] of cases) {
-      expect(() => inputSchema(name).parse(input), name).not.toThrow();
+      expect(() => inputSchema(name).parse({ ...input, agentAssessment: assessment }), name).not.toThrow();
     }
   });
 });

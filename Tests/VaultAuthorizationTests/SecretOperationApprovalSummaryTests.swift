@@ -39,7 +39,15 @@ private func batchMetadata(_ reference: SecretReference) -> [SecretPolicyMetadat
             SSHCommandSpec(executable: "mkdir", arguments: ["/share/test"]),
             SSHCommandSpec(executable: "rm", arguments: ["-rf", "/share/test"]),
             SSHCommandSpec(executable: "docker", arguments: ["system", "prune"])
-        ])
+        ]),
+        agentAssessment: AgentRiskAssessment(
+            reason: "The batch removes a task-owned directory and prunes unused containers.",
+            intendedEffect: "Remove the task-owned test directory and prune unused containers",
+            effectSeverity: .broad,
+            reversibility: .difficult,
+            executionRecommendation: .freshApproval,
+            confidence: 0.95
+        )
     )
     let decision = SecretOperationPolicyEngine().evaluate(descriptor, metadata: batchMetadata(reference))
     #expect(decision.authorizationRequirement == .freshApprovalRequired)

@@ -66,6 +66,7 @@ public protocol WorkbenchServicing: Sendable {
         duration: CatalogAgentWriteAccessDuration
     ) async throws
     func pendingRevealSessionIDs() async throws -> [String]
+    func preflightSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationPreflight
     func performSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationOutput
     func startSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationHandle
     func secretOperationStatus(operationID: UUID) async throws -> SecretOperationStatus
@@ -217,6 +218,10 @@ public extension WorkbenchServicing {
         reasonCategory _: CatalogAgentWriteReasonCategory,
         duration _: CatalogAgentWriteAccessDuration
     ) async throws {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func preflightSecretOperation(_: SecretOperationDescriptor) async throws -> SecretOperationPreflight {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
@@ -422,6 +427,14 @@ public struct IPCRequestHandler: Sendable {
             return .orphanScan(try await service.scanOrphans(markdownReferences: markdownReferences))
         case .execute:
             return .failure(code: "EXECUTE_UNAVAILABLE")
+        case let .preflightSecretOperation(descriptor):
+            do {
+                return .secretOperationPreflight(try await service.preflightSecretOperation(descriptor))
+            } catch let error as SecretOperationError {
+                return .failure(code: error.responseCode)
+            } catch {
+                return .failure(code: "ACTION_EXECUTION_FAILED")
+            }
         case let .executeSecretOperation(descriptor):
             do {
                 return .secretOperation(try await service.performSecretOperation(descriptor))

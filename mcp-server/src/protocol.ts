@@ -57,14 +57,60 @@ export type SecretCatalogField = z.infer<typeof SecretCatalogField>;
 export const OperationRisk = z.enum(["silent", "approvalRequired", "denied"]);
 export type OperationRisk = z.infer<typeof OperationRisk>;
 
+export const AgentAssessmentSource = z.enum(["mainAgent", "independentJudge"]);
+export type AgentAssessmentSource = z.infer<typeof AgentAssessmentSource>;
+
+export const AgentIntentAlignment = z.enum(["direct", "supporting", "unclear", "unrelated"]);
+export const AgentEffectSeverity = z.enum(["none", "minor", "bounded", "broad", "systemic", "unknown"]);
+export const AgentReversibility = z.enum(["readOnly", "easy", "recoverable", "difficult", "irreversible", "unknown"]);
+export const AgentSecretHandling = z.enum([
+  "none",
+  "credentialUse",
+  "userVisibleSensitiveData",
+  "thirdPartyExposure",
+  "plaintextSecretExposure",
+  "unknown"
+]);
+export const AgentExecutionRecommendation = z.enum([
+  "automatic",
+  "reusableApproval",
+  "freshApproval",
+  "uncertain"
+]);
+
 export const AgentRiskAssessment = z
   .object({
+    source: AgentAssessmentSource,
     declaredRisk: OperationRisk,
-    reason: z.string().min(1).max(512),
-    intendedEffect: z.string().min(1).max(256)
+    reason: z.string().min(1).max(4_096),
+    userGoal: z.string().min(1).max(8_192),
+    taskContext: z.string().min(1).max(16_384),
+    intendedEffect: z.string().min(1).max(8_192),
+    expectedEffect: z.string().min(1).max(8_192),
+    expectedResult: z.string().min(1).max(8_192),
+    intentAlignment: AgentIntentAlignment,
+    effectSeverity: AgentEffectSeverity,
+    reversibility: AgentReversibility,
+    secretHandling: AgentSecretHandling,
+    executionRecommendation: AgentExecutionRecommendation,
+    confidence: z.number().min(0).max(1)
   })
   .strict();
 export type AgentRiskAssessment = z.infer<typeof AgentRiskAssessment>;
+
+export const SecretOperationPreflight = z.object({
+  route: z.enum(["fast", "hard", "gray", "denied"]),
+  policyRuleID: z.string().min(1),
+  authorizationRequirement: z.enum(["none", "reusableApproval", "freshApprovalRequired", "denied"]),
+  blastRadius: z.enum(["none", "tiny", "bounded", "broad", "systemic", "unknown"]),
+  reasons: z.array(z.string()),
+  technicalFailure: z.boolean(),
+  // Only a GRAY preflight should carry this daemon-issued binding. The MCP
+  // layer must return a fresh-approval request if an older daemon omits it;
+  // it must never invent or trust a judge result without the binding.
+  reviewID: z.string().uuid().optional()
+}).strict();
+export type SecretOperationPreflight = z.infer<typeof SecretOperationPreflight>;
 
 // This is display-only metadata supplied by the MCP client. The Swift IPC
 // layer derives the security principal from the peer process and never uses
@@ -949,6 +995,7 @@ export const SecretOperationDescriptor = z
     payload: SecretOperationPayload.nullable().optional(),
     requestedEffects: z.array(z.string()),
     parameters: z.record(z.string(), z.string()),
+    reviewID: z.string().uuid().optional(),
     agentAssessment: AgentRiskAssessment
   })
   .strict();
@@ -1133,6 +1180,12 @@ export const IpcRequest = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("preflightSecretOperation"),
+      descriptor: SecretOperationDescriptor
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("executeSecretOperation"),
       descriptor: SecretOperationDescriptor
     })
@@ -1283,6 +1336,7 @@ export const IpcResponse = z.discriminatedUnion("type", [
       output: SecretOperationOutput
     })
     .strict(),
+  z.object({ type: z.literal("secretOperationPreflight"), result: SecretOperationPreflight }).strict(),
   z
     .object({
       type: z.literal("sshSessionStatus"),

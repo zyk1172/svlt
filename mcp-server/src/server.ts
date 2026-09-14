@@ -8,9 +8,9 @@ import { z } from "zod";
 
 import { LocalIpcClient } from "./client.js";
 import { credentialSourcePriority } from "./credential-scope.js";
+import { AgentRiskProposal, agentAssessment } from "./agent-assessment.js";
 import {
   AgentCallerIdentity,
-  AgentRiskAssessment,
   CatalogCreateEntryRequest,
   CatalogCreateStructureRequest,
   CatalogBatchMutation,
@@ -48,7 +48,7 @@ import {
   SSHSessionStatus
 } from "./protocol.js";
 
-const optionalAgentRiskAssessment = AgentRiskAssessment.optional();
+const requiredAgentRiskAssessment = AgentRiskProposal;
 
 // Keep this text aligned with SVLTAgentCatalogPolicy.text.  The Swift value
 // is the App's embedded source of truth; this copy is returned by the
@@ -634,7 +634,7 @@ const RevealInput = z
   .object({
     reference: SecretReference,
     reason: z.string().min(1),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict();
 
@@ -644,7 +644,7 @@ const ParagraphRevealInput = z
     references: NonEmptyUniqueSecretReferences.optional(),
     template: z.string().min(1).optional(),
     reason: z.string().min(1),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.text !== undefined || (value.references !== undefined && value.template !== undefined), {
@@ -658,7 +658,7 @@ const ExportResolvedTextInput = z
     template: z.string().min(1).optional(),
     reason: z.string().min(1),
     destinationPath: z.string().min(1),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.text !== undefined || (value.references !== undefined && value.template !== undefined), {
@@ -688,7 +688,7 @@ const BindDestinationInput = z
     port: z.number().int().min(1).max(65_535).optional(),
     hostKeyAlgorithm: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9._-]+$/).optional(),
     hostKeySHA256: z.string().trim().regex(/^SHA256:[A-Za-z0-9+/]{43}$/).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .superRefine((value, context) => {
@@ -785,7 +785,7 @@ const LocalHttpInput = z
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -829,7 +829,7 @@ const SshCommandInput = z
         }),
     sessionID: z.string().min(1).max(128).optional(),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict();
 
@@ -843,7 +843,7 @@ const SshCommandBatchInput = z
     commands: z.array(SSHCommandSpec).min(1).max(32),
     stopOnFailure: z.boolean().default(true),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .superRefine((value, context) => {
@@ -880,7 +880,7 @@ const ApiRequestInput = z
     responseProfileID: z.string().min(1).max(128).optional(),
     responseFields: z.array(z.string().min(1).max(128)).max(32).optional(),
     timeoutMs: z.number().int().min(100).max(30_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .superRefine((value, context) => {
@@ -907,7 +907,7 @@ const DatabaseQueryInput = z
     query: z.string().min(1).max(20_000),
     maxRows: z.number().int().min(1).max(100).optional(),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -935,7 +935,7 @@ const FileTransferInput = z
     remotePath: z.string().min(1).max(4_096),
     localPath: z.string().min(1).max(4_096).optional(),
     timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -966,7 +966,7 @@ const FTPTransferInput = z
     remotePath: z.string().min(1).max(4_096),
     localPath: z.string().min(1).max(4_096).optional(),
     timeoutMs: z.number().int().min(1_000).max(60_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -997,7 +997,7 @@ const BrowserLoginInput = z
     submitSelector: z.string().min(1).max(1_024).optional(),
     submit: z.boolean().optional(),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .refine((value) => value.username === undefined || value.usernameRef === undefined, {
@@ -1035,7 +1035,7 @@ const LocalAppFillInput = z
       })).min(1).max(20),
     submitButton: z.string().min(1).max(256).optional(),
     timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .superRefine((value, context) => {
@@ -1060,7 +1060,7 @@ const LocalExecutionInput = z
     executable: z.string().trim().min(1).max(4_096),
     arguments: z.array(z.string().max(4_096)).max(32).default([]),
     secretReferences: NonEmptyUniqueSecretReferences,
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .superRefine((value, context) => {
@@ -1078,7 +1078,7 @@ const TrustedProcessInput = z
     profileID: z.string().trim().min(1).max(128),
     arguments: z.array(z.string().max(4_096)).max(32).default([]),
     secretReferences: NonEmptyUniqueSecretReferences,
-    agentAssessment: optionalAgentRiskAssessment
+    agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
   .superRefine((value, context) => {
@@ -1248,9 +1248,20 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
             template: revealRequest.context.template,
             ranges: revealRequest.context.ranges,
             agentAssessment: {
-              declaredRisk: "silent",
+              source: "mainAgent",
+              declaredRisk: "approvalRequired",
               reason: "Automatic local reveal request",
-              intendedEffect: "display to local user"
+              userGoal: "Display the requested Secret to the local device owner",
+              taskContext: "Local explicit reveal flow",
+              intendedEffect: "display to local user",
+              expectedEffect: "Render plaintext only in the protected local reveal surface",
+              expectedResult: "The local user can view the requested value",
+              intentAlignment: "direct",
+              effectSeverity: "bounded",
+              reversibility: "readOnly",
+              secretHandling: "userVisibleSensitiveData",
+              executionRecommendation: "freshApproval",
+              confidence: 1
             }
           }
         });
@@ -1747,11 +1758,9 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
             reason: parsed.reason,
             template: "{{0}}",
             ranges: [{ index: 0, placeholder: "{{0}}" }],
-            agentAssessment: parsed.agentAssessment ?? {
-              declaredRisk: "silent",
-              reason: "Local reveal request",
-              intendedEffect: "display to local user"
-            }
+            agentAssessment: parsed.agentAssessment === undefined
+              ? agentAssessment({})
+              : agentAssessment({ agentAssessment: parsed.agentAssessment })
           }
         });
         if (response.type === "revealSessionOpened") {
@@ -1777,11 +1786,9 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
             reason: parsed.reason,
             template: revealRequest.context.template,
             ranges: revealRequest.context.ranges,
-            agentAssessment: parsed.agentAssessment ?? {
-              declaredRisk: "silent",
-              reason: "Local reveal request",
-              intendedEffect: "display to local user"
-            }
+            agentAssessment: parsed.agentAssessment === undefined
+              ? agentAssessment({})
+              : agentAssessment({ agentAssessment: parsed.agentAssessment })
           }
         });
         if (response.type === "revealSessionOpened") {
@@ -2173,11 +2180,9 @@ async function handleExportResolvedText(
       reason: parsed.reason,
       template: revealRequest.context.template,
       ranges: revealRequest.context.ranges,
-      agentAssessment: parsed.agentAssessment ?? {
-        declaredRisk: "silent",
-        reason: "Local file export request",
-        intendedEffect: "write local file"
-      }
+      agentAssessment: parsed.agentAssessment === undefined
+        ? agentAssessment({})
+        : agentAssessment({ agentAssessment: parsed.agentAssessment })
     }
   });
   if (response.type === "exported") {
@@ -2186,15 +2191,6 @@ async function handleExportResolvedText(
   return structuredResult(statusOnly(response));
 }
 
-type AgentRiskInput = { agentAssessment?: z.infer<typeof AgentRiskAssessment> };
-
-function agentAssessment(input: AgentRiskInput): z.infer<typeof AgentRiskAssessment> {
-  return input.agentAssessment ?? {
-    declaredRisk: "silent",
-    reason: "No additional agent risk hint",
-    intendedEffect: "purpose-built local secret operation"
-  };
-}
 
 async function ensureSecretOperationCapability(
   client: VaultIpcClient,

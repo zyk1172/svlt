@@ -9,6 +9,7 @@ import VaultExecution
 private let testIndexID = "0123456789ABCDEFGHJKMNPQRS"
 private let testEntryID = "0123456789ABCDEFGHJKMNPQRT"
 private let testSecretReference = "secret://0123456789ABCDEFGHJKMNPQRS"
+private let testSemanticReviewID = UUID(uuidString: "00000000-0000-4000-8000-000000000086")!
 
 private func ipcTestSSHHostKeyPin(byte: UInt8 = 0x41) throws -> SSHHostKeyPin {
     try SSHHostKeyPin(
@@ -54,6 +55,22 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
 
 @Test func requestJSONRoundTripsEveryCase() throws {
     let pin = try ipcTestSSHHostKeyPin()
+    let operationDescriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")],
+        destination: "qnap.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname",
+        requestedEffects: ["read-only"],
+        parameters: ["passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"],
+        reviewID: testSemanticReviewID,
+        agentAssessment: AgentRiskAssessment(
+            declaredRisk: .silent,
+            reason: "read-only diagnostic",
+            intendedEffect: "read status"
+        )
+    )
     let requests: [IPCRequest] = [
         .status,
         .workbenchStatus,
@@ -149,21 +166,8 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
             destinationPath: "/v1/send",
             requestedRisk: .writeOrExternalSend
         )),
-        .executeSecretOperation(SecretOperationDescriptor(
-            actionType: .sshCommand,
-            secretReferences: [try SecretReference("secret://0123456789ABCDEFGHJKMNPQRS")],
-            destination: "qnap.local",
-            port: 22,
-            protocolType: .ssh,
-            command: "hostname",
-            requestedEffects: ["read-only"],
-            parameters: ["passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"],
-            agentAssessment: AgentRiskAssessment(
-                declaredRisk: .silent,
-                reason: "read-only diagnostic",
-                intendedEffect: "read status"
-            )
-        )),
+        .preflightSecretOperation(operationDescriptor),
+        .executeSecretOperation(operationDescriptor),
         .reviewSSHHostKey(host: "qnap.local", port: 2222)
     ]
 
@@ -263,6 +267,14 @@ private func sampleCatalogMatch() -> SecretCatalogMatch {
         .exported(path: "/Users/example/Desktop/token.md"),
         .execution(.completed(exitCode: 0, stdout: "ok [REDACTED_SECRET]", stderr: "")),
         .execution(.quarantined(reason: .binaryOutput)),
+        .secretOperationPreflight(SecretOperationPreflight(
+            route: .fast,
+            policyRuleID: "test.fast",
+            authorizationRequirement: .none,
+            blastRadius: .tiny,
+            reasons: ["routine bounded operation"],
+            reviewID: testSemanticReviewID
+        )),
         .secretOperation(SecretOperationOutput(status: "COMPLETED", httpStatus: 200, contentType: "application/json", bodyPreview: "{\"ok\":true}")),
         .secretOperation(SecretOperationOutput(
             status: "BOUND",

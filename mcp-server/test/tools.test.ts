@@ -57,12 +57,60 @@ function capabilityResponse(
   } as IpcResponse;
 }
 
-function tool(client: VaultIpcClient, name: string) {
+const routineAssessment = {
+  reason: "test fixture: routine user-aligned operation",
+  userGoal: "Complete the requested test operation",
+  taskContext: "MCP contract test fixture",
+  intendedEffect: "Perform the bounded requested operation",
+  expectedEffect: "Only the requested bounded target changes",
+  expectedResult: "The requested operation completes",
+  intentAlignment: "direct" as const,
+  effectSeverity: "minor" as const,
+  reversibility: "easy" as const,
+  secretHandling: "credentialUse" as const,
+  executionRecommendation: "automatic" as const,
+  confidence: 0.95
+};
+
+const assessmentToolNames = new Set([
+  "secret_bind_destination",
+  "ssh_command_with_secret",
+  "ssh_batch_with_secret",
+  "local_http_request_with_secret",
+  "api_request_with_token",
+  "database_query_with_secret",
+  "sftp_transfer_with_secret",
+  "ftp_transfer_with_secret",
+  "browser_web_login_with_secret",
+  "local_app_form_fill_with_secret",
+  "local_execution_with_secret",
+  "trusted_process_with_secret",
+  "secret_reveal_request",
+  "export_resolved_text_to_local_file"
+]);
+
+type ToolDefinition = ReturnType<typeof createVaultToolDefinitions>[number];
+
+function rawTool(client: VaultIpcClient, name: string): ToolDefinition {
   const definition = createVaultToolDefinitions(client).find((item) => item.name === name);
   if (definition === undefined) {
     throw new Error(`missing tool ${name}`);
   }
   return definition;
+}
+
+function tool(client: VaultIpcClient, name: string): ToolDefinition {
+  const definition = rawTool(client, name);
+  if (!assessmentToolNames.has(name)) return definition;
+  return {
+    ...definition,
+    async handler(input: unknown) {
+      const enriched = typeof input === "object" && input !== null && !("agentAssessment" in input)
+        ? { ...(input as Record<string, unknown>), agentAssessment: routineAssessment }
+        : input;
+      return definition.handler(enriched as never);
+    }
+  } as ToolDefinition;
 }
 
 describe("MCP tool contracts", () => {
@@ -916,9 +964,18 @@ describe("MCP tool contracts", () => {
       passwordRef: reference,
       command: "hostname",
       agentAssessment: {
-        declaredRisk: "silent",
         reason: "read QNAP status",
-        intendedEffect: "read-only"
+        userGoal: "Inspect QNAP status",
+        taskContext: "The requested step is a read-only host diagnostic",
+        intendedEffect: "read-only",
+        expectedEffect: "No persistent change",
+        expectedResult: "Return the host name",
+        intentAlignment: "direct",
+        effectSeverity: "none",
+        reversibility: "readOnly",
+        secretHandling: "credentialUse",
+        executionRecommendation: "automatic",
+        confidence: 0.98
       }
     });
 
@@ -932,7 +989,12 @@ describe("MCP tool contracts", () => {
       destination: "qnap.local",
       command: "hostname",
       protocolType: "ssh",
-      agentAssessment: { declaredRisk: "silent" }
+      agentAssessment: {
+        source: "mainAgent",
+        declaredRisk: "silent",
+        executionRecommendation: "automatic",
+        intentAlignment: "direct"
+      }
     });
     expect(JSON.stringify(request)).not.toContain("plaintext-secret-value");
     expect(JSON.stringify(request)).not.toContain("restoreReferences");
@@ -946,9 +1008,18 @@ describe("MCP tool contracts", () => {
       passwordRef: reference,
       command: "mkdir /share/svlt-test",
       agentAssessment: {
-        declaredRisk: "approvalRequired",
         reason: "creates a directory",
-        intendedEffect: "remote write"
+        userGoal: "Create the requested remote working directory",
+        taskContext: "Bounded reversible filesystem setup",
+        intendedEffect: "remote write",
+        expectedEffect: "Create one directory",
+        expectedResult: "The requested directory exists",
+        intentAlignment: "direct",
+        effectSeverity: "minor",
+        reversibility: "easy",
+        secretHandling: "credentialUse",
+        executionRecommendation: "automatic",
+        confidence: 0.96
       }
     });
 
@@ -956,32 +1027,30 @@ describe("MCP tool contracts", () => {
     const request = client.requests[0];
     expect(request.type).toBe("executeSecretOperation");
     if (request.type !== "executeSecretOperation") return;
-    // The Swift policy engine merges this hint with the local requirement;
-    // the wire contract must preserve it verbatim instead of downgrading it.
-    expect(request.descriptor.agentAssessment).toEqual({
-      declaredRisk: "approvalRequired",
+    // MCP owns provenance/coarse risk and forwards the main Agent's structured semantics.
+    expect(request.descriptor.agentAssessment).toMatchObject({
+      source: "mainAgent",
+      declaredRisk: "silent",
       reason: "creates a directory",
-      intendedEffect: "remote write"
+      userGoal: "Create the requested remote working directory",
+      intendedEffect: "remote write",
+      effectSeverity: "minor",
+      reversibility: "easy",
+      secretHandling: "credentialUse",
+      executionRecommendation: "automatic",
+      confidence: 0.96
     });
   });
 
-  it("fills the conservative default assessment when the agent omits one", async () => {
+  it("requires the main Agent assessment instead of silently manufacturing one", async () => {
     const client = new FakeClient([operationResponse({ exitCode: 0, stdout: "", stderr: "" })]);
-    await tool(client, "ssh_command_with_secret").handler({
+    await expect(rawTool(client, "ssh_command_with_secret").handler({
       host: "qnap.local",
       username: "admin",
       passwordRef: reference,
       command: "hostname"
-    });
-
-    const request = client.requests[0];
-    expect(request.type).toBe("executeSecretOperation");
-    if (request.type !== "executeSecretOperation") return;
-    expect(request.descriptor.agentAssessment).toEqual({
-      declaredRisk: "silent",
-      reason: "No additional agent risk hint",
-      intendedEffect: "purpose-built local secret operation"
-    });
+    } as never)).rejects.toThrow(/agentAssessment|expected object/i);
+    expect(client.requests).toHaveLength(0);
   });
 
   it("preserves only bounded redacted diagnostics for failed SSH actions", async () => {
@@ -1116,9 +1185,18 @@ describe("MCP tool contracts", () => {
       passwordRef: reference,
       command: "rm -rf /volume1/@tmp",
       agentAssessment: {
-        declaredRisk: "silent",
         reason: "maintenance",
-        intendedEffect: "read-only"
+        userGoal: "Perform the requested maintenance",
+        taskContext: "The command deletes a remote directory tree and therefore needs semantic review",
+        intendedEffect: "delete a remote directory tree",
+        expectedEffect: "Remove /volume1/@tmp recursively",
+        expectedResult: "Temporary data is removed",
+        intentAlignment: "direct",
+        effectSeverity: "broad",
+        reversibility: "irreversible",
+        secretHandling: "credentialUse",
+        executionRecommendation: "freshApproval",
+        confidence: 0.98
       }
     });
 
@@ -1506,9 +1584,20 @@ describe("MCP tool contracts", () => {
         template: "Token: {{0}}",
         ranges: [{ index: 0, placeholder: "{{0}}" }],
         agentAssessment: {
+          source: "mainAgent",
           declaredRisk: "silent",
-          reason: "Local file export request",
-          intendedEffect: "write local file"
+          reason: "test fixture: routine user-aligned operation",
+          userGoal: "Complete the requested test operation",
+          taskContext: "MCP contract test fixture",
+          intendedEffect: "Perform the bounded requested operation",
+          expectedEffect: "Only the requested bounded target changes",
+          expectedResult: "The requested operation completes",
+          intentAlignment: "direct",
+          effectSeverity: "minor",
+          reversibility: "easy",
+          secretHandling: "credentialUse",
+          executionRecommendation: "automatic",
+          confidence: 0.95
         }
       }
     }]);

@@ -109,9 +109,24 @@ export class LocalIpcClient {
   // are fully migrated; callers that already speak the legacy contract do not
   // need to widen their types in the same release.
   async request(request: BaseIpcRequest, caller?: AgentCallerIdentity): Promise<BaseIpcResponse> {
-    const riskJudgedRequest = await applyContextBoundedRiskJudge(request);
-    const parsedRequest = LifecycleIpcRequest.parse(riskJudgedRequest);
+    const initialRequest = LifecycleIpcRequest.parse(request);
     const effectiveCaller = caller ?? this.declaredCaller;
+    let parsedRequest = initialRequest;
+    if (initialRequest.type === "executeSecretOperation" || initialRequest.type === "startSecretOperation") {
+      const preflightResponse = await this.requestRaw({
+        type: "preflightSecretOperation",
+        descriptor: initialRequest.descriptor
+      }, effectiveCaller);
+      if (preflightResponse.type === "failure") {
+        return preflightResponse as BaseIpcResponse;
+      }
+      if (preflightResponse.type !== "secretOperationPreflight") {
+        throw new Error("SVLT daemon returned an invalid preflight response");
+      }
+      parsedRequest = LifecycleIpcRequest.parse(
+        await applyContextBoundedRiskJudge(initialRequest, preflightResponse.result)
+      );
+    }
 
     // Keep the old public request shape for in-process compatibility while
     // removing it from the MCP↔daemon execution path. Existing server handlers

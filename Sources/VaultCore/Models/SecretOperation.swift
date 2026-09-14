@@ -64,25 +64,151 @@ public enum AuthorizationRequirement: String, Codable, CaseIterable, Sendable {
 }
 
 public struct AgentRiskAssessment: Codable, Equatable, Sendable {
+    public enum Source: String, Codable, CaseIterable, Sendable {
+        case mainAgent
+        case independentJudge
+    }
+
+    public enum IntentAlignment: String, Codable, CaseIterable, Sendable {
+        case direct, supporting, unclear, unrelated
+    }
+
+    public enum EffectSeverity: String, Codable, CaseIterable, Sendable {
+        case none, minor, bounded, broad, systemic, unknown
+    }
+
+    public enum Reversibility: String, Codable, CaseIterable, Sendable {
+        case readOnly, easy, recoverable, difficult, irreversible, unknown
+    }
+
+    public enum SecretHandling: String, Codable, CaseIterable, Sendable {
+        case none, credentialUse, userVisibleSensitiveData, thirdPartyExposure, plaintextSecretExposure, unknown
+    }
+
+    public enum ExecutionRecommendation: String, Codable, CaseIterable, Sendable {
+        case automatic
+        case reusableApproval
+        case freshApproval
+        case uncertain
+
+        public var authorizationRequirement: AuthorizationRequirement {
+            switch self {
+            case .automatic: return .none
+            case .reusableApproval: return .reusableApproval
+            case .freshApproval, .uncertain: return .freshApprovalRequired
+            }
+        }
+    }
+
+    public let source: Source
     public let declaredRisk: OperationRisk
     public let reason: String
+    public let userGoal: String
+    public let taskContext: String
     public let intendedEffect: String
+    public let expectedEffect: String
+    public let expectedResult: String
+    public let intentAlignment: IntentAlignment
+    public let effectSeverity: EffectSeverity
+    public let reversibility: Reversibility
+    public let secretHandling: SecretHandling
+    public let executionRecommendation: ExecutionRecommendation
+    public let confidence: Double
 
     public init(
-        declaredRisk: OperationRisk,
+        source: Source = .mainAgent,
+        declaredRisk: OperationRisk = .approvalRequired,
         reason: String,
-        intendedEffect: String
+        userGoal: String = "Complete the requested operation",
+        taskContext: String = "No additional task context supplied",
+        intendedEffect: String,
+        expectedEffect: String = "Perform the intended operation",
+        expectedResult: String = "Complete the requested task",
+        intentAlignment: IntentAlignment = .unclear,
+        effectSeverity: EffectSeverity = .unknown,
+        reversibility: Reversibility = .unknown,
+        secretHandling: SecretHandling = .unknown,
+        executionRecommendation: ExecutionRecommendation = .uncertain,
+        confidence: Double = 0
     ) {
+        self.source = source
         self.declaredRisk = declaredRisk
         self.reason = reason
+        self.userGoal = userGoal
+        self.taskContext = taskContext
         self.intendedEffect = intendedEffect
+        self.expectedEffect = expectedEffect
+        self.expectedResult = expectedResult
+        self.intentAlignment = intentAlignment
+        self.effectSeverity = effectSeverity
+        self.reversibility = reversibility
+        self.secretHandling = secretHandling
+        self.executionRecommendation = executionRecommendation
+        self.confidence = confidence
     }
 
     public static let conservativeDefault = AgentRiskAssessment(
-        declaredRisk: .silent,
-        reason: "Agent did not provide a risk assessment",
-        intendedEffect: "unspecified"
+        declaredRisk: .approvalRequired,
+        reason: "No semantic Agent assessment was supplied",
+        userGoal: "Complete the requested operation",
+        taskContext: "No additional task context supplied",
+        intendedEffect: "unspecified",
+        expectedEffect: "Unknown until reviewed",
+        expectedResult: "Complete the requested task",
+        intentAlignment: .unclear,
+        effectSeverity: .unknown,
+        reversibility: .unknown,
+        secretHandling: .unknown,
+        executionRecommendation: .uncertain,
+        confidence: 0
     )
+}
+
+public struct SecretOperationPreflight: Codable, Equatable, Sendable {
+    public enum Route: String, Codable, CaseIterable, Sendable {
+        case fast
+        case hard
+        case gray
+        case denied
+    }
+
+    public enum BlastRadius: String, Codable, CaseIterable, Sendable {
+        case none
+        case tiny
+        case bounded
+        case broad
+        case systemic
+        case unknown
+    }
+
+    public let route: Route
+    public let policyRuleID: String
+    public let authorizationRequirement: AuthorizationRequirement
+    public let blastRadius: BlastRadius
+    public let reasons: [String]
+    public let technicalFailure: Bool
+    /// A daemon-issued, short-lived binding for a GRAY preflight. This is
+    /// evidence that the daemon is willing to accept one independent review;
+    /// it is not trusted merely because it is present on a later descriptor.
+    public let reviewID: UUID?
+
+    public init(
+        route: Route,
+        policyRuleID: String,
+        authorizationRequirement: AuthorizationRequirement,
+        blastRadius: BlastRadius,
+        reasons: [String],
+        technicalFailure: Bool = false,
+        reviewID: UUID? = nil
+    ) {
+        self.route = route
+        self.policyRuleID = policyRuleID
+        self.authorizationRequirement = authorizationRequirement
+        self.blastRadius = blastRadius
+        self.reasons = reasons
+        self.technicalFailure = technicalFailure
+        self.reviewID = reviewID
+    }
 }
 
 public enum SecretOperationAction: String, Codable, CaseIterable, Sendable {
@@ -677,6 +803,9 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
     public let payload: SecretOperationPayload?
     public let requestedEffects: [String]
     public let parameters: [String: String]
+    /// A daemon-issued semantic-review binding. It is not an authorization
+    /// grant by itself and is excluded from `operationHash`.
+    public let reviewID: UUID?
     public let agentAssessment: AgentRiskAssessment
 
     public init(
@@ -697,6 +826,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         payload: SecretOperationPayload? = nil,
         requestedEffects: [String] = [],
         parameters: [String: String] = [:],
+        reviewID: UUID? = nil,
         agentAssessment: AgentRiskAssessment = .conservativeDefault
     ) {
         self.actionType = actionType
@@ -716,6 +846,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
         self.payload = payload
         self.requestedEffects = requestedEffects
         self.parameters = parameters
+        self.reviewID = reviewID
         self.agentAssessment = agentAssessment
     }
 
@@ -766,7 +897,9 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
     /// metadata is excluded for the same reason: it is untrusted explanatory
     /// input that the policy engine re-evaluates on every request, and two
     /// byte-identical operations must share one lease regardless of how the
-    /// Agent words its assessment.
+    /// Agent words its assessment. The daemon-issued reviewID is excluded as
+    /// well: it binds evidence to this operation, but is not the operation
+    /// being authorized.
     public var operationHash: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -831,6 +964,7 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
             payload: payload,
             requestedEffects: requestedEffects,
             parameters: parameters,
+            reviewID: reviewID,
             agentAssessment: agentAssessment
         )
     }

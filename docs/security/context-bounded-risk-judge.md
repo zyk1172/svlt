@@ -1,89 +1,35 @@
-# Context-bounded operation risk judge
+# Intent-first semantic authorization
 
-SVLT can optionally run a fresh semantic risk classification immediately before an MCP `executeSecretOperation` request enters the daemon. The judge is intentionally narrow: it is not a second general-purpose Agent and it has no tools, memory, conversation history, or Secret plaintext.
+SVLT is an Agent collaboration layer, not a generic command firewall. The user supplies the goal, the main Agent chooses the concrete steps, and SVLT keeps a narrow deterministic floor for technical validity, Secret plaintext exposure, and genuinely destructive/high-impact actions.
 
-## Why this exists
+## Decision order
 
-The main Agent knows the user's task, but it is also the component proposing the operation. Its own risk narrative is therefore not an authorization authority. A separate model call gives SVLT a semantic view of the actual operation without inheriting the main conversation's accumulated instructions or prompt-injection surface.
+1. The main Agent sends a structured semantic assessment with `userGoal`, `taskContext`, `intendedEffect`, `expectedEffect`, `expectedResult`, task alignment, effect severity, reversibility, Secret handling, recommendation, and confidence.
+2. The MCP boundary first asks the daemon for deterministic preflight. The daemon returns `FAST`, `HARD`, `GRAY`, or `DENIED` together with the local rule, approval floor, blast radius, and sanitized reasons. TypeScript does not duplicate the Swift classifier registry.
+3. `FAST` proceeds with the main Agent assessment and no second model call. `HARD` goes directly to fresh owner approval. `DENIED` stays denied. Only `GRAY` invokes SVLT's separately configured semantic judge.
+4. Gray routing includes unresolved Agent semantics, dynamic/opaque execution, a new credential scope, and conflicts between an `automatic` recommendation and deterministic soft-risk families such as deletion or destructive data mutation.
+5. The daemon rechecks the deterministic floor on execution. A main-Agent `automatic` assessment cannot directly lower a daemon `GRAY` signal; an independent judgment is required.
+6. String marker protocols such as `SVLT_JUDGE_V1`, `SVLT_JUDGE_V2`, and `SVLT_AGENT_V2` are retired rather than preserved for compatibility.
 
-The independent judge complements the deterministic SSH, database, HTTP, and transfer classifiers. It does not replace them.
+## Sensitive is not dangerous
 
-## Input contract
+`sudo`, root access, sensitive system paths, ordinary credential use, API/database access, configuration edits, service restarts, and other privileged operations are not approval-worthy by vocabulary alone. If the real effect is bounded/reversible, serves the user's goal, and does not expose managed Secret plaintext to an unnecessary recipient or output, the desired recommendation is `automatic`.
 
-Each judgment is a new stateless request. The judge receives only:
+## Independent judge isolation
 
-1. **Problem statement** — the main Agent's concise `intendedEffect`, sanitized and limited to 256 characters. It should describe the problem being solved, not argue that an operation is safe or pre-approved.
-2. **Canonical operation** — the concrete operation about to be submitted to SVLT: action type, destination/protocol/port, command or statement, HTTP method/URL, file action, and a bounded list of requested effects as applicable.
-3. **Secret count** — only the number of referenced credentials. The judge does not receive `secret://` identifiers or resolved plaintext.
+SVLT itself invokes the configured judge endpoint. It does not depend on Hermes, Codex, Claude, OpenClaw, or another Agent framework's sub-agent implementation. The judge receives a bounded redacted packet containing the user's goal, task context, intended/expected effect and result, the main Agent's assessment, SVLT's gray-zone signal, and the canonical concrete operation. The old 256-character problem budget is removed.
 
-The judge does **not** receive:
+The judge never receives managed Secret plaintext or `secret://` identifiers. Common bearer-token, password/token/API-key, and private-key shapes in semantic context are redacted before a remote call. It does not receive the Agent software's system prompt, complete chat history, memory, or tools.
 
-- prior chat turns or system/developer prompts from the main Agent;
-- Memory or profile context;
-- the main Agent's free-form risk reason;
-- tools or execution access;
-- resolved Secret plaintext;
-- credential parameters or opaque Secret IDs.
+## Hard floor
 
-Command-like fields are bounded to control latency. Embedded `secret://` references are locally replaced with `<secret-reference>` before a remote request.
+The semantic layer cannot override malformed/identity-invalid requests. The non-downgradable fresh-approval set is intentionally small:
 
-## Output contract
+- explicit Secret/plaintext control paths and vault/security-control mutations;
+- plaintext FTP credential transport;
+- insecure HTTP credential transport and credentials embedded in URLs;
+- arbitrary local-process Secret release;
+- machine power control, block-device/filesystem destruction, and storage/RAID destruction;
+- destructive database schema changes and privilege/account administration.
 
-The response must be one small JSON object:
-
-```json
-{
-  "secretSensitivity": "low | important | critical",
-  "operationRisk": "readOnly | mutating | destructive | catastrophic | unknown",
-  "impact": "limited | material | severe | unknown",
-  "automaticExecution": true,
-  "approval": "none | reusable | fresh",
-  "confidence": 0.95,
-  "reason": "brief explanation"
-}
-```
-
-SVLT normalizes the model response before it can affect policy:
-
-- `destructive`, `catastrophic`, and `unknown` always become `fresh` approval and cannot auto-execute;
-- confidence below `0.65` always becomes `fresh` approval;
-- an automatic result is accepted only when approval is `none`;
-- the daemon requires at least `0.80` confidence plus `readOnly` or `mutating` risk before an ordinary reusable operation can be reduced to no approval.
-
-## Policy merge
-
-The deterministic policy engine remains the floor.
-
-- malformed or contradictory requests remain denied;
-- deterministic high-impact/fresh rules cannot be downgraded by the judge;
-- an independent judge may promote an ordinary operation from reusable to fresh approval;
-- an independent judge may reduce an ordinary reusable operation to automatic execution only under the strict conditions above;
-- legacy `AgentRiskAssessment` values that were produced by the main Agent remain display/audit hints only.
-
-If the configured judge times out, is unavailable, or returns invalid output, SVLT synthesizes `operationRisk=unknown`, `approval=fresh`, `automaticExecution=false`, and confidence `0`.
-
-## Prompt-injection boundary
-
-The system prompt explicitly treats both the problem and operation text as untrusted data. Instructions embedded inside a command, URL, SQL statement, filename, or problem statement do not become judge instructions.
-
-This reduces cross-agent influence but is not a claim that an LLM is a formal verifier. Deterministic classification and executor validation continue to enforce non-negotiable boundaries.
-
-## Configuration
-
-The MCP server uses an OpenAI-compatible chat-completions endpoint when both of these are set:
-
-- `SVLT_RISK_JUDGE_URL`
-- `SVLT_RISK_JUDGE_MODEL`
-
-Optional:
-
-- `SVLT_RISK_JUDGE_API_KEY`
-- `SVLT_RISK_JUDGE_TIMEOUT_MS` — default 3500 ms, clamped to 750–10000 ms.
-
-Remote endpoints must use HTTPS. Plain HTTP is accepted only for `localhost` or `127.0.0.1`, which supports a small local model without sending the operation over the network.
-
-If no judge is configured, the existing authorization behavior remains available. A caller-provided `SVLT_JUDGE_V1` marker is stripped at the MCP client boundary rather than being accepted as an independent judgment.
-
-## Latency budget
-
-The judge request is deliberately kept small: a 256-character problem, bounded operation fields, no history, temperature 0, and a maximum response budget of 260 tokens. It runs once for each `executeSecretOperation` request so the judgment is tied to the concrete operation rather than a long-lived conversation state.
+Other lexical fresh classifications (for example bounded file deletion, HTTP DELETE, SFTP replacement, container removal, or database data mutation) are semantic signals, not permanent vetoes: a structured assessment may reduce them when the actual operation is bounded and aligned with the user's request.
