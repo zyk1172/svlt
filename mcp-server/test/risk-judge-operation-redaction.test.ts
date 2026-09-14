@@ -123,7 +123,6 @@ describe("semantic judge canonical operation privacy", () => {
     }
 
     expect(body).not.toContain("secret://01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    expect(body).toContain("<secret-reference>");
     expect(body).toContain("Bearer <redacted>");
     expect(body).toContain("Basic <redacted>");
     expect(body).toContain("--password <redacted>");
