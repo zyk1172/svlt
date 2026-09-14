@@ -182,7 +182,7 @@ async function judgeOperation(
               "Return JSON only with: reason, intentAlignment, effectSeverity, reversibility, secretHandling, executionRecommendation, confidence."
             ].join("\n")
           },
-          { role: "user", content: JSON.stringify(context) }
+          { role: "user", content: JSON.stringify(sanitizeJudgePacket(context)) }
         ]
       })
     });
@@ -221,7 +221,7 @@ function canonicalOperation(descriptor: SecretOperationDescriptor): Record<strin
   return {
     actionType: descriptor.actionType,
     secretCount: descriptor.secretReferences.length,
-    destination: descriptor.destination ?? undefined,
+    destination: descriptor.destination == null ? undefined : operationText(descriptor.destination, 2_048),
     port: descriptor.port ?? undefined,
     protocol: descriptor.protocolType ?? undefined,
     command: descriptor.command == null ? undefined : operationText(descriptor.command, MAX_OPERATION_CHARS),
@@ -239,14 +239,34 @@ function canonicalOperation(descriptor: SecretOperationDescriptor): Record<strin
 }
 
 function operationText(value: string, maxCharacters: number): string {
-  return boundedText(value.replace(/secret:\/\/[A-Za-z0-9._~-]+/gu, "<secret-reference>"), maxCharacters);
+  return boundedText(redactJudgeText(value), maxCharacters);
 }
 
 function safeContextText(value: string, maxCharacters: number): string {
-  return operationText(value, maxCharacters)
-    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]{8,}/giu, "Bearer <redacted>")
-    .replace(/\b(password|passwd|pwd|token|api[_-]?key|apikey|secret)\s*([:=])\s*[^\s,;]{4,}/giu, "$1$2<redacted>")
-    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/gu, "<private-key-redacted>");
+  return operationText(value, maxCharacters);
+}
+
+function redactJudgeText(value: string): string {
+  return value
+    .replace(/secret:\/\/[A-Za-z0-9._~-]+/gu, "<secret-reference>")
+    .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/gu, "<private-key-redacted>")
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-=]{8,}/giu, "Bearer <redacted>")
+    .replace(/\bBasic\s+[A-Za-z0-9+/=]{8,}/giu, "Basic <redacted>")
+    .replace(/([?&](?:password|passwd|pwd|token|api[_-]?key|apikey|secret)=)[^&#\s]*/giu, "$1<redacted>")
+    .replace(/\b(password|passwd|pwd|token|api[_-]?key|apikey|secret)\s*([:=])\s*(?:"[^"\r\n]{4,}"|'[^'\r\n]{4,}'|[^\s,;&?]{4,})/giu, "$1$2<redacted>")
+    .replace(/(--(?:password|passwd|pwd|token|api[_-]?key|apikey|secret))(=|\s+)(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s,;]+)/giu, "$1$2<redacted>")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:)[^@\s/]+@/giu, "$1<redacted>@");
+}
+
+function sanitizeJudgePacket(value: unknown): unknown {
+  if (typeof value === "string") return redactJudgeText(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeJudgePacket(item));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizeJudgePacket(item)])
+    );
+  }
+  return value;
 }
 
 function boundedText(value: string, maxCharacters: number): string {
