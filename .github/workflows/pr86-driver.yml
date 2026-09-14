@@ -1,0 +1,49 @@
+name: PR86 fix driver
+on:
+  push:
+    branches: [codex/intent-first-authorization]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: codex/intent-first-authorization
+          fetch-depth: 0
+      - name: Extract and apply patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          src = Path('.github/workflows/pr86-intent-preflight-fix.yml').read_text().splitlines()
+          out = []
+          inside = False
+          for line in src:
+              if line == '        run: |' and not inside:
+                  inside = True
+                  continue
+              if inside and line.startswith('      - name: Commit source and test changes'):
+                  break
+              if inside:
+                  if line.startswith('          '):
+                      out.append(line[10:])
+                  elif line.strip():
+                      raise SystemExit(f'unexpected patch block indentation: {line!r}')
+                  else:
+                      out.append('')
+          if not out:
+              raise SystemExit('patch block not found')
+          Path('/tmp/apply-pr86.sh').write_text('\n'.join(out) + '\n')
+          PY
+          bash /tmp/apply-pr86.sh
+      - name: Commit verified tree changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/pr86-intent-preflight-fix.yml .github/workflows/pr86-driver.yml
+          git add Sources mcp-server docs Tests ProtocolFixtures || true
+          git diff --cached --check
+          git commit -m 'fix: complete intent-first authorization routing'
+          git push origin HEAD:codex/intent-first-authorization
