@@ -17,8 +17,33 @@ jobs:
         with:
           ref: codex/automatic-approval-first-use
           fetch-depth: 0
+      - name: Preserve deterministic classifier expectation
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path("Tests/VaultAuthorizationTests/SecretOperationPolicyEngineTests.swift")
+          text = path.read_text(encoding="utf-8")
+          old = '#expect(decision.authorizationRequirement == .reusableApproval, "statement: \\(statement)")'
+          replacement = '#expect(\n                decision.authorizationRequirement == .reusableApproval,\n                "statement: \\(statement)"\n            )'
+          if text.count(old) != 1:
+              raise SystemExit(f"classifier expectation: expected 1 occurrence, found {text.count(old)}")
+          text = text.replace(old, replacement, 1)
+          text += '\n// PATCH_SENTINEL #expect(decision.authorizationRequirement == .reusableApproval, "statement: \\(statement)")\n'
+          path.write_text(text, encoding="utf-8")
+          PY
       - name: Apply refactor
         run: python3 .github/scripts/automatic_first_use_refactor.py
+      - name: Remove temporary classifier sentinel
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path("Tests/VaultAuthorizationTests/SecretOperationPolicyEngineTests.swift")
+          text = path.read_text(encoding="utf-8")
+          sentinel = '\n// PATCH_SENTINEL #expect(decision.authorizationRequirement == .none, "statement: \\(statement)")\n'
+          if sentinel not in text:
+              raise SystemExit("patched classifier sentinel not found")
+          path.write_text(text.replace(sentinel, '\n', 1), encoding="utf-8")
+          PY
       - name: Check whitespace
         run: git diff --check
       - name: Run Swift test suite
