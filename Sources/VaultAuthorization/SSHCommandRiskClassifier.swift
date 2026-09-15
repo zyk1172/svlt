@@ -1,20 +1,24 @@
 import Foundation
 import VaultCore
 
-/// SVLT uses a device-owner authorization lease, not a semantic command
-/// firewall.
+/// SVLT uses effect-based semantic authorization, not a semantic command
+/// allowlist or first-use authorization lease.
 ///
-/// The classifier answers exactly one question: "which authorization level
-/// does this command need?" It never answers "is this command allowed?".
+/// The classifier supplies deterministic evidence for one concrete command.
+/// It never answers "is this command allowed?" and it cannot turn a Secret
+/// use into an approval requirement by itself.
 ///
-/// - Every technically valid SSH command defaults to `reusableApproval`:
-///   one device-owner approval opens the scoped five-minute window.
-/// - Only the small, explicitly declared fixed fresh rules (at most five
-///   categories, see `SSHFreshRules`) promote a command to
-///   `freshApprovalRequired`. They are detected with a deliberately shallow
-///   lexical scan of the raw command; the scan exists solely to promote
-///   reusable → fresh and can never deny.
-/// - There is no safe-read tier, no unknown tier, and no syntax blocklist:
+/// - Every technically valid SSH command defaults to the silent/ordinary
+///   signal. The structured semantic assessment may promote it when the
+///   actual effect is high-impact, irreversible, or unresolved.
+/// - Only the small, explicitly declared fixed high-impact signals (at most
+///   five categories, see `SSHFreshRules`) promote a command directly to
+///   `freshApprovalRequired`. Soft signals such as container removal remain
+///   semantic gray and are resolved from effect evidence by the policy
+///   engine. The scan exists solely to identify these signals and can never
+///   deny.
+/// - There is no safe-command allowlist, no unknown-command approval rule,
+///   and no syntax blocklist:
 ///   shell interpreters, pipelines, redirects, heredocs, `sudo`, interpreters,
 ///   `find -exec`, and unknown NAS CLIs are all ordinary operations. When the
 ///   scan cannot decide, the command stays on the ordinary path.
@@ -55,6 +59,13 @@ public enum SSHFreshRules {
         storageRaidDestruction,
         containerDestruction
     ]
+}
+
+/// Removing a container is a semantic gray signal: a disposable container
+/// may be recoverable, while deleting a volume or pruning the Docker data
+/// root is a hard data-destruction floor.
+enum SSHSemanticGrayRules {
+    static let containerLifecycleRemoval = "ssh.gray.container-lifecycle-removal"
 }
 
 public struct SSHCommandRiskClassifier: Sendable {
@@ -102,10 +113,10 @@ public struct SSHCommandRiskClassifier: Sendable {
             }
         }
         return SSHCommandRiskClassification(
-            risk: .approvalRequired,
-            authorizationRequirement: .reusableApproval,
-            reasons: ["SSH 批处理属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
-            ruleID: "ssh.ordinary.reusable-approval"
+            risk: .silent,
+            authorizationRequirement: .none,
+            reasons: ["SSH 批处理未匹配固定高危效果；是否升级只看结构化实际效果"],
+            ruleID: "ssh.ordinary.automatic"
         )
     }
 
@@ -133,10 +144,10 @@ public struct SSHCommandRiskClassifier: Sendable {
             )
         }
         return SSHCommandRiskClassification(
-            risk: .approvalRequired,
-            authorizationRequirement: .reusableApproval,
-            reasons: ["SSH 命令属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
-            ruleID: "ssh.ordinary.reusable-approval"
+            risk: .silent,
+            authorizationRequirement: .none,
+            reasons: ["SSH 命令未匹配固定高危效果；Secret 仅用于受控认证，不制造首次审批门槛"],
+            ruleID: "ssh.ordinary.automatic"
         )
     }
 
@@ -157,10 +168,10 @@ public struct SSHCommandRiskClassifier: Sendable {
             )
         }
         return SSHCommandRiskClassification(
-            risk: .approvalRequired,
-            authorizationRequirement: .reusableApproval,
-            reasons: ["SSH 命令属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
-            ruleID: "ssh.ordinary.reusable-approval"
+            risk: .silent,
+            authorizationRequirement: .none,
+            reasons: ["SSH 命令未匹配固定高危效果；Secret 仅用于受控认证，不制造首次审批门槛"],
+            ruleID: "ssh.ordinary.automatic"
         )
     }
 
@@ -234,7 +245,8 @@ public struct SSHCommandRiskClassifier: Sendable {
         if Self.powerControlExecutables.contains(executable) {
             return SSHFreshRules.powerControl
         }
-        if Self.filesystemDeleteExecutables.contains(executable) {
+        if Self.filesystemDeleteExecutables.contains(executable),
+           !Self.isNonDestructiveInvocation(arguments) {
             return SSHFreshRules.filesystemDelete
         }
         if executable.hasPrefix("mkfs") || Self.blockDeviceExecutables.contains(executable) {
@@ -264,10 +276,22 @@ public struct SSHCommandRiskClassifier: Sendable {
                 arguments,
                 optionsWithValue: Self.dockerOptionsWithValue
             )
-            if subcommands.first == "rm"
-                || (subcommands.first == "volume" && subcommands.dropFirst().first == "rm")
+            if subcommands.first == "exec",
+               let innerInvocation = Self.dockerExecInvocation(in: arguments),
+               let freshRule = matchFixedFreshRule(
+                   executable: innerInvocation.executable,
+                   arguments: innerInvocation.arguments,
+                   depth: depth + 1
+               ) {
+                return freshRule
+            }
+            if (subcommands.first == "volume" && subcommands.dropFirst().first == "rm")
                 || (subcommands.first == "system" && subcommands.dropFirst().first == "prune") {
                 return SSHFreshRules.containerDestruction
+            }
+            if subcommands.first == "rm"
+                || (subcommands.first == "container" && subcommands.dropFirst().first == "rm") {
+                return SSHSemanticGrayRules.containerLifecycleRemoval
             }
         }
 
@@ -782,6 +806,49 @@ public struct SSHCommandRiskClassifier: Sendable {
         return result.filter { !$0.isEmpty }
     }
 
+    /// Extracts the command after `docker exec` without interpreting the
+    /// command's arguments. This lets the narrow fixed floor distinguish
+    /// `docker exec app rm /data` from `docker exec app cat /etc/app.conf`
+    /// while leaving Python and other dynamic programs to structured semantic
+    /// review instead of creating a command allowlist.
+    private static func dockerExecInvocation(in arguments: [String]) -> ShellInvocation? {
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument == "--" {
+                index += 1
+                break
+            }
+            guard argument.hasPrefix("-") else { break }
+            if dockerExecOptionsWithValue.contains(argument) {
+                index += min(2, arguments.count - index)
+            } else {
+                index += 1
+            }
+        }
+        guard index < arguments.count, basename(arguments[index]) == "exec" else {
+            return nil
+        }
+        index += 1
+        // The first positional argument is the container; the next one is the
+        // command run inside it.
+        guard index + 1 < arguments.count else { return nil }
+        return normalizedInvocation(
+            executable: arguments[index + 1],
+            arguments: Array(arguments.dropFirst(index + 2))
+        )
+    }
+
+    /// `rm` does not have a portable dry-run mode, but several wrappers and
+    /// destructive utilities use the conventional markers. Treat explicit
+    /// help/version/no-op requests as non-destructive evidence so a keyword in
+    /// a diagnostic probe or dry-run cannot create an approval by itself.
+    private static func isNonDestructiveInvocation(_ arguments: [String]) -> Bool {
+        arguments.contains {
+            ["--dry-run", "--no-act", "--no-op", "--noop", "--help", "-h", "--version"].contains($0.lowercased())
+        }
+    }
+
     private static func shellCommandString(in arguments: [String]) -> String? {
         for (index, argument) in arguments.enumerated() {
             if argument == "-c" || argument == "--command" {
@@ -875,6 +942,11 @@ public struct SSHCommandRiskClassifier: Sendable {
 
     private static let dockerOptionsWithValue: Set<String> = [
         "-H", "--host", "--context", "-c", "--config"
+    ]
+
+    private static let dockerExecOptionsWithValue: Set<String> = [
+        "-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir",
+        "--detach-keys", "--hostname"
     ]
 
     private func technicalFailure(_ reason: String, ruleID: String) -> SSHCommandRiskClassification {

@@ -4,43 +4,44 @@ SVLT 不再把 `locked` 当作 Agent 的全局工作流门禁。`locked` 只保�
 
 ## 决策流程
 
-每个使用 SVLT-managed Secret 的请求都经过同一条本地路径。用户明确选择其他 provider 或当前明文的操作不由 SVLT 强制接管，也不应被已有 Catalog 记录抢占：
+每个使用 SVLT-managed Secret 的请求都经过同一条本地路径。审批依据是操作的实际效果，而不是 Secret 是否存在或是否首次使用。用户明确选择其他 provider 或当前明文的操作不由 SVLT 强制接管，也不应被已有 Catalog 记录抢占：
 
 ```text
 opaque descriptor
   -> normalize destination / command / path
   -> SecretOperationPolicyEngine
-  -> local requirement: none | reusableApproval | freshApprovalRequired
-  -> AgentRiskAssessment shown as display/audit metadata only
-  -> technical failure or owner approval / session-scoped grant
+  -> effect + blast radius + reversibility + Secret flow
+  -> route: AUTO | GRAY | HARD | DENIED
+  -> AgentRiskAssessment is evidence, not a self-issued capability
+  -> technical failure or (only when required) fresh owner approval
   -> capability preflight
-  -> exact device-owner approval or session-scoped execution grant
+  -> exact device-owner approval for HARD/GRAY-resolved high-risk effects
   -> latest policy check
   -> resolve and execute
 ```
 
-`AgentRiskAssessment` 只有显示和审计作用，不能升级、降级或拒绝本地策略已经计算出的授权结果。技术性错误（格式、引用集合、目标字段或身份不可验证）会在认证前失败；其他技术上可执行的请求由设备所有者通过 Touch ID/密码决定。
+`AgentRiskAssessment` 是效果证据，不是 Agent 自签发的授权能力。明确安全、任务对齐且可恢复的普通操作可以 `AUTO`；主 Agent 保守填写 `freshApproval` 不能单独制造审批。技术性错误（格式、引用集合、目标字段或身份不可验证）会在认证前失败；只有本地 hard floor 或 GRAY 独立 judge 最终判定为高影响/不可逆的操作才进入 fresh owner approval。
 
 ## 风险规则
 
 | 操作 | 默认状态 | 关键条件 |
 | --- | --- | --- |
 | 状态、使用策略、引用元数据 | `silent` | 不解密、不返回 Secret |
-| 已绑定或未绑定目标的 Secret-bearing SSH/数据库/SFTP 操作 | `reusableApproval` | 首次认证建立当前 scope 的会话级授权；不设固定时间超时，目标/协议提示不额外升级 |
-| SSH 电源控制、文件删除、块设备/文件系统破坏、存储/RAID 破坏、容器破坏 | `freshApprovalRequired` | 只匹配固定五类；raw shell、多行、wrapper 和未知命令本身不构成额外类别 |
-| Secret-bearing HTTP/API 网络发送（包括公网 HTTPS） | `freshApprovalRequired` | 显示精确目标并由设备所有者决定；不按 hostname 推断公网/私网 |
-| HTTP `DELETE`、明文 `http://` 携 Secret、凭据 query 参数 | `freshApprovalRequired` | 固定 HTTP fresh registry；明文 HTTP 还须匹配保存的 scheme/host/port profile；任何 redirect 只是 transport stop |
-| 数据库明确只读语句（SELECT/SHOW/EXPLAIN 等） | `reusableApproval` | 只读语句共享 `database.read` 操作族，不要求每条查询重新认证 |
-| 数据库 INSERT、SELECT INTO、schema/session maintenance | `reusableApproval` | 仅在对应的窄操作族内复用，不能借用 `database.read` 或其他数据库操作族 |
-| 数据库 DELETE/UPDATE/MERGE、DROP/TRUNCATE/破坏性 ALTER、权限账户管理、动态执行或外部文件边界 | `freshApprovalRequired` | 固定数据库 fresh registry；CTE 和嵌套语句也会被检查 |
-| 未知或不可解析的数据库 SQL | `freshApprovalRequired` | 保守地要求一次性设备所有者认证，不自动拒绝，也不建立普通可复用会话授权 |
-| SFTP 删除、覆盖、替换目标 | `freshApprovalRequired` | 固定 SFTP fresh registry |
-| Secret-bearing 明文 FTP | `freshApprovalRequired` | 仅回环/私有目标；每次重新认证，不建立可复用会话授权 |
+| 明确只读、诊断、状态查询和受控 Secret 认证 | `AUTO` | Secret 只在受控 consumer 内使用；不返回给 Agent、日志、judge 或无关进程；首次使用也不审批 |
+| 普通配置/文件写入、下载/上传、Git、HTTP POST/PUT/PATCH、 bounded DB CRUD、Docker/service restart | `AUTO` | 任务对齐、范围有限、可恢复或有明确执行器边界；写入本身不是审批理由 |
+| 普通 SSH（包括 shell、sudo、python、docker exec、日志/配置读取） | `AUTO` | 以最终效果和 Secret 流向判断；关键字、operationID、sessionID、时间和 Secret 选择不改变结论 |
+| 文件删除、HTTP `DELETE`、SFTP 删除、容器移除、无界/动态 DB 数据变更 | `GRAY` | 交给独立 semantic judge；judge 可以 `AUTO`、fresh `HARD` 或 `DENIED` |
+| SSH 电源控制、块设备/文件系统破坏、存储/RAID 破坏、Docker volume 删除/system prune | `HARD` | 固定不可降级安全底线；每次 fresh owner approval |
+| HTTP `http://` 携 Secret、凭据 query 参数、FTP 明文凭据传输 | `HARD` | 不因 Agent 建议而降级；执行器仍校验精确 scheme/host/port profile |
+| 数据库 DROP/TRUNCATE/破坏性结构变更、权限/账户管理、动态外部文件边界 | `HARD` | 每次 fresh owner approval；技术身份边界和 DENIED 规则仍优先 |
+| Secret 明文显示/export、交给任意本地进程或不可信第三方 | `DENIED` 或 `HARD` | 沿用既有严格 boundary；本次模型不把 Secret 泄露变成普通审批 |
+| 未知、不可解析或语义冲突的操作 | `GRAY` | 没有独立 judge 证明安全时 fresh；不能用 batch 或 lease 绕过 |
+| Secret-bearing 明文 FTP | `HARD` | 仅回环/私有目标；每次重新认证，不建立可复用会话授权 |
 | 为已有 Secret 增加精确目标/协议绑定 | `freshApprovalRequired` | App 显示 exact scheme/host/port；在进程内重新封装认证元数据，不解密出 IPC、不建立执行会话授权 |
 | 明文显示、复制、删除或安全设置变更 | `freshApprovalRequired` | 使用 `deviceOwnerAuthentication` |
 | `localExecution`（交给任意本地进程） | `freshApprovalRequired` | 明确标记 `userApprovedSecretRelease`，由设备所有者决定 |
 
-Secret metadata 保留旧版兼容字段 `allowedDestinations` 和 `allowedProtocols`；新绑定同时写入经过认证的 `allowedBindings`，每个元素把 protocol 和 destination 作为一个不可拆分的 pair。存在 `allowedBindings` 时，HTTP/其他 pair-sensitive 检查只使用它；无法从混合旧数组安全还原 pair 时 fail closed，不生成笛卡尔积。普通目标/协议绑定不匹配是提示并进入新的 scope，元数据缺失或引用集合无法验证才是策略层技术性失败。对携 Secret 的明文 HTTP，执行器在设备所有者审批之后还会要求每个引用都匹配保存的精确 `scheme://host:port` profile；这只防止 profile 横向扩大到另一台主机或端口，不把 hostname 当作 DNS/实际 egress 证明。HTTP 不自动跟随任何重定向，发现新目标时必须重新提交一个独立操作；响应 body、`Location`、`Content-Type` 命中 Secret fingerprint 时整次输出 quarantine。认证响应默认只返回元数据；只有明确请求 `includeBodyPreview` 时，才允许最多 16 KiB 且必须是无敏感字段名、无 `secret://` 的合法 JSON 预览，否则 quarantine。更严格的字段投影仍由 App-owned profile 控制。
+Secret metadata 保留旧版兼容字段 `allowedDestinations` 和 `allowedProtocols`；新绑定同时写入经过认证的 `allowedBindings`，每个元素把 protocol 和 destination 作为一个不可拆分的 pair。存在 `allowedBindings` 时，HTTP/其他 pair-sensitive 检查只使用它；无法从混合旧数组安全还原 pair 时 fail closed，不生成笛卡尔积。普通目标/协议绑定不匹配是提示并进入目标/协议语义复核，不会因为 Secret 或 transport scope 本身建立审批租约；元数据缺失或引用集合无法验证才是策略层技术性失败。对携 Secret 的明文 HTTP，执行器在设备所有者审批之后还会要求每个引用都匹配保存的精确 `scheme://host:port` profile；这只防止 profile 横向扩大到另一台主机或端口，不把 hostname 当作 DNS/实际 egress 证明。HTTP 不自动跟随任何重定向，发现新目标时必须重新提交一个独立操作；响应 body、`Location`、`Content-Type` 命中 Secret fingerprint 时整次输出 quarantine。认证响应默认只返回元数据；只有明确请求 `includeBodyPreview` 时，才允许最多 16 KiB 且必须是无敏感字段名、无 `secret://` 的合法 JSON 预览，否则 quarantine。更严格的字段投影仍由 App-owned profile 控制。
 
 ### SSH host-key trust
 
@@ -63,11 +64,11 @@ SSH 不再复用用户全局 `~/.ssh/known_hosts`。SVLT 在自己的 Applicatio
 
 批准完成后，服务只消费与原描述符完全匹配的票据。修改 Secret、目标、命令、URL、HTTP method 或文件目标都会使旧票据失效；消费后不能 replay。
 
-对可执行的 `reusableApproval` 操作，设备所有者完成一次认证后，SVLT 建立一个仅存在于当前 Agent 安全会话中的 scope grant。它绑定调用主体、完整的 `secret://` 引用集合、规范化目标和端口、协议、执行动作类型以及 security generation；它不是全局授权，也没有固定 TTL。时间流逝本身不会使授权失效，因此不再存在“300 秒内自动放行、超时后重新审批”的行为。每个后续请求仍会先做 executor capability preflight，再重新读取 metadata 和执行策略；高风险或 `freshApprovalRequired` 操作仍然逐次认证。
+普通 `AUTO` 操作不建立 execution authorization scope，也不读取或检查 300 秒 lease；首次 Secret 使用、operationID/sessionID 变化、时间超过旧窗口或更换同一 principal 允许的 Secret，都不会单独触发审批。`reusableApproval` 仅作为旧 IPC/审计值保留，进入策略边界后归一化为 `none`，不能重新创建普通 lease。
 
-会话级授权只会在安全边界变化时失效，包括锁屏、睡眠、用户会话切换/注销、显式锁定、Agent 进程重启、安全代际变化或该 scope 被明确撤销。远端执行失败、transport/session 失败以及普通请求之间的空闲时间都不会撤销已经建立的 owner grant。与 scope 对应的解密 capability 只保存在内存中，并与授权状态一起失效。
+真正需要 owner 决定的操作使用一次性的 `freshApprovalRequired` 票据。票据绑定调用主体、完整的 `secret://` 引用集合、规范化目标和端口、协议、执行动作类型、operation hash 以及 security generation；修改操作效果、Secret 集合、目标、命令、URL、HTTP method 或文件目标会使旧票据失效，消费后不能 replay。安全代际变化仍会撤销 pending approval 和受保护运行时状态。
 
-这里的 reusable grant 是明确的 scope grant，而不是“只批准屏幕上这一条命令”的 exact-operation grant。这样可以让 Agent 连续完成同一主机/同一凭据任务，而不会因为任意计时器再次打断用户；每个后续请求仍重新经过固定高危规则。数据库 scope 继续按窄操作族隔离；DELETE/UPDATE/MERGE、管理权限、动态执行以及未知 SQL 不会创建 reusable grant。
+SSH `sessionID` 只表示 transport reuse hint。它不能授予权限，也不能替代每次 operation 的 principal、Secret catalog binding、executor preflight 和 policy evaluation。SSH batch 同样只是连接/协议开销优化，不是规避审批的必要条件。
 
 本地明文导出属于 non-downgradable `freshApprovalRequired` 操作，每次都需要设备所有者确认，不建立会话级 execution grant。明文显示和复制同样保持 exact、one-shot 认证。
 

@@ -75,6 +75,7 @@ export const AgentExecutionRecommendation = z.enum([
   "automatic",
   "reusableApproval",
   "freshApproval",
+  "denied",
   "uncertain"
 ]);
 
@@ -114,7 +115,7 @@ export type SecretOperationPreflight = z.infer<typeof SecretOperationPreflight>;
 
 // This is display-only metadata supplied by the MCP client. The Swift IPC
 // layer derives the security principal from the peer process and never uses
-// this value for authorization or lease isolation.
+// this value for authorization or compatibility-scope isolation.
 export const AgentCallerIdentity = z
   .object({
     name: z.string().trim().min(1).max(64),

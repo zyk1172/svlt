@@ -7,9 +7,27 @@ SVLT is an Agent collaboration layer, not a generic command firewall. The user s
 1. The main Agent sends a structured semantic assessment with `userGoal`, `taskContext`, `intendedEffect`, `expectedEffect`, `expectedResult`, task alignment, effect severity, reversibility, Secret handling, recommendation, and confidence.
 2. The MCP boundary first asks the daemon for deterministic preflight. The daemon returns `FAST`, `HARD`, `GRAY`, or `DENIED` together with the local rule, approval floor, blast radius, and sanitized reasons. TypeScript does not duplicate the Swift classifier registry.
 3. `FAST` proceeds with the main Agent assessment and no second model call. `HARD` goes directly to fresh owner approval. `DENIED` stays denied. Only `GRAY` invokes SVLT's separately configured semantic judge.
-4. Gray routing includes unresolved Agent semantics, dynamic/opaque execution, a new credential scope, and conflicts between an `automatic` recommendation and deterministic soft-risk families such as deletion or destructive data mutation.
+4. Gray routing includes unresolved Agent semantics, dynamic/opaque execution, a target/protocol binding that needs review, and conflicts between an `automatic` recommendation and deterministic soft-risk families such as deletion or destructive data mutation. A new transport or Secret reference is not itself a gray signal.
 5. The daemon rechecks the deterministic floor on execution. A main-Agent `automatic` assessment cannot directly lower a daemon `GRAY` signal; an independent judgment is required.
 6. String marker protocols such as `SVLT_JUDGE_V1`, `SVLT_JUDGE_V2`, and `SVLT_AGENT_V2` are retired rather than preserved for compatibility.
+
+## Approval is effect-based
+
+`SVLT approval is effect-based, not secret-use-based.` A managed Secret may be
+used for ordinary SSH authentication, service/API authentication, database
+reads or bounded CRUD, file transfer, configuration work, Docker inspection,
+or a normal service restart without a first-use prompt. Operation IDs,
+transport session IDs, elapsed time, and the choice among principal-allowed
+Secret references are not approval signals.
+
+The main Agent's `freshApproval` recommendation is evidence, not a mandatory
+policy decision. If local preflight and the structured effect fields prove the
+operation is task-aligned, bounded and recoverable, SVLT may still route it to
+`AUTO`. Only an unresolved `GRAY` effect is sent to the independent judge; the
+judge can resolve it to `AUTO`, fresh `HARD`, or `DENIED`. The deterministic
+hard floor remains authoritative for power/storage destruction, credential
+exposure, arbitrary local-process release, insecure credential transport, and
+other existing DENIED boundaries.
 
 ## Sensitive is not dangerous
 

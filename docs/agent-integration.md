@@ -138,10 +138,10 @@ list/get/create 响应。
 | 普通文本/笔记片段含 `secret://` | `secret_auto_handle_text` | 检测、脱敏或打开本地 reveal；不返回明文。 |
 | 本地网页登录 | `secret_action_router` 的 `browser_web_login`，或 `browser_web_login_with_secret` | 只允许本地/内网 URL；selector 必须明确；不能安全定位就返回状态。 |
 | 本地 App 表单 | `secret_action_router` 的 `local_app_form_fill`，或 `local_app_form_fill_with_secret` | 字段必须明确；不用剪贴板；不返回填充值。 |
-| SSH 到本机/内网设备 | `secret_action_router` 的 `ssh_command`，或 `ssh_command_with_secret` | 只允许本地/内网主机和只读命令；密码用 `passwordRef`。 |
-| 本地/内网 HTTP(S) | `secret_action_router` 的 `local_http_request`，或 `local_http_request_with_secret` | 只允许 localhost、`.local`、私有 IP；默认 GET/HEAD；输出脱敏。 |
+| SSH 到本机/内网设备 | `secret_action_router` 的 `ssh_command`，或 `ssh_command_with_secret` | 只允许本地/内网主机；普通任务对齐效果（包括只读和有限可恢复写入）自动执行，危险效果按策略处理；密码用 `passwordRef`。 |
+| 本地/内网 HTTP(S) | `secret_action_router` 的 `local_http_request`，或 `local_http_request_with_secret` | 只允许 localhost、`.local`、私有 IP；GET/HEAD/POST/PUT/PATCH 等按实际效果判断，输出脱敏。 |
 | API token 请求 | `secret_action_router` 的 `api_request`，或 `api_request_with_token` | token 只走 `tokenRef`；拒绝 URL token 参数；redirect manual；输出脱敏。 |
-| 数据库只读查询 | `secret_action_router` 的 `database_query`，或 `database_query_with_secret` | 只允许本地/内网 host 和单条 read-only SQL；先校验再解密。 |
+| 数据库操作 | `secret_action_router` 的 `database_query`，或 `database_query_with_secret` | 只允许本地/内网 host 和单条 SQL；普通 bounded CRUD 自动执行，结构/权限/无界破坏按策略处理；先校验再解密。 |
 | SFTP/SCP | `secret_action_router` 的 `sftp_transfer`，或 `sftp_transfer_with_secret` | 只允许本地/内网 host；`username`/`usernameRef` 二选一；先校验 operation 和路径；输出脱敏。 |
 | 私有/回环 FTP | `secret_action_router` 的 `ftp_transfer`，或 `ftp_transfer_with_secret` | 明文协议；只允许私有/回环 host；`username`/`usernameRef` 二选一；每次需要重新认证；输出脱敏。 |
 | 本地文件导出 | `secret_action_router` 的 `export_resolved_text`，或 `export_resolved_text_to_local_file` | 用户明确要求导出时使用；只返回状态和路径。 |
@@ -184,10 +184,10 @@ list/get/create 响应。
 | `paragraph_reveal_request` | Asks the app to display a paragraph locally with all referenced secrets filled in. |
 | `export_resolved_text_to_local_file` | Resolves references inside the app and writes the filled text to an allowed local file; returns only status/path. |
 | `ssh_command_with_secret` | Resolves a password reference internally for restricted local/private-network SSH; returns sanitized stdout/stderr. |
-| `local_http_request_with_secret` | Resolves `secret://` credentials internally for a policy-reviewed HTTP(S) request; public sends require fresh owner approval and plaintext HTTP additionally needs an exact saved origin profile. |
-| `api_request_with_token` | Resolves a token reference internally for a policy-reviewed API request; returns status and redacted metadata/preview after owner approval. |
-| `database_query_with_secret` | Resolves database credentials internally for a restricted read-only query through a purpose-built runner. |
-| `sftp_transfer_with_secret` | Resolves transfer credentials internally for restricted SFTP/SCP list/download/upload through a purpose-built runner. |
+| `local_http_request_with_secret` | Resolves `secret://` credentials internally for a policy-reviewed HTTP(S) request; Secret use alone does not require approval, while destructive, insecure, credential-exposing, or unresolved effects require fresh handling. Plaintext HTTP additionally needs an exact saved origin profile. |
+| `api_request_with_token` | Resolves a token reference internally for a policy-reviewed API request; ordinary task-aligned HTTPS is automatic, while destructive/insecure/exposing effects use fresh handling, and results are redacted. |
+| `database_query_with_secret` | Resolves database credentials internally for one policy-reviewed statement; reads and bounded CRUD may be automatic, while destructive/privilege/unresolved effects use fresh handling. |
+| `sftp_transfer_with_secret` | Resolves transfer credentials internally for policy-reviewed SFTP/SCP list/read/download/upload and bounded writes; destructive or unresolved effects use fresh handling. |
 | `ftp_transfer_with_secret` | Resolves transfer credentials internally for private/loopback plaintext FTP; every request requires fresh owner authentication. |
 | `browser_web_login_with_secret` | Resolves login credentials internally for a specific local/private browser form fill. |
 | `local_app_form_fill_with_secret` | Resolves field values internally for a specific macOS app form fill. |

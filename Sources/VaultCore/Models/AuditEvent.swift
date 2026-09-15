@@ -6,7 +6,7 @@ public enum AuditCallerTrust: String, Codable, Equatable, Sendable {
 
 /// Display-only MCP caller metadata. It is deliberately separate from the
 /// kernel-derived `AuditContext.principal`, which remains the only identity
-/// used for authorization and lease isolation.
+/// used for authorization and compatibility-scope isolation.
 public struct AuditCaller: Codable, Equatable, Sendable {
     public let displayName: String
     public let version: String?

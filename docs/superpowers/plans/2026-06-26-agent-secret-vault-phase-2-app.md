@@ -6,6 +6,11 @@
 
 **Architecture:** Authorization is abstracted behind protocols so policy tests do not invoke biometric UI. SwiftUI views receive plaintext only through an ephemeral observable session and clear it on lifecycle events.
 
+> Historical design note: the read-session TTL described by this early plan is
+> not the current Secret-operation approval model. The current model is
+> effect-based: ordinary Secret authentication is automatic, while reveal,
+> export, and genuinely dangerous effects keep their own fresh boundaries.
+
 **Tech Stack:** SwiftUI, LocalAuthentication, Security, AppKit Services, XCTest/Swift Testing.
 
 ---

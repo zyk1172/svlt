@@ -12,7 +12,7 @@
 
 - New encryption actions always use the standard `credential` policy.
 - Existing `read` records remain decryptable; do not migrate ciphertext or remove the protocol enum case.
-- Preserve the five-minute, in-memory Agent decrypt authorization reuse in `VaultAppServices`.
+- Preserve Secret plaintext and principal boundaries in `VaultAppServices`; the historical five-minute in-memory Agent decrypt authorization reuse is retired. Ordinary Secret operations now use effect-based `AUTO`, while reveal/export and dangerous effects retain fresh approval boundaries.
 - The editor context menu contains exactly six actions: encrypt selection, scan current note, reveal selection, restore selection, scan vault, scan orphan references.
 - Current-paragraph operations remain available through the command palette, but not the editor context menu.
 - Do not add repeating animations, view transitions, blur, or material backgrounds.

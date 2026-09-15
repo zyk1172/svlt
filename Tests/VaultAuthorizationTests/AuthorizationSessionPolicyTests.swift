@@ -108,7 +108,7 @@ import Testing
     let read = classifier.classify("SELECT payload #>> '{profile,name}' FROM accounts")
     let mutation = classifier.classify("SELECT payload #> '{profile}' FROM accounts; DELETE FROM accounts")
 
-    #expect(read.requirement == .reusableApproval)
+    #expect(read.requirement == .none)
     #expect(read.scopeFamily == "database.read")
     #expect(mutation.requirement == .freshApprovalRequired)
     #expect(mutation.ruleID == SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite)

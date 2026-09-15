@@ -66,7 +66,7 @@ const ordinary = {
 
 const fastPreflight = {
   route: "fast" as const,
-  policyRuleID: "ssh.reusable.ordinary",
+  policyRuleID: "ssh.ordinary.automatic",
   authorizationRequirement: "none" as const,
   blastRadius: "none" as const,
   reasons: ["ordinary status query"],
@@ -103,6 +103,25 @@ describe("intent-first semantic routing", () => {
     expect(calls).toBe(0);
     if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
     expect(judged.descriptor.agentAssessment.source).toBe("mainAgent");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("automatic");
+    expect(judged.descriptor.agentAssessment.declaredRisk).toBe("silent");
+  });
+
+  it("normalizes the legacy reusable recommendation to automatic without a first-use prompt", async () => {
+    let calls = 0;
+    const judged = await applyContextBoundedRiskJudge(
+      request({
+        declaredRisk: "approvalRequired",
+        executionRecommendation: "reusableApproval",
+        reason: "Older client labels ordinary Secret authentication as reusable"
+      }),
+      fastPreflight,
+      configuration,
+      { async fetch() { calls += 1; throw new Error("not expected"); } }
+    );
+
+    expect(calls).toBe(0);
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
     expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("automatic");
     expect(judged.descriptor.agentAssessment.declaredRisk).toBe("silent");
   });
@@ -158,6 +177,43 @@ describe("intent-first semantic routing", () => {
       reason: "Would destroy a storage pool"
     }), hardPreflight, configuration, { async fetch() { calls += 1; throw new Error("not expected"); } });
     expect(calls).toBe(0);
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("freshApproval");
+    expect(judged.descriptor.agentAssessment.declaredRisk).toBe("approvalRequired");
+  });
+
+  it("preserves an explicit independent-judge denial for a prohibited effect", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      request({ intentAlignment: "unclear", executionRecommendation: "uncertain" }),
+      grayPreflight,
+      configuration,
+      transportReturning({
+        reason: "The requested operation is prohibited",
+        intentAlignment: "direct",
+        effectSeverity: "broad",
+        reversibility: "irreversible",
+        secretHandling: "credentialUse",
+        executionRecommendation: "denied",
+        confidence: 0.98
+      })
+    );
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.source).toBe("independentJudge");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("denied");
+    expect(judged.descriptor.agentAssessment.declaredRisk).toBe("denied");
+  });
+
+  it("does not let legacy reusable approval hide a high-impact effect", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      request({
+        executionRecommendation: "reusableApproval",
+        effectSeverity: "systemic",
+        reversibility: "difficult"
+      }),
+      fastPreflight,
+      configuration,
+      transportReturning(ordinary)
+    );
     if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
     expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("freshApproval");
     expect(judged.descriptor.agentAssessment.declaredRisk).toBe("approvalRequired");

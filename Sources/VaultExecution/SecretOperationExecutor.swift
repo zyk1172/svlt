@@ -166,8 +166,9 @@ private enum SSHWrapperExitCode {
 
 public protocol SecretOperationExecuting: Sendable {
     /// A side-effect-free capability check. It must not resolve a secret or
-    /// perform any network/process operation. The service uses it before
-    /// device-owner approval so an unavailable runner cannot prime a lease.
+    /// perform any network/process operation. The service uses it before any
+    /// approval or Secret resolution so an unavailable runner cannot consume a
+    /// prompt or create compatibility authorization state.
     func preflight(_ descriptor: SecretOperationDescriptor) -> SecretOperationExecutionCapability
 
     /// The daemon-facing, non-sensitive capability manifest. A capability is
@@ -203,8 +204,8 @@ public protocol SecretOperationExecuting: Sendable {
 
 public extension SecretOperationExecuting {
     /// An executor must opt in to every supported action. Returning supported
-    /// by default could prime an authorization lease for an action that an
-    /// older compatibility executor does not understand.
+    /// by default could make an unsupported action appear successful and let
+    /// an older compatibility executor cross an authorization boundary.
     func preflight(_: SecretOperationDescriptor) -> SecretOperationExecutionCapability {
         .unavailable
     }

@@ -13,7 +13,7 @@
 - Preserve paragraph structure and non-sensitive surrounding context only.
 - Never save the original selected secret or another detector-recognized sensitive match in a record label.
 - Do not infer a secret's meaning beyond the surrounding paragraph.
-- Do not alter record crypto, the `SecretPolicy` enum, legacy record readability, or the five-minute Agent decrypt authorization reuse.
+- Do not alter record crypto, the `SecretPolicy` enum, or legacy record readability. The historical five-minute Agent decrypt authorization reuse is superseded by the current effect-based model: ordinary Secret authentication is automatic when the concrete effect is safe and task-aligned.
 - Labels intentionally preserve operational semantics as authenticated metadata, as requested.
 - Old labels without the marker remain readable and copy as `label：secret://...`.
 - Do not put actual credentials, tokens, or canary values in tests, logs, or docs.

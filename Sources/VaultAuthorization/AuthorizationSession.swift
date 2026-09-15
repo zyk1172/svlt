@@ -1,10 +1,11 @@
 import Foundation
 
-/// In-memory authorization state owned by one running Agent. Reusable Agent
-/// execution authorization is scoped to the current security session rather
-/// than a timer: elapsed time alone never forces another owner approval.
-/// The daemon clears it on sleep, screen lock, user/session changes, explicit
-/// lock, security-state invalidation, and process restart.
+/// Compatibility state owned by one running Agent. The current effect-based
+/// Secret operation policy does not authorize or create execution scopes for
+/// ordinary `AUTO` work. Legacy and strict flows may still use these entries,
+/// which remain bound to the exact principal, Secret, destination and security
+/// generation; the daemon clears them on sleep, screen lock, user/session
+/// changes, explicit lock, security-state invalidation and process restart.
 public actor AuthorizationSession {
     private let readTTL: TimeInterval?
     private let credentialTTL: TimeInterval
