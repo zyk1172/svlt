@@ -17,7 +17,6 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
     public let catalogSelectionURL: URL
     public let credentialAuthorizationTTL: TimeInterval
     public let externalSendAuthorizationTTL: TimeInterval
-    public let executionAuthorizationTTL: TimeInterval
     public let readAuthorizationTTL: TimeInterval?
     /// App-owned, non-secret response projection profiles. An empty list is
     /// deliberately metadata-only; the daemon never invents an allowlist.
@@ -30,7 +29,6 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
         catalogSelectionURL: URL? = nil,
         credentialAuthorizationTTL: TimeInterval = 600,
         externalSendAuthorizationTTL: TimeInterval = 60,
-        executionAuthorizationTTL: TimeInterval = 300,
         readAuthorizationTTL: TimeInterval? = nil,
         httpResponseProjectionProfiles: [HTTPResponseProjectionProfile] = []
     ) {
@@ -44,7 +42,6 @@ public struct VaultDaemonConfiguration: Sendable, Equatable {
             .standardizedFileURL
         self.credentialAuthorizationTTL = credentialAuthorizationTTL
         self.externalSendAuthorizationTTL = externalSendAuthorizationTTL
-        self.executionAuthorizationTTL = executionAuthorizationTTL
         self.readAuthorizationTTL = readAuthorizationTTL
         self.httpResponseProjectionProfiles = httpResponseProjectionProfiles
     }
@@ -264,8 +261,7 @@ public actor VaultDaemonCore {
             authorizationSession: AuthorizationSession(
                 readTTL: configuration.readAuthorizationTTL,
                 credentialTTL: configuration.credentialAuthorizationTTL,
-                externalSendTTL: configuration.externalSendAuthorizationTTL,
-                executionTTL: configuration.executionAuthorizationTTL
+                externalSendTTL: configuration.externalSendAuthorizationTTL
             ),
             operationApprover: LocalOperationApprover(
                 authenticator: LocalAuthenticator(

@@ -132,7 +132,6 @@ enum SecretOperationAuthorizationPath: Sendable {
 private enum ExecutionAuthorizationCommit: Equatable, Sendable {
     case leaseEstablished
     case leaseReused
-    case approvedWithoutLease
     case needsFreshApproval
 }
 
@@ -543,7 +542,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw policyDecisionError(for: decision)
         }
 
-        let executorAction = isExecutionLeaseEligible(descriptor.actionType)
+        let executionReuseEligible = isExecutionReuseEligible(descriptor.actionType)
         let executorCapability = isExecutorBackedAction(descriptor.actionType)
             ? operationExecutor.preflight(descriptor)
             : .supported
@@ -576,13 +575,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        let executionWindowEnabled: Bool
-        if executorAction {
-            executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
-        } else {
-            executionWindowEnabled = false
-        }
-        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
+        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionReuseEligible
             ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
             : nil
         var authorizationPath = try await authorizeIfNeeded(
@@ -754,7 +747,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
 
             switch commit {
-            case .leaseEstablished, .approvedWithoutLease:
+            case .leaseEstablished:
                 authorizationPath = .freshLocalApproval(authorizationPath.authenticationContext)
             case .leaseReused:
                 authorizationPath = .executionWindowReuse
@@ -1635,8 +1628,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             effects: ["write-local-file"]
         )
         let decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
-        let executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
-        var scope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
+        var scope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval
             ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
             : nil
         var authorizationPath = try await authorizeIfNeeded(
@@ -1772,7 +1764,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             }
 
             switch commit {
-            case .leaseEstablished, .approvedWithoutLease:
+            case .leaseEstablished:
                 authorizationPath = .freshLocalApproval(authorizationPath.authenticationContext)
             case .leaseReused:
                 authorizationPath = .executionWindowReuse
@@ -2012,7 +2004,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         return .freshLocalApproval(authenticationContext)
     }
 
-    private func isExecutionLeaseEligible(_ action: SecretOperationAction) -> Bool {
+    private func isExecutionReuseEligible(_ action: SecretOperationAction) -> Bool {
         switch action {
         case .sshCommand,
              .httpRequest,
@@ -2155,12 +2147,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                 throw OperationAuthorizationError.cancelled
             }
             let ticket = await approvalTicketStore.issue(for: descriptor, now: now())
-            let executionWindowDuration = await authorizationSession.executionAuthorizationWindowDuration()
             let summary = approvalSummary(
                 descriptor: descriptor,
                 metadata: metadata,
                 decision: decision,
-                executionWindowDuration: executionWindowDuration,
                 hostKeyReview: hostKeyReview
             )
             await emitAudit(
@@ -2386,23 +2376,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             return .needsFreshApproval
         }
 
-        let expiresAt = await authorizationSession.authorizeExecution(for: scope)
+        await authorizationSession.authorizeExecution(for: scope)
         guard generation == securityGeneration else {
             await authorizationSession.invalidateExecutionAuthorization(for: scope)
             throw SecretOperationError.authorizationCancelled
         }
 
-        let executionWindowDuration: TimeInterval?
-        if expiresAt == nil {
-            executionWindowDuration = nil
-        } else {
-            executionWindowDuration = await authorizationSession.executionAuthorizationWindowDuration()
-        }
-        await scopedMasterKeyCoordinator.storeAuthorizedKey(
-            masterKey,
-            for: scope,
-            duration: executionWindowDuration
-        )
+        await scopedMasterKeyCoordinator.storeAuthorizedKey(masterKey, for: scope)
 
         if await secretOperationService.removeExecutionApprovalFlight(
             scope: scope,
@@ -2410,7 +2390,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         ) {
             await statusObserver?(status())
         }
-        return expiresAt == nil ? .approvedWithoutLease : .leaseEstablished
+        return .leaseEstablished
     }
 
     private func abandonExecutionAuthorization(
@@ -2433,7 +2413,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         decision: PolicyDecision
     ) async {
         await emitAudit(
-            action: "执行授权窗口复用",
+            action: "会话授权复用",
             target: decision.normalizedDestination ?? "local",
             referenceCount: descriptor.secretReferences.count,
             result: "继续",
@@ -2573,7 +2553,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
         decision: PolicyDecision,
-        executionWindowDuration: TimeInterval? = nil,
         hostKeyReview: SSHHostKeyReview? = nil
     ) -> String {
         let labels = metadata.compactMap(\.label)
@@ -2620,11 +2599,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             hostKeySection = ""
         }
         let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(riskSection)\(batchRequirement)\(hostKeySection)"
-        guard let executionWindowDuration else {
+        guard decision.authorizationRequirement == .reusableApproval else {
             return base
         }
-        let seconds = executionWindowDuration.formatted(.number.precision(.fractionLength(0...3)))
-        return "\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \(seconds) 秒；不会授权其他凭据、目标或协议"
+        return "\(base)；本次审批可在当前 Agent 授权会话内，按同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型复用；不设固定时间超时；锁屏、睡眠、用户会话切换、显式锁定、Agent 重启或安全状态变化后失效；不会授权其他凭据、目标或协议"
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {
@@ -2948,8 +2926,8 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
 
     /// Scoped Agent operations may reuse only the key material captured when
     /// that exact scope acquired device-owner authorization. Falling back to
-    /// the broader credential cache here would let its independent TTL extend
-    /// an Agent authorization lease.
+    /// the broader credential cache here would bypass the Agent session
+    /// authorization boundary.
     private func masterKeyForScopedAuthorization(
         scope: ExecutionAuthorizationScope?,
         for policy: SecretPolicy,
@@ -2977,7 +2955,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         let freshMasterKeyProviderWithAuthenticationContext = self.freshMasterKeyProviderWithAuthenticationContext
         return try await scopedMasterKeyCoordinator.resolveKey(
             for: scope,
-            isLeaseActive: {
+            isAuthorizationActive: {
                 await authorizationSession.hasActiveExecutionAuthorization(for: scope)
             },
             load: {
