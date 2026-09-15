@@ -42,7 +42,8 @@ jobs:
           sentinel = '\n// PATCH_SENTINEL #expect(decision.authorizationRequirement == .none, "statement: \\(statement)")\n'
           if sentinel not in text:
               raise SystemExit("patched classifier sentinel not found")
-          path.write_text(text.replace(sentinel, '\n', 1), encoding="utf-8")
+          text = text.replace(sentinel, '\n', 1).rstrip() + '\n'
+          path.write_text(text, encoding="utf-8")
           PY
       - name: Check whitespace
         run: git diff --check
