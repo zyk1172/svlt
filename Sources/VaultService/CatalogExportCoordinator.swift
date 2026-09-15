@@ -51,7 +51,7 @@ struct CatalogExportCoordinator: Sendable {
 
     /// This check intentionally happens before device-owner approval. An
     /// export that cannot be committed safely must not consume an approval or
-    /// establish a reusable export authorization lease.
+    /// create any legacy execution-scope state.
     func requireReadyForApproval() throws {
         guard writer.canWrite(to: root) else {
             throw VaultAppServicesExportError.directorySecurityInvalid

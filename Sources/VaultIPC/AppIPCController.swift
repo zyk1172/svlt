@@ -332,12 +332,12 @@ public final class AppIPCController: @unchecked Sendable {
         return uid == geteuid()
     }
 
-    /// Returns a process-bound, non-secret principal for scoped execution
-    /// authorization. The kernel audit token prevents two processes that only
-    /// happen to reuse a PID from inheriting one another's short-lived lease.
+    /// Returns a process-bound, non-secret principal for execution identity.
+    /// The kernel audit token prevents two processes that only happen to reuse
+    /// a PID from inheriting one another's compatibility scope state.
     /// If the platform cannot provide the token, use a connection-unique
     /// principal instead of falling back to a global value or a reusable PID;
-    /// that fails closed for lease reuse while the request remains
+    /// that fails closed for scope reuse while the request remains
     /// owner-checked.
     private static func peerPrincipal(_ fileDescriptor: Int32) -> String {
         var pid = pid_t()

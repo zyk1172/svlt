@@ -4,15 +4,15 @@ import VaultCore
 /// A conservative cross-dialect lexical classification for database
 /// statements.
 ///
-/// This is deliberately not a SQL firewall or an executor. It only decides
-/// whether a statement can use the ordinary authorization window. Quoted
+/// This is deliberately not a SQL firewall or an executor. It supplies a
+/// small effect signal to the policy engine. Quoted
 /// literals, quoted identifiers, comments, PostgreSQL dollar-quoted bodies,
 /// nested parentheses, and CTEs are handled so that dangerous keywords cannot
 /// be hidden in a wrapper or accidentally read from a string. Dialect-specific
 /// constructs that can change server semantics are handled conservatively so a
-/// classifier/server parse mismatch cannot grant a reusable lease. Anything
-/// that cannot be classified with this small grammar takes the one-shot owner
-/// approval path instead of being granted a reusable lease.
+/// classifier/server parse mismatch cannot grant an automatic decision.
+/// Anything that cannot be classified with this small grammar takes the
+/// GRAY/fresh path instead of being granted automatic execution.
 struct DatabaseStatementClassification: Equatable, Sendable {
     let requirement: AuthorizationRequirement
     let ruleID: String
@@ -63,17 +63,17 @@ struct DatabaseStatementClassifier: Sendable {
         if sawOrdinary {
             let family = ordinaryFamilies.sorted().joined(separator: "+")
             return DatabaseStatementClassification(
-                requirement: .reusableApproval,
-                ruleID: "database.ordinary.reusable-approval",
-                reason: "数据库语句属于普通操作（\(family)），首次需要本机审批，之后仅在相同操作族的固定窗口内复用",
+                requirement: .none,
+                ruleID: "database.ordinary.automatic",
+                reason: "数据库语句属于普通操作（\(family)）；实际效果明确且任务对齐时无需额外认证",
                 scopeFamily: "database.ordinary.\(family)"
             )
         }
 
         return DatabaseStatementClassification(
-            requirement: .reusableApproval,
-            ruleID: "database.read-only.reusable-approval",
-            reason: "数据库语句被识别为只读操作，首次需要本机审批，之后可在只读操作族的固定窗口内复用",
+            requirement: .none,
+            ruleID: "database.read-only.automatic",
+            reason: "数据库语句被识别为只读操作；Secret 仅用于认证，不制造首次审批门槛",
             scopeFamily: "database.read"
         )
     }
@@ -135,7 +135,7 @@ struct DatabaseStatementClassifier: Sendable {
         if containsDestructiveWrite(words: words, wordSet: wordSet) {
             return .fresh(freshClassification(
                 ruleID: SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite,
-                reason: "数据库语句包含 DELETE、UPDATE、MERGE 或锁定式数据变更，每次都需要设备所有者重新认证",
+                reason: "数据库语句可能造成无界数据变更或持有全局锁；具体效果未能证明为普通、可恢复 CRUD，进入 GRAY/一次性设备所有者认证路径",
                 scopeFamily: "database.fresh.destructive-write"
             ))
         }
@@ -149,6 +149,9 @@ struct DatabaseStatementClassifier: Sendable {
             if wordSet.contains("INTO") {
                 return .ordinary("select-into")
             }
+            if containsSequence(words, ["FOR", "UPDATE"]) {
+                return .ordinary("row-lock")
+            }
             return .read
         case "WITH":
             // A WITH statement without a recognizable terminal operation is
@@ -157,6 +160,16 @@ struct DatabaseStatementClassifier: Sendable {
             return .unknown
         case "INSERT":
             return .ordinary("insert")
+        case "UPDATE":
+            return .ordinary("update")
+        case "DELETE":
+            return .ordinary("delete")
+        case "MERGE":
+            return .ordinary("merge")
+        case "REPLACE":
+            return .ordinary("replace")
+        case "LOCK":
+            return .ordinary("lock")
         case "CREATE", "ALTER", "ANALYZE", "VACUUM", "OPTIMIZE", "REINDEX", "CHECK":
             return .ordinary("schema-maintenance")
         case "SET", "BEGIN", "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "USE", "DECLARE", "FETCH", "CLOSE", "END":
@@ -187,8 +200,19 @@ struct DatabaseStatementClassifier: Sendable {
     }
 
     private func containsDynamicExecution(words: [String], wordSet: Set<String>) -> Bool {
-        if !wordSet.isDisjoint(with: ["CALL", "DO", "EXEC", "EXECUTE", "PREPARE", "DEALLOCATE", "COPY", "LOAD", "UNLOAD", "OUTFILE", "DUMPFILE"]) {
+        if !wordSet.isDisjoint(with: ["CALL", "EXEC", "EXECUTE", "PREPARE", "DEALLOCATE", "COPY", "LOAD", "UNLOAD", "OUTFILE", "DUMPFILE"]) {
             return true
+        }
+        // PostgreSQL's `INSERT ... ON CONFLICT ... DO UPDATE` is an ordinary
+        // upsert. The `DO` token in that grammar must not be confused with a
+        // standalone procedural `DO` block.
+        if wordSet.contains("DO") {
+            let isUpsert = wordSet.contains("INSERT")
+                && containsSequence(words, ["ON", "CONFLICT"])
+                && containsSequence(words, ["DO", "UPDATE"])
+            if !isUpsert {
+                return true
+            }
         }
 
         let createsProgrammableObject = wordSet.contains("CREATE")
@@ -241,13 +265,47 @@ struct DatabaseStatementClassifier: Sendable {
     }
 
     private func containsDestructiveWrite(words: [String], wordSet: Set<String>) -> Bool {
-        if !wordSet.isDisjoint(with: ["DELETE", "UPDATE", "MERGE", "REPLACE", "LOCK"]) {
-            return true
-        }
-        if containsSequence(words, ["FOR", "UPDATE"])
-            || containsSequence(words, ["ON", "CONFLICT", "DO", "UPDATE"])
-            || containsSequence(words, ["ON", "DUPLICATE", "KEY", "UPDATE"])
+        // Ordinary CRUD is not an approval class. A bounded predicate or
+        // limit gives the semantic layer a concrete, recoverable effect to
+        // assess. Only an unbounded mutation remains a local gray signal;
+        // the judge may still downgrade it when the supplied task context
+        // proves a bounded server-side scope.
+        // `INSERT ... ON CONFLICT/ DUPLICATE KEY UPDATE` contains the word
+        // UPDATE as part of its upsert clause, but its primary effect is an
+        // ordinary insert/upsert. Do not mistake that grammar detail for an
+        // unbounded standalone UPDATE. A blanket INSERT early return would
+        // be unsafe because a data-modifying CTE can contain INSERT and a
+        // destructive terminal DELETE/MERGE in the same statement.
+        let isInsert = wordSet.contains("INSERT")
+        let isUpsert = isInsert && (
+            (containsSequence(words, ["ON", "CONFLICT"])
+                && containsSequence(words, ["DO", "UPDATE"]))
+                || containsSequence(words, ["ON", "DUPLICATE", "KEY", "UPDATE"])
+        )
+        if wordSet.contains("SELECT"),
+           containsSequence(words, ["FOR", "UPDATE"]),
+           !wordSet.contains("DELETE"),
+           !wordSet.contains("MERGE")
         {
+            return false
+        }
+
+        for mutation in ["DELETE", "UPDATE", "MERGE"] where wordSet.contains(mutation) {
+            if mutation == "UPDATE", isUpsert {
+                continue
+            }
+            if mutation == "DELETE", wordSet.contains("USING") {
+                return true
+            }
+            if !wordSet.contains("WHERE") && !wordSet.contains("LIMIT") {
+                return true
+            }
+        }
+
+        // `LOCK TABLE` can block unrelated workloads. Row-level `FOR UPDATE`
+        // and common upsert clauses are ordinary transaction effects and do
+        // not become approval requirements merely because UPDATE is present.
+        if wordSet.contains("LOCK") && !containsSequence(words, ["FOR", "UPDATE"]) {
             return true
         }
         return false
@@ -280,7 +338,7 @@ struct DatabaseStatementClassifier: Sendable {
         DatabaseStatementClassification(
             requirement: .freshApprovalRequired,
             ruleID: SecretOperationPolicyEngine.DatabaseFreshRules.unknown,
-            reason: "数据库语句无法被本地分类器可靠识别，采用保守的一次性设备所有者认证；这不是自动拒绝，也不会授予普通可复用租约",
+            reason: "数据库语句无法被本地分类器可靠识别，进入 GRAY/一次性设备所有者认证路径；这不是自动拒绝，也不会自动执行",
             scopeFamily: "database.fresh.unknown"
         )
     }

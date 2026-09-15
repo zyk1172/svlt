@@ -159,10 +159,10 @@ Agent 接入后先做：
 | 为已有 Secret 绑定服务目标 | `secret_bind_destination` | `reference` + 精确 `destination` + `protocol`；显式 pin 还需 `port`、`hostKeyAlgorithm`、`hostKeySHA256`；作为原子 profile 保存，每次 fresh device-owner authentication，不返回 plaintext。 |
 | 本地显示整段解密文本 | `paragraph_reveal_request` | `references` + `template` |
 | 导出填充后的敏感文本到本地文件 | `export_resolved_text_to_local_file` | `references` + `template` + `destinationPath` |
-| SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选非敏感 `username` |
+| SSH 到本机或内网设备 | `ssh_command_with_secret` | `passwordRef`，可选非敏感 `username`；普通任务对齐效果自动执行，危险效果按实际影响处理 |
 | 本地/内网 HTTP Basic Auth | `local_http_request_with_secret` | `passwordRef`，可选 `usernameRef` |
 | API token 请求 | `api_request_with_token` | `tokenRef` |
-| 数据库只读查询 | `database_query_with_secret` | `passwordRef`，可选 `usernameRef` |
+| 数据库操作 | `database_query_with_secret` | `passwordRef`，可选 `usernameRef`；普通读取和 bounded CRUD 可自动执行 |
 | SFTP/SCP | `sftp_transfer_with_secret` | `passwordRef` + `username` 或 `usernameRef`（二选一） |
 | 私有/回环 FTP | `ftp_transfer_with_secret` | `passwordRef` + `username` 或 `usernameRef`（二选一）；每次重新认证 |
 | 本地/内网页登录填充 | `browser_web_login_with_secret` | `passwordRef`，可选 `usernameRef` |
@@ -217,7 +217,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 
 不要把 SVLT 派生 token 放进 URL query、header 字符串或聊天；如果目标协议确实要求 credential-shaped query，使用 HTTP Secret 工具让本地 policy 触发 fresh owner approval，不要把 Secret 明文拼入 URL。
 
-### 10.3 数据库只读查询
+### 10.3 数据库操作
 
 ```json
 {
@@ -231,7 +231,7 @@ Agent 不确定用哪个具体工具时，优先使用 router；已经明确场�
 }
 ```
 
-只允许单条只读 SQL。不要执行 `insert`、`update`、`delete`、`drop`、`alter`、`copy` 等。
+只提交一条 SQL。普通任务对齐、范围有限且可恢复的 CRUD 可以自动执行；DROP、TRUNCATE、破坏性结构/权限变化、动态外部文件边界或无法确定实际效果的语句会进入严格 fresh/deny 边界。不要为了避免审批把语句伪装成查询或交给通用 shell。
 
 ### 10.4 SFTP list
 
@@ -285,8 +285,8 @@ FTP 仅允许回环或私有目标，并且每次请求都需要设备所有者�
 | `URL_NOT_ALLOWED` / `HOST_NOT_ALLOWED` | 目标不是 localhost、`.local`、私有 IP 或显式 allowlist。请用户确认目标。 |
 | `URL_CREDENTIALS_NOT_ALLOWED` | URL 里包含用户名或密码。改用 `usernameRef` / `passwordRef`。 |
 | `URL_TOKEN_NOT_ALLOWED` | 其他旧工具拒绝 URL query 中的 token/key/password 参数；HTTP Secret 工具会把这类 query 交给本地 fresh owner approval。优先使用 `tokenRef`，不要把 Secret 明文拼进 URL。 |
-| `COMMAND_NOT_ALLOWED` | SSH 命令超出只读安全边界。换成更窄命令或新增专用工具。 |
-| `QUERY_NOT_ALLOWED` | SQL 不是单条只读语句。改成只读查询。 |
+| `COMMAND_NOT_ALLOWED` | SSH 命令格式、目标或执行器边界不满足要求。修正非敏感参数；不要为了规避策略改写 destructive 意图。 |
+| `QUERY_NOT_ALLOWED` | SQL 不是一条可由当前 adapter 接受的语句，或超出其参数/协议边界。修正语句；不要把 Secret 明文交给 shell client。 |
 | `PATH_NOT_ALLOWED` | SFTP/SCP/FTP 路径不安全。改成确定路径。 |
 | `SAFE_AUTOFILL_UNAVAILABLE` | SVLT 管理路径的浏览器或本地 App 安全填充 runner 尚不可用；不要把 SVLT 派生明文降级到普通工具。用户已明确选择其他工具或当前明文时，由该工具自己的规则处理。 |
 | `*_REQUEST_FAILED` | 报告非敏感失败状态，建议检查服务、网络、权限或 App 状态。 |
@@ -312,4 +312,4 @@ FTP 仅允许回环或私有目标，并且每次请求都需要设备所有者�
 - 不要把 bearer token、basic auth、cookie、session id 打印到工具结果。
 - 不要把数据库敏感列返回聊天。
 - 不要使用通用 shell、curl、剪贴板或浏览器自动填表绕过 MCP 安全工具。
-- 对公网发送使用 `local_http_request_with_secret` 或 `api_request_with_token` 的 typed owner-approval 路径；不要改用通用 shell/curl，也不要把 Secret 明文交给 Agent。
+- 对网络发送使用 `local_http_request_with_secret` 或 `api_request_with_token` 的 typed policy-reviewed 路径；普通任务对齐 HTTPS 可自动执行，破坏性、不安全、凭据暴露或未决效果才进入 fresh/deny 边界。不要改用通用 shell/curl，也不要把 Secret 明文交给 Agent。

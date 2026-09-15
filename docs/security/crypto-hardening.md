@@ -37,11 +37,13 @@ Current runtime path:
 
 The `SVLTAgent` obtains the wrapped master key through the device-local
 `WhenUnlockedThisDeviceOnly` Keychain item when a permitted operation needs it.
-This cryptographic access is separate from operation authorization: every
-secret-bearing execution first uses the operation's owner-approval policy, and
-ordinary operations may reuse a fixed five-minute lease. The device-local
-Keychain read itself does not add a second user-presence prompt; dangerous data
-flows use macOS `deviceOwnerAuthentication`. The App and launchd startup path
+This cryptographic access is separate from operation authorization: approval is
+based on the concrete effect, not on whether a Secret is being used for the
+first time. Ordinary task-aligned operations can execute automatically while
+the controlled consumer authenticates with the Secret; no lease or session ID
+is needed. Genuine destructive, high-impact, or credential-exposing flows use
+macOS `deviceOwnerAuthentication`, while the device-local Keychain read itself
+does not add a second user-presence prompt. The App and launchd startup path
 never calls `unlockLowProtection()`.
 
 Audit events use a separate 256-bit Keychain key with `WhenUnlockedThisDeviceOnly`

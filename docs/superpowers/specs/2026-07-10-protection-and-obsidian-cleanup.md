@@ -11,7 +11,7 @@ Remove the user-facing low-protection choice, shorten the Obsidian editor contex
 - New encryption actions always use the standard `credential` policy.
 - Remove every low-protection command and editor-menu action from the Obsidian plugin.
 - Keep `read` as a legacy record policy so existing encrypted records remain decryptable. It is not offered as a new user choice.
-- Preserve the separate five-minute, in-memory Agent decrypt authorization reuse. It is not the removed low-protection setting and still expires without persisting plaintext or keys.
+- Historical note: the former five-minute, in-memory Agent decrypt authorization reuse was retired by the effect-based approval model. Ordinary Secret authentication is automatic when the concrete effect is safe and task-aligned; plaintext/reveal and genuinely dangerous effects retain their existing fresh approval boundaries without creating a general-purpose lease.
 
 ### Obsidian editor menu
 

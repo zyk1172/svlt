@@ -80,6 +80,8 @@ enum CatalogMutationPhase: String {
 enum SecretOperationAuthorizationPath: Sendable {
     case notRequired
     case freshLocalApproval(LocalAuthenticationContext?)
+    /// Legacy audit value for decoded/compatibility execution-scope state.
+    /// Current effect-based policy does not create this path for ordinary work.
     case executionWindowReuse
 
     /// This context is short-lived request state, never an IPC value or a
@@ -542,7 +544,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw policyDecisionError(for: decision)
         }
 
-        let executionReuseEligible = isExecutionReuseEligible(descriptor.actionType)
         let executorCapability = isExecutorBackedAction(descriptor.actionType)
             ? operationExecutor.preflight(descriptor)
             : .supported
@@ -575,7 +576,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionReuseEligible
+        // `reusableApproval` is retained for old wire values only and is
+        // normalized to `.none` by PolicyDecision. Ordinary Secret operations
+        // therefore never create an execution scope or consult a lease.
+        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval
             ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
             : nil
         var authorizationPath = try await authorizeIfNeeded(
@@ -619,12 +623,13 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        // A stricter re-evaluation discards reusable scope before fresh approval.
+        // Compatibility-only scope state is discarded if a re-evaluation no
+        // longer carries the legacy reusable value. Current policy decisions
+        // are normalized, so ordinary AUTO work never reaches this branch.
         if executionScope != nil,
            currentDecision.authorizationRequirement != .reusableApproval {
-            // A re-evaluated fresh requirement takes the one-shot path, but
-            // the owner's already-granted ordinary lease stays untouched
-            // (§55): fresh never deletes, refreshes, or extends it.
+            // A re-evaluated fresh requirement takes the one-shot path. No
+            // ordinary Secret lease is deleted, refreshed, or extended.
             executionScope = nil
             authorizationPath = try await authorizeIfNeeded(
                 descriptor,
@@ -1610,7 +1615,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         // Export is not an executor adapter, so perform its capability check
         // explicitly before issuing any device-owner approval. A missing,
         // shared, or symlinked root must never consume an approval ticket or
-        // establish a reusable export lease for an operation that cannot be
+        // create compatibility scope state for an operation that cannot be
         // committed safely.
         try exportCoordinator.requireReadyForApproval()
         let operationGeneration = securityGeneration
@@ -1657,14 +1662,12 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        // Export has its own reusable scope, but it must obey the same
-        // post-approval promotion rule as execution. If fresh approval is
-        // now required, discard the export lease candidate and perform an
-        // exact one-shot approval without creating/extending a reusable lease.
+        // Older export payloads could carry a reusable scope. The current
+        // policy normalizes that value away; if a legacy value is ever
+        // decoded, re-evaluation drops it before the fresh one-shot path.
         if scope != nil,
            currentDecision.authorizationRequirement != .reusableApproval {
-            // The owner's already-granted export lease stays untouched when a
-            // re-evaluation promotes this request to a fresh one-shot (§55).
+            // No ordinary Secret execution lease is created or extended here.
             scope = nil
             authorizationPath = try await authorizeIfNeeded(
                 descriptor,
@@ -1879,17 +1882,25 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             throw SecretOperationError.authorizationCancelled
         }
 
-        switch decision.authorizationRequirement {
+        // A legacy `.reusableApproval` value is not an authorization grant in
+        // the effect-based model. Normalize it before any prompt, scope, or
+        // key lookup so old IPC payloads cannot recreate the first-use gate.
+        let requirement = decision.authorizationRequirement.effectBasedRequirement
+        switch requirement {
         case .none:
             return .notRequired
         case .denied:
             throw SecretOperationError.invalidOperationParameters
-        case .reusableApproval, .freshApprovalRequired:
+        case .reusableApproval:
+            // Defensive branch for a future compatibility implementation that
+            // bypasses PolicyDecision normalization. It must remain silent.
+            return .notRequired
+        case .freshApprovalRequired:
             break
         }
 
         await noteTrackedSecretOperationState(.awaitingApproval)
-        if decision.authorizationRequirement == .reusableApproval,
+        if requirement == .reusableApproval,
            let executionScope {
             let authorization = try await authorizeAgentExecution(
                 descriptor,
@@ -2002,23 +2013,6 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         try ensureTrackedSecretOperationIsActive()
         await noteTrackedSecretOperationState(.running)
         return .freshLocalApproval(authenticationContext)
-    }
-
-    private func isExecutionReuseEligible(_ action: SecretOperationAction) -> Bool {
-        switch action {
-        case .sshCommand,
-             .httpRequest,
-             .apiRequest,
-             .databaseQuery,
-             .sftpTransfer,
-             .ftpTransfer,
-             .browserLogin,
-             .localAppFill,
-             .trustedProcess:
-            return true
-        default:
-            return false
-        }
     }
 
     private func isExecutorBackedAction(_ action: SecretOperationAction) -> Bool {
@@ -2274,12 +2268,10 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             username = descriptor.actionType == .sshCommand ? descriptor.parameters["username"] : nil
             protocolType = descriptor.protocolType?.rawValue
         }
-        // §80: the ordinary lease is a scope grant, not an exact-operation
-        // grant. Database statements use the policy engine's narrower
-        // operation family: read-only statements can share a read workflow,
-        // while ordinary writes and maintenance operations cannot borrow the
-        // generic database scope. Fresh/unknown SQL never reaches this path;
-        // fixed dangerous rules are re-checked by policy on every request.
+        // Compatibility-only scope construction. Current effect-based policy
+        // does not call this for ordinary AUTO work; if an old payload reaches
+        // the path, bind it to the complete principal/Secret/target context
+        // and never treat it as a general Secret-use capability.
         let actionFamily = descriptor.actionType == .databaseQuery
             ? operationPolicyEngine.databaseAuthorizationScopeFamily(for: descriptor.effectiveDatabaseStatement)
             : descriptor.actionType.rawValue
@@ -2599,10 +2591,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
             hostKeySection = ""
         }
         let base = "SVLT 请求本机审批：\(displayName(for: descriptor))；操作：\(detail)；目标：\(target)；凭据：\(labelText)\(riskSection)\(batchRequirement)\(hostKeySection)"
-        guard decision.authorizationRequirement == .reusableApproval else {
-            return base
-        }
-        return "\(base)；本次审批可在当前 Agent 授权会话内，按同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型复用；不设固定时间超时；锁屏、睡眠、用户会话切换、显式锁定、Agent 重启或安全状态变化后失效；不会授权其他凭据、目标或协议"
+        return base
     }
 
     private func displayName(for descriptor: SecretOperationDescriptor) -> String {
@@ -2741,7 +2730,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
         case .none:
             return "无需额外认证"
         case .reusableApproval:
-            return "可复用审批"
+            return "普通操作自动执行（兼容旧值）"
         case .freshApprovalRequired:
             return "必须重新本机认证"
         case .denied:

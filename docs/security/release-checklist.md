@@ -52,7 +52,7 @@ or notarization credential in source control.
 3. Cancelling Touch ID, locking the application, or modifying ciphertext exposes no full or partial plaintext.
 4. Simulated credential echoes in stdout and stderr are removed before results reach Codex.
 5. Ambiguous or unsafe output is quarantined instead of returned.
-6. Write, external-send, delete, and credential-change operations cannot reuse a read authorization; credential windows are reused only within their configured scope and external-send is destination-bound.
+6. Effect-based approval is independent from Secret decryption caches: ordinary task-aligned reads, bounded writes, and controlled authentication do not require an approval lease; genuine destructive/exposure effects use their exact fresh boundary, and external-send remains destination-bound.
 7. `locked` is compatibility-only; operation readiness is reported by `available`/`ready`/`approvalPending`. Sleep, user switch, and explicit lock invalidate active runtime authorization. Quitting the GUI App does not stop the Agent or create a global Agent gate.
 8. A new Mac signed into the same Apple account can recover access only after successful platform authentication and installation of the correctly signed application.
 9. Every MCP success and error response passes automated plaintext-leak tests.

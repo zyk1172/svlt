@@ -31,9 +31,11 @@ Agent / MCP client
 
 - **Plaintext stays local.** Agents work with opaque references such as `secret://0123456789ABCDEFGHJKMNPQRS`; MCP tools do not return decrypted credentials.
 - **Intent-first authorization.** The main Agent supplies a structured assessment of the user's goal, intended effect, expected result, reversibility, Secret handling, and confidence. SVLT keeps a deterministic safety floor and calls an independent semantic judge only for gray-zone operations.
+- **Effect-based approval, not Secret-use approval.** `AUTO` covers ordinary read-only, bounded/reversible, task-aligned work—including controlled use of a saved Secret, normal configuration/file writes, CRUD, Docker/service operations, and HTTPS authentication. A first Secret use, a new operation ID, a new transport session, elapsed time, or the fact that a Secret exists does not create an approval prompt. `GRAY` is reserved for unresolved effect semantics; `HARD`/fresh approval protects genuinely high-impact or irreversible actions; existing `DENIED` boundaries remain denied.
 - **User intent matters more than scary words.** `sudo`, root access, sensitive paths, credential-backed API calls, bounded configuration edits, and service restarts are not automatically treated as dangerous simply because of vocabulary.
 - **A narrow non-downgradable floor remains.** Explicit plaintext exposure, insecure credential transport, arbitrary local-process Secret release, identity/technical failures, and genuinely destructive/systemic operations still require hard local handling.
 - **Long-running work has an operation lifecycle.** Secret operations use `operationID` states such as queued, awaiting approval, running, succeeded, failed, cancelled, and outcome-unknown. Approval validity is separate from execution lifetime; once an operation is approved and running, the authorization window is not used as a wall-clock execution timeout.
+- **Batch is a transport optimization only.** SSH batch can reduce connection/protocol overhead, but it is never required to avoid approval. SVLT evaluates each operation's actual effect independently; ordinary operations stay automatic even when they are separate MCP calls.
 - **Background service stays independent of the UI.** `SVLT.app` may quit while `SVLTAgent` continues serving Vault, MCP, and Obsidian IPC requests without loading SwiftUI or opening a window.
 - **Catalog edits preserve user Markdown.** The daemon owns mutable Catalog state and applies source-range patches rather than rewriting an entire document. Notes, WikiLinks, comments, callouts, whitespace, and unrelated Markdown remain in place.
 - **Audit history is bounded on normal reads.** Recent audit access uses an authenticated recent index, while full-history integrity scans run separately at low frequency instead of making every UI read scale with the entire log.
@@ -118,7 +120,7 @@ The main Agent sends a structured assessment containing the user's goal, task co
 | Route | Meaning |
 | --- | --- |
 | `FAST` | Deterministic checks are satisfied; proceed without a second model call |
-| `GRAY` | Context is unresolved, dynamic, opaque, low-confidence, contradictory, or introduces a new credential scope; invoke SVLT's independent judge |
+| `GRAY` | The concrete effect is unresolved, dynamic, opaque, low-confidence, contradictory, or outside a verified target/protocol binding; invoke SVLT's independent judge |
 | `HARD` | A non-downgradable local approval boundary applies |
 | `DENIED` | The request is technically/semantically invalid and stays denied |
 

@@ -1812,7 +1812,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. The command is passed byte-for-byte to the remote login shell; dangerous commands require a fresh device-owner approval, ordinary commands share a 5-minute window. Plaintext is never returned.",
+        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. SVLT classifies the actual effect: ordinary task-aligned work is automatic, while genuinely destructive effects require fresh owner approval. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -1823,7 +1823,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_batch_with_secret",
       title: "SSH Command Batch With Secret",
       description:
-        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics; interpreters are allowed and trigger the normal approval levels. Plaintext is never returned.",
+        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics. Batch only reduces connection/protocol overhead; it is not required to avoid approval. Plaintext is never returned.",
       inputSchema: SshCommandBatchInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -1878,7 +1878,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_http_request_with_secret",
       title: "Local HTTP Request With Secret",
       description:
-        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. Secret-bearing HTTPS/public sends require fresh device-owner approval; plaintext HTTP additionally requires an exact saved origin profile and fresh approval. Call vault_capabilities first; plaintext is never returned.",
+        "Capability-gated typed HTTP request using secret:// credentials inside SVLTAgent. Secret use alone does not require approval: ordinary task-aligned HTTPS is automatic; destructive, insecure, credential-in-URL, or unresolved effects require fresh handling. Plaintext HTTP additionally requires an exact saved origin profile. Plaintext is never returned.",
       inputSchema: LocalHttpInput,
       outputSchema: LocalHttpOutput,
       async handler(input) {
@@ -1889,7 +1889,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "api_request_with_token",
       title: "API Request With Token",
       description:
-        "Capability-gated typed API request using a secret:// token inside SVLTAgent. Secret-bearing HTTPS/public sends require fresh device-owner approval; plaintext HTTP additionally requires an exact saved origin profile and fresh approval. Authorization defaults to Bearer, while custom API-key headers use the raw token unless a safe scheme is explicit. Call vault_capabilities first; plaintext is never returned.",
+        "Capability-gated typed API request using a secret:// token inside SVLTAgent. Secret use alone does not require approval: ordinary task-aligned HTTPS is automatic; destructive, insecure, credential-in-URL, or unresolved effects require fresh handling. Plaintext HTTP requires an exact saved origin profile. Authorization defaults to Bearer. Plaintext is never returned.",
       inputSchema: ApiRequestInput,
       outputSchema: ApiRequestOutput,
       async handler(input) {
@@ -1900,7 +1900,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "database_query_with_secret",
       title: "Database Query With Secret",
       description:
-        "Capability-gated database descriptor. The daemon must advertise support before use; an unavailable adapter is not retried or treated as success. Plaintext is never returned.",
+        "Capability-gated database operation using a Secret. Reads and bounded CRUD may be automatic; destructive schema/privilege changes or unresolved effects require fresh handling. Unavailable adapters are not retried or treated as success. Plaintext is never returned.",
       inputSchema: DatabaseQueryInput,
       outputSchema: DatabaseQueryOutput,
       async handler(input) {
@@ -1911,7 +1911,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "sftp_transfer_with_secret",
       title: "SFTP/SCP Transfer With Secret",
       description:
-        "Capability-gated SFTP/SCP. Local absolute paths and remote paths are not directory-restricted by SVLT. Plaintext is never returned.",
+        "Capability-gated SFTP/SCP. Ordinary list/read/download/upload and bounded writes are automatic; destructive delete or unresolved high-impact effects require fresh handling. Local and remote paths are not directory-restricted. Plaintext is never returned.",
       inputSchema: FileTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
@@ -1922,7 +1922,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ftp_transfer_with_secret",
       title: "FTP Transfer With Secret",
       description:
-        "Capability-gated plaintext FTP for loopback/private destinations with fresh owner authentication. Local absolute paths and remote paths are not directory-restricted by SVLT. Plaintext is never returned.",
+        "Capability-gated plaintext FTP for loopback/private destinations. Insecure credential transport retains fresh owner approval for every request. Local and remote paths are not directory-restricted. Plaintext is never returned.",
       inputSchema: FTPTransferInput,
       outputSchema: FileTransferOutput,
       async handler(input) {
@@ -1933,7 +1933,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "browser_web_login_with_secret",
       title: "Browser Web Login With Secret",
       description:
-        "Capability-gated browser login descriptor. Use only when a signed native messaging adapter is advertised; never fall back to AppleScript, clipboard, or injected page JavaScript. Plaintext is never returned.",
+        "Capability-gated browser login. Approval follows the effect, not first Secret use. Use only a signed native-messaging adapter; never fall back to AppleScript, clipboard, or injected JavaScript. Plaintext is never returned.",
       inputSchema: BrowserLoginInput,
       outputSchema: BrowserLoginOutput,
       async handler(input) {
@@ -1944,7 +1944,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "local_app_form_fill_with_secret",
       title: "Local App Form Fill With Secret",
       description:
-        "Capability-gated macOS Accessibility form-fill descriptor. Use only when the daemon advertises a signed target-aware adapter; never fall back to clipboard or generic scripting. Plaintext is never returned.",
+        "Capability-gated macOS Accessibility form fill. Approval follows the actual effect, not first Secret use. Use only a signed target-aware adapter; never fall back to clipboard or generic scripting. Plaintext is never returned.",
       inputSchema: LocalAppFillInput,
       outputSchema: LocalAppFillOutput,
       async handler(input) {
@@ -2333,7 +2333,10 @@ async function handleSshCommandWithSecret(
     protocolType: "ssh",
     command: parsed.command,
     sessionID: parsed.sessionID,
-    requestedEffects: ["read-only"],
+    // Do not label every raw shell command as read-only. The effect model
+    // uses the actual command plus structured semantics; this field is only a
+    // coarse transport hint and must never become an allowlist bypass.
+    requestedEffects: ["ssh-command"],
     parameters,
     agentAssessment: agentAssessment(parsed)
   });
@@ -2850,7 +2853,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "When text contains secret:// references, call secret_auto_handle_text first unless a narrower safe tool is clearly required and the user did not select another source.",
       "Call vault_status before work that depends on the app.",
       "Call vault_capabilities before adapter-backed non-SSH execution. Treat the daemon capability manifest as authoritative: an unavailable adapter is not supported, must not receive plaintext, and must not be retried as if it succeeded. Export to a local file is an App-owned operation with its own authorization flow.",
-      "Treat AgentRiskAssessment as display/audit metadata only; SVLT computes the authorization requirement and scope locally for every operation. The Agent field never promotes, downgrades, or denies.",
+      "Treat AgentRiskAssessment as effect evidence, not capability. SVLT re-evaluates every operation: ordinary task-aligned Secret use is automatic even on first use; only high-impact, irreversible, credential-exposing, or unresolved gray effects need review. Agent freshApproval is not binding; verified judge may deny.",
       "A locked compatibility field never replaces per-operation policy evaluation.",
       "When a task names a service, device, host, account, or purpose but no credential source is specified, call secret_search before asking the user for anything; this is automatic discovery, not forced SVLT ownership.",
       "Use secret_catalog_list_indices to browse all Indexes, including empty Indexes; use secret_catalog_list_entries with an indexID returned by MCP, then secret_catalog_get for one Entry. Never read selection JSON, Catalog Markdown, or Application Support sidecars to find IDs.",
@@ -2864,13 +2867,13 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use secret_bind_destination to add one exact destination/protocol to an existing secret:// record; every binding change requires fresh device-owner authentication and never returns plaintext. For strict SSH/SFTP/SCP pinning, supply the selected fingerprint and explicit port; omitting them keeps the compatibility/TOFU path.",
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
-      "Use ssh_command_with_secret for one restricted local/private-network SSH command; reuse its opaque sessionID for subsequent commands.",
-      "Use ssh_batch_with_secret for multiple SSH commands. Pass structured executable/arguments records; SVLT evaluates the complete batch before executing any command and stops after the first failure by default.",
+      "Use ssh_command_with_secret for one restricted local/private-network SSH command. An opaque sessionID may be reused for connection performance, but it is never required for authorization and never changes the risk decision.",
+      "Use ssh_batch_with_secret for multiple SSH commands when one transport request is convenient. Pass structured executable/arguments records; SVLT evaluates the complete batch before executing any command and stops after the first failure by default. Batch changes transport overhead only, not approval policy.",
       "Use ssh_session_status only to inspect your own opaque transport sessions, and ssh_session_close only to close your own session when it is no longer needed. Neither tool changes policy or authorization.",
       "Use ssh_command_with_secret for the actual remote shell command, including single-line or multi-line scripts, ;, &&, ||, |, redirects, heredocs, command substitution, shell/interpreter -c forms, find -exec, xargs, eval, sudo, and unknown NAS CLIs. Do not split or rewrite a command merely to satisfy policy.",
-      "A reusable approval lease is separate from the SSH transport session. Only the small fixed high-impact categories recognized by local policy require fresh approval; unknown or ambiguous shell syntax remains on the ordinary owner-approved path. Fresh approval does not extend the ordinary lease.",
-      "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display metadata only; it never becomes the security principal.",
-      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. Every Secret-bearing network send, including public HTTPS, shows the exact target and requires fresh device-owner authentication; insecure HTTP additionally needs an exact saved scheme/host/port profile checked by the executor after approval. Never add an insecure-HTTP flag to a tool call.",
+      "Approval is effect-based, not Secret-use-based: safe, task-aligned SSH is automatic regardless of operationID, sessionID, elapsed time, or Secret choice. Only high-impact or unresolved gray effects need fresh handling; batching never changes policy.",
+      "Declare the MCP client name/version at connection bootstrap when available. It is self-declared display/audit metadata only; it never becomes the security principal or an authorization signal.",
+      "Use local_http_request_with_secret or api_request_with_token only for typed, policy-reviewed HTTP requests. Secret use alone is not an approval reason: ordinary task-aligned HTTPS is automatic when policy permits; destructive, credential-in-URL, insecure-transport, or unresolved effects require fresh handling. Insecure HTTP also needs an exact saved origin profile. Never add an insecure-HTTP flag to a tool call.",
       "HTTP tools reject unsafe/arbitrary secret headers, URL authority credentials, and secret:// body fragments. Credential-shaped URL query parameters receive a fresh owner warning rather than an autonomous Agent-side denial. Authorization defaults to Bearer; a custom API-key header receives the raw token unless a profile/request explicitly supplies a safe scheme.",
       "Authenticated HTTP responses are metadata-only by default. An explicit includeBodyPreview request may return at most 16 KiB of valid JSON only when it contains no sensitive response field names or secret:// references; body, Content-Type, redirect Location, and future server-controlled metadata are fingerprint-checked against the in-process Secret and quarantined on any match. A projectedJSON response is allowed only when the daemon capability manifest advertises it and an App-owned profile ID plus allowlisted JSON fields are supplied; never project token, password, secret, cookie, session, authorization, or similar fields. Derived credential/cookie capture is not available in this release.",
       "The generic localExecution action is a very-high-risk, fresh owner-approval boundary and is audited as userApprovedSecretRelease. trustedProcess is a separate future boundary and is usable only when a signed, allowlisted process profile is advertised; do not use shell, AppleScript, clipboard, or generic scripting as a fallback.",
@@ -2889,7 +2892,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Do not echo, log, summarize, or store plaintext obtained by decrypting an SVLT-managed secret.",
       "Do not put SVLT-derived plaintext into ordinary shell, curl, URL, header, environment variable, log, audit, or chat inputs; use the approved SVLT operation instead.",
       "Do not treat encrypted reference text as if it revealed the secret value.",
-      "Do not send a Secret to a network target outside the approved typed HTTP/API operation; public sends are allowed only through the fresh device-owner approval path, and the Agent must never receive the Secret.",
+      "Do not send a Secret to a network target outside the approved typed HTTP/API operation; approved typed requests may be automatic or fresh according to actual effect and saved policy, and the Agent must never receive the Secret.",
       "Do not treat an SSH sessionID as an authorization token or use it to bypass policy, principal, scope, or approval checks.",
       "Do not split, rewrite, or misreport a destructive operation to avoid device-owner authentication."
     ],

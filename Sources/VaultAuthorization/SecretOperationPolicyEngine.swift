@@ -36,11 +36,10 @@ public struct SecretOperationPolicyEngine: Sendable {
         self.databaseStatementClassifier = DatabaseStatementClassifier(maximumLength: configuration.maxCommandLength)
     }
 
-    /// Returns the non-secret operation family used by a reusable database
-    /// authorization scope. Read-only statements deliberately share one
-    /// family so a normal multi-query workflow does not prompt for every
-    /// SELECT; ordinary writes and maintenance statements remain separated by
-    /// their narrower family. Fresh/unknown statements never receive a lease.
+    /// Returns the non-secret database operation family used by legacy audit
+    /// and compatibility records. It is deliberately not an authorization
+    /// scope: ordinary database work is automatic when its concrete effect is
+    /// clear, and fresh/unknown statements never receive a lease.
     public func databaseAuthorizationScopeFamily(for statement: String?) -> String {
         guard let statement else { return "database.fresh.unknown" }
         return databaseStatementClassifier.classify(statement).scopeFamily
@@ -79,13 +78,13 @@ public struct SecretOperationPolicyEngine: Sendable {
                 reasons: local.reasons
             )
         }
-        if semantic.executionRecommendation == .freshApproval {
+        if Self.hasSemanticHardFloor(semantic) {
             return SecretOperationPreflight(
                 route: .hard,
                 policyRuleID: local.policyRuleID,
                 authorizationRequirement: .freshApprovalRequired,
                 blastRadius: blastRadius,
-                reasons: local.reasons + ["Main Agent already requests fresh approval"]
+                reasons: local.reasons + ["结构化语义显示不可逆、高影响或凭据暴露效果"]
             )
         }
 
@@ -95,25 +94,26 @@ public struct SecretOperationPolicyEngine: Sendable {
             normalizedDestination: normalizedDestination
         )
         let semanticUnresolved = semantic.executionRecommendation == .uncertain
+            || semantic.confidence < 0.65
             || semantic.intentAlignment == .unclear
             || semantic.intentAlignment == .unrelated
             || semantic.effectSeverity == .unknown
             || semantic.reversibility == .unknown
             || semantic.secretHandling == .unknown
-        let semanticConflict = semantic.executionRecommendation == .automatic
+        let semanticConflict = Self.isAutomaticApprovalRecommendation(semantic)
             && Self.automaticRecommendationNeedsReview(semantic)
         // A local gray rule remains gray regardless of the recommendation in
         // the untrusted descriptor. Otherwise a caller could avoid the gray
-        // route simply by changing `automatic` to `reusableApproval`.
+        // route simply by changing `automatic` to the legacy
+        // `reusableApproval` spelling.
         let localConflict = Self.isSemanticGrayRule(local.policyRuleID)
-        let scopeConflict = semantic.executionRecommendation == .automatic
-            && !binding.reasons.isEmpty
+        let scopeConflict = !binding.reasons.isEmpty
         let opaqueExecution = Self.looksSemanticallyOpaque(descriptor)
 
         if semanticUnresolved || semanticConflict || localConflict || scopeConflict || opaqueExecution {
             var reasons = local.reasons
             if semanticUnresolved { reasons.append("语义字段仍有未决项") }
-            if semanticConflict { reasons.append("主模型 automatic 建议与高影响语义冲突") }
+            if semanticConflict { reasons.append("主模型 automatic/legacy-automatic 建议与高影响语义冲突") }
             if localConflict { reasons.append("本地分类器检测到需要独立语义复核的操作族") }
             if scopeConflict { reasons.append("凭据执行目标或协议超出既有绑定范围") }
             if opaqueExecution { reasons.append("操作包含动态或不透明执行") }
@@ -192,7 +192,10 @@ public struct SecretOperationPolicyEngine: Sendable {
                     // VaultAppServices after it consumes the daemon-owned
                     // review record. `source` remains an audit label and is
                     // not sufficient to reach this branch.
-                    effectiveRequirement = Self.normalizedSemanticRequirement(semantic)
+                    effectiveRequirement = Self.normalizedSemanticRequirement(
+                        semantic,
+                        treatingVerifiedIndependentJudgeAsFinal: true
+                    )
                 } else {
                     // GRAY without a validated judge review stays fresh,
                     // regardless of whether the descriptor claims automatic
@@ -200,7 +203,10 @@ public struct SecretOperationPolicyEngine: Sendable {
                     effectiveRequirement = .freshApprovalRequired
                 }
             } else {
-                effectiveRequirement = Self.normalizedSemanticRequirement(semantic)
+                effectiveRequirement = Self.normalizedSemanticRequirement(
+                    semantic,
+                    treatingVerifiedIndependentJudgeAsFinal: allowingVerifiedIndependentJudge
+                )
             }
 
             reasons.append(
@@ -214,7 +220,13 @@ public struct SecretOperationPolicyEngine: Sendable {
         let effectiveRisk: OperationRisk = {
             switch effectiveRequirement {
             case .none: return .silent
-            case .reusableApproval, .freshApprovalRequired: return .approvalRequired
+            case .reusableApproval:
+                // This is possible only when a legacy caller constructs a
+                // decision outside the normal engine path. The model
+                // normalizes it to `.none`; keep the switch explicit for
+                // exhaustive compatibility handling.
+                return .silent
+            case .freshApprovalRequired: return .approvalRequired
             case .denied: return .denied
             }
         }()
@@ -292,10 +304,10 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = transferOutcome.ruleID
             localRequirement = transferOutcome.requirement
         case .browserLogin, .localAppFill:
-            localRisk = .approvalRequired
-            reasons = ["浏览器/本地 App 填充属于普通 Secret 操作；独立风险裁判可在低风险时建议自动执行"]
-            ruleID = "bound-login.reusable-approval"
-            localRequirement = .reusableApproval
+            localRisk = .silent
+            reasons = ["浏览器/本地 App 填充只在结构化语义确认目标、效果和凭据流安全时自动执行"]
+            ruleID = "bound-login.automatic"
+            localRequirement = .none
         case .localExecution:
             localRisk = .approvalRequired
             reasons = [
@@ -305,10 +317,10 @@ public struct SecretOperationPolicyEngine: Sendable {
             ruleID = "local-execution.fresh.arbitrary-secret-release"
             localRequirement = .freshApprovalRequired
         case .trustedProcess:
-            localRisk = .approvalRequired
-            reasons = ["Trusted Process 会把 Secret 交给预先登记的签名进程；独立风险裁判只能在确定性规则允许时降低普通审批"]
-            ruleID = "trusted-process.reusable-approval"
-            localRequirement = .reusableApproval
+            localRisk = .silent
+            reasons = ["Trusted Process 只向预先登记的签名进程传递 Secret；实际效果仍由结构化语义判断"]
+            ruleID = "trusted-process.automatic"
+            localRequirement = .none
         }
 
         if localRisk == .denied || localRequirement == .denied {
@@ -326,7 +338,7 @@ public struct SecretOperationPolicyEngine: Sendable {
             metadata: metadata,
             normalizedDestination: normalizedDestination
         )
-        let effectiveRequirement = localRequirement
+        let effectiveRequirement = localRequirement.effectBasedRequirement
         if binding.requirement == .denied {
             return decision(
                 .denied,
@@ -339,7 +351,8 @@ public struct SecretOperationPolicyEngine: Sendable {
         let effectiveRisk: OperationRisk = {
             switch effectiveRequirement {
             case .none: return .silent
-            case .reusableApproval, .freshApprovalRequired: return .approvalRequired
+            case .reusableApproval: return .silent
+            case .freshApprovalRequired: return .approvalRequired
             case .denied: return .denied
             }
         }()
@@ -651,7 +664,7 @@ public struct SecretOperationPolicyEngine: Sendable {
                !secret.allowedProtocols.isEmpty,
                !isAllowedProtocol(protocolType, for: descriptor, allowedProtocols: secret.allowedProtocols) {
                 reasons.append(
-                    "提示：凭据未绑定当前协议（已保存：\(secret.allowedProtocols.joined(separator: "/"))；本次：\(protocolType.rawValue)）；本次审批进入新的执行 scope"
+                    "提示：凭据未绑定当前协议（已保存：\(secret.allowedProtocols.joined(separator: "/"))；本次：\(protocolType.rawValue)）；需要重新进行目标/协议语义复核"
                 )
             }
 
@@ -686,7 +699,7 @@ public struct SecretOperationPolicyEngine: Sendable {
                 continue
             }
 
-            reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中；本次审批进入新的执行 scope")
+            reasons.append("提示：目标 \(normalizedDestination) 不在该凭据已保存的绑定中；需要重新进行目标/范围语义复核")
         }
 
         return (.none, reasons, "destination.bound")
@@ -755,16 +768,16 @@ public struct SecretOperationPolicyEngine: Sendable {
             return (
                 .approvalRequired,
                 .freshApprovalRequired,
-                ["Secret 将离开本机发送到 HTTP(S) 目标；没有独立风险裁判时维持每次审批，裁判确认低风险后可按本次实际操作放宽"],
+                ["Secret 将在本机受控地用于 HTTP(S) 认证；只有实际效果高影响、不可逆或语义未决时才升级为本机审批"],
                 HTTPFreshRules.secretNetworkSend
             )
         }
 
         return (
-            .approvalRequired,
-            .reusableApproval,
-            ["HTTP 请求属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
-            "http.ordinary.reusable-approval"
+            .silent,
+            .none,
+            ["HTTP 请求未携带 SVLT Secret；普通、任务对齐的效果无需额外认证"],
+            "http.ordinary.automatic"
         )
     }
 
@@ -791,8 +804,9 @@ public struct SecretOperationPolicyEngine: Sendable {
             return (.denied, .denied, ["数据库查询为空"], "database.query.missing")
         }
         let classification = databaseStatementClassifier.classify(query)
+        let risk: OperationRisk = classification.requirement == .none ? .silent : .approvalRequired
         return (
-            .approvalRequired,
+            risk,
             classification.requirement,
             [classification.reason],
             classification.ruleID
@@ -801,6 +815,9 @@ public struct SecretOperationPolicyEngine: Sendable {
 
     public enum SFTPFreshRules {
         public static let delete = "sftp.fresh.delete"
+        // Stable compatibility identifiers for old audit records. Ordinary
+        // overwrite/write effects are no longer fresh by default; their
+        // actual blast radius and reversibility belong to semantics.
         public static let overwriteExisting = "sftp.fresh.overwrite-existing"
         public static let replaceExistingTarget = "sftp.fresh.replace-existing-target"
 
@@ -824,24 +841,24 @@ public struct SecretOperationPolicyEngine: Sendable {
             )
         case .overwrite:
             return (
-                .approvalRequired,
-                .freshApprovalRequired,
-                ["SFTP 覆盖远端已有数据，每次都需要设备所有者重新认证"],
-                SFTPFreshRules.overwriteExisting
+                .silent,
+                .none,
+                ["SFTP 覆盖是普通文件修改；是否需要审批只看实际影响、范围和可恢复性"],
+                "sftp.ordinary.automatic"
             )
         case .write:
             return (
-                .approvalRequired,
-                .freshApprovalRequired,
-                ["SFTP 写入会替换目标内容，每次都需要设备所有者重新认证"],
-                SFTPFreshRules.replaceExistingTarget
+                .silent,
+                .none,
+                ["SFTP 写入/上传是普通文件操作；Secret 仅用于受控认证，不制造首次审批门槛"],
+                "sftp.ordinary.automatic"
             )
         case .list, .read, .download, .upload, .move, .none:
             return (
-                .approvalRequired,
-                .reusableApproval,
-                ["SFTP/SCP 操作属于普通操作，首次需要本机审批，之后可在执行窗口内复用"],
-                "sftp.ordinary.reusable-approval"
+                .silent,
+                .none,
+                ["SFTP/SCP 操作属于普通、可审计的传输效果；是否升级只看实际影响和语义"],
+                "sftp.ordinary.automatic"
             )
         }
     }
@@ -942,7 +959,9 @@ public struct SecretOperationPolicyEngine: Sendable {
             risk: risk,
             reasons: reasons,
             normalizedDestination: destination,
-            requiredApproval: (authorizationRequirement ?? risk.authorizationRequirement).requiresApproval,
+            requiredApproval: (authorizationRequirement ?? risk.authorizationRequirement)
+                .effectBasedRequirement
+                .requiresApproval,
             policyRuleID: ruleID,
             authorizationRequirement: authorizationRequirement,
             requiresFreshApprovalOnFirstUse: false,
@@ -951,13 +970,93 @@ public struct SecretOperationPolicyEngine: Sendable {
     }
 
     private static func normalizedSemanticRequirement(
-        _ assessment: AgentRiskAssessment
+        _ assessment: AgentRiskAssessment,
+        treatingVerifiedIndependentJudgeAsFinal: Bool = false
     ) -> AuthorizationRequirement {
-        if assessment.executionRecommendation == .automatic,
-           automaticRecommendationNeedsReview(assessment) {
+        switch assessment.executionRecommendation {
+        case .automatic, .reusableApproval:
+            return automaticRecommendationNeedsReview(assessment)
+                ? .freshApprovalRequired
+                : .none
+        case .freshApproval:
+            // The main Agent may be conservatively asking for a prompt even
+            // when its structured effect description is clearly bounded and
+            // recoverable. That self-report is evidence, not policy. A
+            // verified independent judge's fresh result is different: it is
+            // the final answer for the GRAY review and must be preserved.
+            if treatingVerifiedIndependentJudgeAsFinal,
+               assessment.source == .independentJudge {
+                return .freshApprovalRequired
+            }
+            return isClearlyAutomaticSemantics(assessment)
+                ? .none
+                : .freshApprovalRequired
+        case .denied:
+            // Only an independent judge that was actually bound and consumed
+            // by the daemon can make a semantic denial final. A main Agent's
+            // conservative denial is evidence just like its fresh hint: a
+            // clearly safe effect remains AUTO, while an unclear effect stays
+            // on the fresh path.
+            if treatingVerifiedIndependentJudgeAsFinal,
+               assessment.source == .independentJudge {
+                return .denied
+            }
+            return isClearlyAutomaticSemantics(assessment)
+                ? .none
+                : .freshApprovalRequired
+        case .uncertain:
             return .freshApprovalRequired
         }
-        return assessment.executionRecommendation.authorizationRequirement
+    }
+
+    private static func isAutomaticApprovalRecommendation(
+        _ assessment: AgentRiskAssessment
+    ) -> Bool {
+        switch assessment.executionRecommendation {
+        case .automatic, .reusableApproval:
+            return true
+        case .freshApproval, .denied, .uncertain:
+            return false
+        }
+    }
+
+    /// A conservative semantic proof of ordinary execution. This is a small
+    /// shape check, not a command allowlist: the caller still has to pass
+    /// descriptor validation, Secret binding checks, executor preflight, and
+    /// all deterministic hard floors.
+    private static func isClearlyAutomaticSemantics(
+        _ assessment: AgentRiskAssessment
+    ) -> Bool {
+        guard assessment.intentAlignment == .direct
+                || assessment.intentAlignment == .supporting else {
+            return false
+        }
+        guard [.none, .minor, .bounded].contains(assessment.effectSeverity) else {
+            return false
+        }
+        guard [.readOnly, .easy, .recoverable].contains(assessment.reversibility) else {
+            return false
+        }
+        return assessment.secretHandling == .none
+            || assessment.secretHandling == .credentialUse
+    }
+
+    /// Semantic hard floors cover effects that are unsafe to auto-execute even
+    /// when a command vocabulary looks harmless. The local descriptor rules
+    /// remain the stronger source for explicit actions such as export and
+    /// arbitrary local-process release.
+    private static func hasSemanticHardFloor(
+        _ assessment: AgentRiskAssessment
+    ) -> Bool {
+        if assessment.secretHandling == .plaintextSecretExposure
+            || assessment.secretHandling == .thirdPartyExposure {
+            return true
+        }
+        if assessment.reversibility == .irreversible {
+            return true
+        }
+        return assessment.effectSeverity == .systemic
+            && assessment.reversibility == .difficult
     }
 
     private static func automaticRecommendationNeedsReview(_ assessment: AgentRiskAssessment) -> Bool {
@@ -969,6 +1068,7 @@ public struct SecretOperationPolicyEngine: Sendable {
             || assessment.reversibility == .difficult
             || assessment.reversibility == .irreversible
             || assessment.reversibility == .unknown
+            || assessment.secretHandling == .userVisibleSensitiveData
             || assessment.secretHandling == .thirdPartyExposure
             || assessment.secretHandling == .plaintextSecretExposure
             || assessment.secretHandling == .unknown
@@ -977,14 +1077,12 @@ public struct SecretOperationPolicyEngine: Sendable {
     private static func isSemanticGrayRule(_ ruleID: String) -> Bool {
         [
             SSHFreshRules.filesystemDelete,
-            SSHFreshRules.containerDestruction,
+            SSHSemanticGrayRules.containerLifecycleRemoval,
             HTTPFreshRules.delete,
             DatabaseFreshRules.destructiveWrite,
             DatabaseFreshRules.dynamicExecution,
             DatabaseFreshRules.unknown,
-            SFTPFreshRules.delete,
-            SFTPFreshRules.overwriteExisting,
-            SFTPFreshRules.replaceExistingTarget
+            SFTPFreshRules.delete
         ].contains(ruleID)
     }
 
@@ -995,7 +1093,8 @@ public struct SecretOperationPolicyEngine: Sendable {
         if [
             SSHFreshRules.powerControl,
             SSHFreshRules.blockDeviceFilesystem,
-            SSHFreshRules.storageRaidDestruction
+            SSHFreshRules.storageRaidDestruction,
+            SSHFreshRules.containerDestruction
         ].contains(ruleID) {
             return .systemic
         }
@@ -1043,7 +1142,8 @@ public struct SecretOperationPolicyEngine: Sendable {
         if [
             SSHFreshRules.powerControl,
             SSHFreshRules.blockDeviceFilesystem,
-            SSHFreshRules.storageRaidDestruction
+            SSHFreshRules.storageRaidDestruction,
+            SSHFreshRules.containerDestruction
         ].contains(ruleID) {
             return true
         }

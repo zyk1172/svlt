@@ -29,16 +29,25 @@ public enum OperationRisk: String, Codable, CaseIterable, Sendable {
         case .silent:
             return .none
         case .approvalRequired:
-            return .reusableApproval
+            // `approvalRequired` predates effect-based authorization and did
+            // not distinguish a reusable first-use gate from a real owner
+            // decision. Preserve the conservative side of that wire value:
+            // an unqualified approval requirement means one fresh decision.
+            return .freshApprovalRequired
         case .denied:
             return .denied
         }
     }
 }
 
-/// Risk and authorization reuse are separate policy dimensions. A destructive
-/// operation can therefore require a new device-owner decision even when a
-/// reusable approval lease for ordinary writes is still active.
+/// The authorization result for one concrete operation.
+///
+/// `reusableApproval` remains Codable for older IPC clients and old audit
+/// records, but it is no longer an authorization grant. Effect-based policy
+/// normalizes it to `.none`; only `.freshApprovalRequired` starts an owner
+/// approval flow. This keeps old payloads readable without allowing the old
+/// "approve first use, then lease ordinary Secret use" model to re-enter the
+/// execution path.
 public enum AuthorizationRequirement: String, Codable, CaseIterable, Sendable {
     case none
     case reusableApproval
@@ -58,8 +67,15 @@ public enum AuthorizationRequirement: String, Codable, CaseIterable, Sendable {
         lhs.severity >= rhs.severity ? lhs : rhs
     }
 
+    /// Removes the retired ordinary first-use gate at the authorization
+    /// boundary. Callers handling descriptors or decoded policy results must
+    /// use this value before deciding whether to prompt or create a scope.
+    public var effectBasedRequirement: Self {
+        self == .reusableApproval ? .none : self
+    }
+
     public var requiresApproval: Bool {
-        self == .reusableApproval || self == .freshApprovalRequired
+        effectBasedRequirement == .freshApprovalRequired
     }
 }
 
@@ -89,13 +105,21 @@ public struct AgentRiskAssessment: Codable, Equatable, Sendable {
         case automatic
         case reusableApproval
         case freshApproval
+        case denied
         case uncertain
 
         public var authorizationRequirement: AuthorizationRequirement {
             switch self {
             case .automatic: return .none
-            case .reusableApproval: return .reusableApproval
-            case .freshApproval, .uncertain: return .freshApprovalRequired
+            case .reusableApproval:
+                // Compatibility spelling only. A Secret being used for the
+                // first time is not an approval reason; the concrete effect
+                // and semantic assessment decide whether a fresh boundary is
+                // needed.
+                return .none
+            case .freshApproval: return .freshApprovalRequired
+            case .denied: return .denied
+            case .uncertain: return .freshApprovalRequired
             }
         }
     }
@@ -892,14 +916,14 @@ public struct SecretOperationDescriptor: Codable, Equatable, Sendable {
     /// Stable enough for a short-lived local ticket because sorted JSON makes
     /// dictionary ordering deterministic. Transport handles are intentionally
     /// excluded: a sessionID identifies a reusable connection, not the
-    /// operation's authorization subject, so replacing an expired transport
-    /// must not change the exact operation ticket. The agent's free-text risk
-    /// metadata is excluded for the same reason: it is untrusted explanatory
-    /// input that the policy engine re-evaluates on every request, and two
-    /// byte-identical operations must share one lease regardless of how the
-    /// Agent words its assessment. The daemon-issued reviewID is excluded as
-    /// well: it binds evidence to this operation, but is not the operation
-    /// being authorized.
+    /// operation's authorization subject, so replacing a transport must not
+    /// change the exact operation ticket. The Agent's free-text risk metadata
+    /// is excluded because it is untrusted explanatory input that the policy
+    /// engine re-evaluates on every request. The daemon-issued reviewID is
+    /// excluded as well: it binds evidence to this operation, but is not the
+    /// operation being authorized. Ordinary AUTO operations do not create a
+    /// ticket or lease; this hash only identifies an operation if a genuine
+    /// fresh-approval boundary needs one.
     public var operationHash: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -1111,9 +1135,9 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
     public let authorizationRequirement: AuthorizationRequirement
     public let policyRuleID: String
     /// Kept for wire compatibility. The current authorization model never
-    /// sets this flag: Agent risk is display/audit metadata only, fixed local
-    /// rules choose the authorization requirement, and only technical
-    /// failures fail hard.
+    /// sets this flag: effect evidence can resolve ordinary operations to
+    /// `AUTO`, unresolved effects go through the independent judge, and only
+    /// the narrow hard floor or explicit `DENIED` boundaries stay strict.
     public let requiresFreshApprovalOnFirstUse: Bool
     /// True when the request could not be processed for technical reasons
     /// (malformed shape, contradictory fields, unverifiable identity) and the
@@ -1132,11 +1156,35 @@ public struct PolicyDecision: Codable, Equatable, Sendable {
         requiresFreshApprovalOnFirstUse: Bool = false,
         technicalFailure: Bool = false
     ) {
-        self.risk = risk
+        let rawRequirement = authorizationRequirement ?? risk.authorizationRequirement
+        let normalizedRequirement = rawRequirement.effectBasedRequirement
+        let normalizedRisk: OperationRisk = {
+            switch normalizedRequirement {
+            case .none:
+                return .silent
+            case .freshApprovalRequired:
+                return .approvalRequired
+            case .denied:
+                return .denied
+            case .reusableApproval:
+                // `effectBasedRequirement` currently removes this case; keep
+                // the branch explicit so a future compatibility change cannot
+                // accidentally reintroduce a prompt through the risk field.
+                return .silent
+            }
+        }()
+        // An explicit deny is a hard floor even if a legacy caller supplied a
+        // contradictory `.none` requirement. For non-denied values the
+        // normalized requirement is authoritative, which makes old
+        // `.approvalRequired + .reusableApproval` payloads genuinely silent.
+        self.risk = risk == .denied ? .denied : normalizedRisk
         self.reasons = reasons
         self.normalizedDestination = normalizedDestination
-        self.requiredApproval = requiredApproval
-        self.authorizationRequirement = authorizationRequirement ?? risk.authorizationRequirement
+        // `requiredApproval` is retained in the initializer for source and
+        // wire compatibility. The requirement is authoritative so a legacy
+        // caller cannot accidentally mark `.reusableApproval` as a prompt.
+        self.requiredApproval = normalizedRequirement.requiresApproval
+        self.authorizationRequirement = normalizedRequirement
         self.policyRuleID = policyRuleID
         self.requiresFreshApprovalOnFirstUse = requiresFreshApprovalOnFirstUse
         self.technicalFailure = technicalFailure

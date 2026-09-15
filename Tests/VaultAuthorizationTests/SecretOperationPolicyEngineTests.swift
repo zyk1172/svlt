@@ -41,6 +41,64 @@ import VaultExecution
     #expect(decision.reasons.contains { $0.contains("mainAgent") })
 }
 
+@Test func interpreterRiskFollowsDeclaredEffectInsteadOfExecutableName() throws {
+    let reference = try testReference()
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+
+    let analysis = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "python3 inspect_moviepilot.py",
+        agentAssessment: semanticAssessment(
+            recommendation: .automatic,
+            severity: .bounded,
+            reversibility: .recoverable,
+            reason: "The script only reads and summarizes the requested service state"
+        )
+    )
+    let automatic = engine().evaluate(analysis, metadata: metadata)
+    #expect(automatic.authorizationRequirement == .none)
+
+    let unresolved = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "python3 maintenance.py",
+        agentAssessment: semanticAssessment(
+            recommendation: .uncertain,
+            alignment: .unclear,
+            severity: .unknown,
+            reversibility: .unknown,
+            secretHandling: .unknown,
+            confidence: 0.2,
+            reason: "The script body and final effect are unavailable"
+        )
+    )
+    let unresolvedPreflight = engine().semanticPreflight(unresolved, metadata: metadata)
+    #expect(unresolvedPreflight.route == .gray)
+    #expect(engine().evaluate(unresolved, metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+
+    let lowConfidenceBounded = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "cat /etc/os-release",
+        agentAssessment: semanticAssessment(
+            recommendation: .freshApproval,
+            confidence: 0.64,
+            reason: "The command appears bounded but the effect assessment is below the confidence threshold"
+        )
+    )
+    #expect(engine().semanticPreflight(lowConfidenceBounded, metadata: metadata).route == .gray)
+}
+
 @Test func semanticRecommendationDirectlySelectsOrdinaryApprovalLevel() throws {
     let reference = try testReference()
     let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
@@ -66,8 +124,11 @@ import VaultExecution
     }
 
     #expect(decision(.automatic).authorizationRequirement == .none)
-    #expect(decision(.reusableApproval).authorizationRequirement == .reusableApproval)
-    #expect(decision(.freshApproval).authorizationRequirement == .freshApprovalRequired)
+    // The compatibility enum is not an approval class anymore, and a
+    // conservative main-Agent recommendation cannot override a bounded,
+    // recoverable effect proof.
+    #expect(decision(.reusableApproval).authorizationRequirement == .none)
+    #expect(decision(.freshApproval).authorizationRequirement == .none)
     #expect(decision(.uncertain).authorizationRequirement == .freshApprovalRequired)
 }
 
@@ -148,7 +209,7 @@ import VaultExecution
     ])
 
     #expect(decision.authorizationRequirement == .none)
-    #expect(decision.policyRuleID == "\(SSHFreshRules.containerDestruction)+intent-first")
+    #expect(decision.policyRuleID == "\(SSHSemanticGrayRules.containerLifecycleRemoval)+intent-first")
 }
 
 @Test func powerControlRemainsANonDowngradableHardFloor() throws {
@@ -174,6 +235,81 @@ import VaultExecution
 
     #expect(decision.authorizationRequirement == .freshApprovalRequired)
     #expect(decision.policyRuleID == "\(SSHFreshRules.powerControl)+intent-first")
+}
+
+@Test func poweroffAndShutdownRemainNonDowngradableHardFloors() throws {
+    let reference = try testReference()
+    let metadata = [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+
+    for command in ["poweroff", "shutdown -h now", "halt"] {
+        let decision = engine().evaluate(
+            SecretOperationDescriptor(
+                actionType: .sshCommand,
+                secretReferences: [reference],
+                destination: "nas.local",
+                port: 22,
+                protocolType: .ssh,
+                command: command,
+                agentAssessment: semanticAssessment(
+                    recommendation: .automatic,
+                    severity: .none,
+                    reversibility: .readOnly,
+                    reason: "Power control must remain owner-approved"
+                )
+            ),
+            metadata: metadata
+        )
+        #expect(decision.authorizationRequirement == .freshApprovalRequired, "command: \(command)")
+        #expect(decision.policyRuleID == "\(SSHFreshRules.powerControl)+intent-first", "command: \(command)")
+    }
+}
+
+@Test func destructiveDockerVolumeRemovalRemainsANonDowngradableHardFloor() throws {
+    let reference = try testReference()
+    let decision = engine().evaluate(
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: "docker volume rm moviepilot-data",
+            agentAssessment: semanticAssessment(
+                recommendation: .automatic,
+                severity: .none,
+                reversibility: .readOnly,
+                reason: "A semantic recommendation cannot bypass volume destruction"
+            )
+        ),
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+    #expect(decision.policyRuleID == "\(SSHFreshRules.containerDestruction)+intent-first")
+}
+
+@Test func conservativeMainAgentFreshRecommendationDoesNotForceApprovalForBoundedSSH() throws {
+    let reference = try testReference()
+    let decision = engine().evaluate(
+        SecretOperationDescriptor(
+            actionType: .sshCommand,
+            secretReferences: [reference],
+            destination: "nas.local",
+            port: 22,
+            protocolType: .ssh,
+            command: "cat /etc/moviepilot/config.json",
+            agentAssessment: semanticAssessment(
+                recommendation: .freshApproval,
+                severity: .bounded,
+                reversibility: .recoverable,
+                reason: "The main Agent is conservatively requesting review"
+            )
+        ),
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+
+    #expect(decision.authorizationRequirement == .none)
+    #expect(decision.risk == .silent)
 }
 
 @Test func blockDeviceDestructionRemainsANonDowngradableHardFloor() throws {
@@ -246,6 +382,29 @@ import VaultExecution
 
     #expect(decision.authorizationRequirement == .none)
     #expect(decision.policyRuleID == "\(SecretOperationPolicyEngine.HTTPFreshRules.secretNetworkSend)+intent-first")
+}
+
+@Test func ordinaryHTTPSWritesRemainAutomaticWhenEffectIsBounded() throws {
+    let reference = try testReference()
+    let metadata = [policyMetadata(reference, destinations: ["qnap.local:8080"], protocols: ["https"])]
+
+    for method in ["POST", "PUT", "PATCH"] {
+        let decision = engine().evaluate(
+            httpDescriptor(
+                reference: reference,
+                method: method,
+                url: "https://qnap.local:8080/api/status",
+                assessment: semanticAssessment(
+                    recommendation: .automatic,
+                    severity: .bounded,
+                    reversibility: .recoverable,
+                    reason: "Update one task-owned service record"
+                )
+            ),
+            metadata: metadata
+        )
+        #expect(decision.authorizationRequirement == .none, "method: \(method)")
+    }
 }
 
 @Test func httpDeleteIsASemanticSignalAfterVerifiedJudgeReview() throws {
@@ -339,7 +498,7 @@ import VaultExecution
     ])
 
     #expect(decision.authorizationRequirement == .none)
-    #expect(decision.policyRuleID == "\(SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite)+intent-first")
+    #expect(decision.policyRuleID == "database.ordinary.automatic+intent-first")
 }
 
 @Test func databaseDestructiveStructureRemainsANonDowngradableHardFloor() throws {
@@ -403,7 +562,7 @@ import VaultExecution
             ),
             metadata: metadata
         )
-        #expect(decision.authorizationRequirement == .reusableApproval, "statement: \(statement)")
+        #expect(decision.authorizationRequirement == .none, "statement: \(statement)")
     }
 }
 
@@ -433,6 +592,106 @@ import VaultExecution
         #expect(decision.authorizationRequirement == .none, "operation: \(operation)")
         #expect(decision.policyRuleID.hasSuffix("+intent-first"), "operation: \(operation)")
     }
+}
+
+@Test func ordinarySFTPWriteDoesNotNeedIndependentJudgeOrOwnerApproval() throws {
+    let reference = try testReference()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sftpTransfer,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .sftp,
+        fileOperation: .write,
+        fileTarget: "/share/task-owned-result.json",
+        agentAssessment: semanticAssessment(
+            recommendation: .automatic,
+            severity: .bounded,
+            reversibility: .recoverable,
+            reason: "Save one task-owned analysis result"
+        )
+    )
+
+    let decision = engine().evaluate(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["nas.local"], protocols: ["sftp"])
+    ])
+    #expect(decision.authorizationRequirement == .none)
+    #expect(decision.policyRuleID == "sftp.ordinary.automatic+intent-first")
+}
+
+@Test func grayJudgeCanUpgradeAnUnresolvedEffectToFreshApproval() throws {
+    let reference = try testReference()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "rm -rf /share/task-owned-temp",
+        agentAssessment: semanticAssessment(
+            source: .independentJudge,
+            recommendation: .freshApproval,
+            severity: .broad,
+            reversibility: .difficult,
+            reason: "Independent review found a broad, difficult-to-recover deletion"
+        )
+    )
+
+    let decision = engine().evaluateWithVerifiedIndependentJudge(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
+    ])
+    #expect(decision.authorizationRequirement == .freshApprovalRequired)
+}
+
+@Test func verifiedGrayJudgeCanKeepAProhibitedEffectDenied() throws {
+    let reference = try testReference()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "rm -rf /share/task-owned-temp",
+        agentAssessment: semanticAssessment(
+            source: .independentJudge,
+            recommendation: .denied,
+            severity: .broad,
+            reversibility: .irreversible,
+            reason: "Independent review found the requested deletion is prohibited"
+        )
+    )
+
+    let decision = engine().evaluateWithVerifiedIndependentJudge(descriptor, metadata: [
+        policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])
+    ])
+    #expect(decision.risk == .denied)
+    #expect(decision.authorizationRequirement == .denied)
+}
+
+@Test func semanticHardFloorRoutesCredentialExposureToHardPreflight() throws {
+    let reference = try testReference()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "hostname",
+        agentAssessment: semanticAssessment(
+            source: .independentJudge,
+            recommendation: .automatic,
+            severity: .none,
+            reversibility: .readOnly,
+            secretHandling: .plaintextSecretExposure,
+            reason: "The credential would be exposed"
+        )
+    )
+
+    let preflight = engine().semanticPreflight(
+        descriptor,
+        metadata: [policyMetadata(reference, destinations: ["nas.local"], protocols: ["ssh"])]
+    )
+    #expect(preflight.route == .hard)
 }
 
 @Test func ftpPlaintextCredentialTransportRemainsANonDowngradableHardFloor() throws {
@@ -598,7 +857,8 @@ import VaultExecution
         ("sudo bash -c 'rm -rf /tmp/a'", SSHFreshRules.filesystemDelete),
         ("reboot", SSHFreshRules.powerControl),
         ("mkfs.ext4 /dev/sda1", SSHFreshRules.blockDeviceFilesystem),
-        ("docker rm web", SSHFreshRules.containerDestruction),
+        ("docker rm web", SSHSemanticGrayRules.containerLifecycleRemoval),
+        ("docker volume rm app-data", SSHFreshRules.containerDestruction),
         ("zpool destroy tank", SSHFreshRules.storageRaidDestruction)
     ]
 
@@ -607,6 +867,20 @@ import VaultExecution
         #expect(classification.authorizationRequirement == .freshApprovalRequired, "command: \(command)")
         #expect(classification.ruleID == expectedRule, "command: \(command)")
     }
+}
+
+@Test func nestedDockerEffectIsClassifiedFromTheInnerOperationNotTheWrapper() {
+    let classifier = SSHCommandRiskClassifier()
+
+    let read = classifier.classify(command: "docker exec moviepilot cat /etc/app/config.json")
+    #expect(read.authorizationRequirement == .none)
+
+    let destructive = classifier.classify(command: "docker exec moviepilot rm -rf /data/cache")
+    #expect(destructive.authorizationRequirement == .freshApprovalRequired)
+    #expect(destructive.ruleID == SSHFreshRules.filesystemDelete)
+
+    let dryRun = classifier.classify(command: "docker exec moviepilot rm -rf --dry-run /data/cache")
+    #expect(dryRun.authorizationRequirement == .none)
 }
 
 @Test func ordinarySSHClassifierInputsRemainOrdinary() {
@@ -624,16 +898,19 @@ import VaultExecution
 
     for command in commands {
         let classification = classifier.classify(command: command)
-        #expect(classification.authorizationRequirement == .reusableApproval, "command: \(command)")
+        #expect(classification.authorizationRequirement == .none, "command: \(command)")
     }
 }
 
 @Test func databaseClassifierStillDescribesConcreteSQLRiskWithoutOwningFinalSemanticDecision() {
     let classifier = DatabaseStatementClassifier()
 
-    #expect(classifier.classify("SELECT 1").requirement == .reusableApproval)
-    #expect(classifier.classify("INSERT INTO logs VALUES (1)").requirement == .reusableApproval)
-    #expect(classifier.classify("DELETE FROM logs WHERE id = 1").ruleID == SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite)
+    #expect(classifier.classify("SELECT 1").requirement == .none)
+    #expect(classifier.classify("INSERT INTO logs VALUES (1)").requirement == .none)
+    #expect(classifier.classify("INSERT INTO logs VALUES (1) ON CONFLICT (id) DO UPDATE SET value = 2").requirement == .none)
+    #expect(classifier.classify("WITH inserted AS (INSERT INTO audit VALUES (1) RETURNING id) DELETE FROM logs USING inserted WHERE logs.id = inserted.id").requirement == .freshApprovalRequired)
+    #expect(classifier.classify("DELETE FROM logs WHERE id = 1").ruleID == "database.ordinary.automatic")
+    #expect(classifier.classify("DELETE FROM logs").ruleID == SecretOperationPolicyEngine.DatabaseFreshRules.destructiveWrite)
     #expect(classifier.classify("DROP TABLE logs").ruleID == SecretOperationPolicyEngine.DatabaseFreshRules.destructiveStructure)
     #expect(classifier.classify("GRANT ALL ON app TO someone").ruleID == SecretOperationPolicyEngine.DatabaseFreshRules.privilegeAccountAdmin)
     #expect(classifier.classify("CALL rotate_credentials()").ruleID == SecretOperationPolicyEngine.DatabaseFreshRules.dynamicExecution)
@@ -728,6 +1005,21 @@ import VaultExecution
     #expect(decision.authorizationRequirement == .none)
     #expect(decision.risk == .silent)
     #expect(decision.policyRuleID == "metadata.silent")
+}
+
+@Test func legacyReusablePolicyDecisionNormalizesToAutomaticAtTheModelBoundary() {
+    let decision = PolicyDecision(
+        risk: .approvalRequired,
+        reasons: ["legacy payload"],
+        normalizedDestination: "nas.local",
+        requiredApproval: true,
+        policyRuleID: "legacy",
+        authorizationRequirement: .reusableApproval
+    )
+
+    #expect(decision.risk == .silent)
+    #expect(decision.authorizationRequirement == .none)
+    #expect(decision.requiredApproval == false)
 }
 
 @Test func freshRuleRegistriesStayBounded() {
@@ -832,7 +1124,7 @@ import VaultExecution
     #expect(engine().evaluateWithVerifiedIndependentJudge(descriptor(source: .independentJudge), metadata: metadata).authorizationRequirement == .none)
 }
 
-@Test func newCredentialScopeRoutesAutomaticRecommendationToGray() throws {
+@Test func unboundDestinationRoutesAutomaticRecommendationToGray() throws {
     let reference = try testReference()
     let descriptor = SecretOperationDescriptor(
         actionType: .sshCommand,
@@ -903,7 +1195,7 @@ import VaultExecution
         "echo rm", "grep reboot logfile", "cat /backup/dd"
     ]
     for command in ordinary {
-        #expect(ssh.classify(command: command).authorizationRequirement == .reusableApproval, "command: \(command)")
+        #expect(ssh.classify(command: command).authorizationRequirement == .none, "command: \(command)")
     }
 
     let sql = DatabaseStatementClassifier()
@@ -958,7 +1250,13 @@ private func semanticAssessment(
 ) -> AgentRiskAssessment {
     AgentRiskAssessment(
         source: source,
-        declaredRisk: recommendation == .automatic ? .silent : .approvalRequired,
+        declaredRisk: {
+            switch recommendation {
+            case .automatic: return .silent
+            case .denied: return .denied
+            case .reusableApproval, .freshApproval, .uncertain: return .approvalRequired
+            }
+        }(),
         reason: reason,
         userGoal: "Complete the user-requested operation",
         taskContext: "Focused test context for the concrete operation",

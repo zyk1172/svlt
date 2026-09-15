@@ -1,15 +1,11 @@
 import Foundation
 
-/// The non-secret identity of one reusable, purpose-bound Agent authorization.
-/// It covers purpose-built execution and the separately constrained local
-/// export path; plaintext reveal/copy and other high-risk controls remain
-/// exact one-shot approvals.
-///
-/// A lease is deliberately bound to the complete set of opaque references,
-/// normalized destination, protocol, operation family, caller principal and
-/// security generation. Database operations use a classifier-selected narrow
-/// family (for example, `database.read`), rather than the generic action name.
-/// It must never contain resolved secret material.
+/// Compatibility state for older purpose-bound Agent authorization records.
+/// Current effect-based policy does not create this scope for ordinary AUTO
+/// operations: Secret use, first use, operation IDs, transport sessions, and
+/// elapsed time are not authorization grants. Existing scope state remains
+/// principal/Secret/destination/generation bound so old state can be invalidated
+/// safely, and it must never contain resolved Secret material.
 public struct ExecutionAuthorizationScope: Hashable, Sendable {
     public let principal: String
     public let secretReferenceIDs: [String]
@@ -18,9 +14,9 @@ public struct ExecutionAuthorizationScope: Hashable, Sendable {
     public let username: String?
     public let protocolType: String?
     public let actionFamily: String
-    /// Canonical operation identity for protocols where reusing an approval
-    /// across paths, methods, headers, or bodies would be unsafe. SSH leaves
-    /// this nil so ordinary policy-reviewed commands can share the lease.
+    /// Canonical operation identity for legacy compatibility records where
+    /// reusing an approval across paths, methods, headers, or bodies would be
+    /// unsafe. Current ordinary SSH policy does not use a scope grant.
     public let operationFingerprint: String?
     public let generation: UInt64
 

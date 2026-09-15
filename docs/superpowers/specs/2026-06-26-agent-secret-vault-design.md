@@ -146,13 +146,19 @@ rotation without changing knowledge-base references.
 - Generate the master key randomly on first setup.
 - Do not derive it from a user password.
 - Store only wrapped copies of the master key.
-- Protect normal access with a device-local wrapping key whose Keychain access
-  control requires Touch ID or the system authentication fallback.
+- Historical design note: the first draft protected every normal access with a
+  device-local wrapping key whose Keychain access control required Touch ID or
+  the system authentication fallback. The current implementation separates
+  cryptographic key access from operation authorization: the device-local
+  `WhenUnlockedThisDeviceOnly` item is read silently for ordinary operations,
+  while Touch ID/password is reserved for genuine dangerous effects and local
+  reveal/export boundaries.
 - Protect a second wrapped copy with a recovery wrapping key stored in an
   application-specific, synchronizable iCloud Keychain item.
 - On a recovered Mac, require platform authentication, unwrap the recovery copy,
   and create a new device-local wrapping key before normal use.
-- Keep unwrapped key material only for the active authorization window.
+- Keep unwrapped key material only for the minimum operation/cache lifetime;
+  it is not an approval lease and cannot grant an Agent an execution scope.
 
 iCloud Keychain recovery means the vault is protected by application identity
 and Apple account/device authentication rather than being physically bound to
@@ -222,16 +228,22 @@ Operations are assigned one of three risk classes:
 Examples: reveal in the secure viewer, inspect non-sensitive metadata, or run a
 locally contained read-only template.
 
-Touch ID opens a short authorization session, defaulting to five minutes.
-Repeated read operations may reuse this session.
+Historical note: this early design used a five-minute read authorization
+session. It is superseded by the effect-based approval model. Ordinary,
+task-aligned Secret authentication is `AUTO` and creates no authorization
+session or lease; local reveal/export and genuinely dangerous effects retain
+their exact, one-shot owner-approval boundaries.
 
 ### 7.2 Write or External Send
 
 Examples: modify files, update remote data, submit an authenticated API
 request, or transmit secret-backed values outside the Mac.
 
-Every operation requires a separate Touch ID authorization. Read authorization
-cannot be upgraded or reused.
+Approval is determined by actual effect, blast radius, reversibility, and
+credential exposure—not by the fact that the operation writes or uses a
+Secret. Bounded, recoverable writes may be `AUTO`; destructive, high-impact,
+unresolved, or credential-exposing effects require the current fresh-approval
+or DENIED boundary.
 
 ### 7.3 Delete or Credential Change
 

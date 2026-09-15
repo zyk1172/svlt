@@ -68,23 +68,28 @@ The first release also excludes:
 
 Every protected request is represented by a `SecretOperationDescriptor` and
 evaluated by the local `SecretOperationPolicyEngine`. The engine computes the
-local requirement (`none`, `reusableApproval`, or
-`freshApprovalRequired`) from the descriptor and current metadata. The
-Agent's `AgentRiskAssessment` is display/audit metadata only; it cannot
-promote, downgrade, or deny that result. Exact opaque reference sets are
+local requirement (`none`, `freshApprovalRequired`, or `denied`) from the
+descriptor's intended effect, blast radius, reversibility, Secret flow, and
+current metadata. `GRAY` is a preflight route for unresolved effects and may
+be resolved by the independent judge to automatic, fresh hard handling, or
+denied. The legacy `reusableApproval` enum remains decodable for old IPC/audit
+data but is normalized to `none`; it is never a first-use grant. The Agent's
+`AgentRiskAssessment` is evidence rather than a self-issued capability, and a
+conservative fresh recommendation cannot force a prompt when the concrete
+effect is clearly bounded and recoverable. Exact opaque reference sets are
 checked before any record is resolved.
 
-Secret-bearing execution uses one fixed, non-sliding 300-second owner lease per
-exact scope. The ordinary path covers SSH/HTTP/database/SFTP/FTP and other
-technically supported operations, including shell syntax and new destinations;
-only the small fixed destructive registries, plaintext/security controls, and
-arbitrary local secret release require fresh approval. Cross-origin HTTP
-redirects stop transport and require a newly submitted request rather than a
-special inherited authorization. Malformed, contradictory, stale, or
-unverifiable requests fail technically; the device owner decides all other
-technically executable requests. The lease binds operation hash, Secret
-references, destination, command/method/path/database/file details, expiry,
-and security generation.
+Ordinary Secret-bearing execution covers SSH/HTTP/database/SFTP and other
+technically supported operations, including shell syntax, separate MCP calls,
+new operation IDs, changed transport session IDs, and time beyond the old
+five-minute window. Secret authentication itself is not an approval reason.
+Only genuinely destructive/high-impact effects, unresolved gray semantics,
+plaintext or insecure credential exposure, and existing hard security controls
+require fresh approval or remain denied. Cross-origin HTTP redirects stop
+transport and require a newly submitted request rather than inherited
+authorization. Malformed, contradictory, stale, or unverifiable requests fail
+technically. `sessionID` and SSH batch are transport concerns only: neither is
+an authorization token or an approval bypass.
 
 `locked` in `WorkbenchStatus` is compatibility-only; it is not an Agent gate.
 `available`, `ready`, and `approvalPending` describe the current operation

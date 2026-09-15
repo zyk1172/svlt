@@ -2,9 +2,10 @@ import Foundation
 import VaultAuthorization
 import VaultCore
 
-/// Keeps only in-memory wrapping keys. Read authorization is session-scoped;
-/// credential and destination-bound external-send keys use configurable
-/// windows. No key is written to disk or UserDefaults.
+/// Keeps only in-memory wrapping keys. These cache windows support explicit
+/// reveal/export flows and are not an Agent operation authorization lease;
+/// ordinary effect-based `AUTO` operations do not create or consult them.
+/// No key is written to disk or UserDefaults.
 public actor AppProtectionKeyStore {
     private struct CachedKey: Sendable {
         var data: Data

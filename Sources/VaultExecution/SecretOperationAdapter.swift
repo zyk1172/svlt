@@ -141,8 +141,8 @@ public protocol SecretOperationAdapter: Sendable {
 }
 
 /// A disabled adapter is explicit. It is never allowed to perform a no-op
-/// "success" because that would prime an authorization lease for an action the
-/// daemon cannot actually execute.
+/// "success" because that would make an unsupported action appear executed
+/// across the daemon's authorization boundary.
 public struct UnavailableSecretOperationAdapter: SecretOperationAdapter {
     public let kind: SecretAdapterKind
     public let capability: SecretOperationCapability
