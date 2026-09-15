@@ -1,0 +1,560 @@
+name: Apply Automatic First-Use Authorization Refactor
+
+on:
+  push:
+    branches:
+      - codex/automatic-approval-first-use
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/automatic-approval-first-use
+          fetch-depth: 0
+
+      - name: Apply intent-first first-use refactor
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(path):
+              return Path(path).read_text(encoding="utf-8")
+
+          def write(path, text):
+              Path(path).write_text(text, encoding="utf-8")
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 occurrence, found {count}")
+              return text.replace(old, new, 1)
+
+          def replace_test(text, name, replacement):
+              pattern = rf'@Test func {re.escape(name)}\(\) async throws \{{.*?\n\}}(?=\n\n@Test|\Z)'
+              out, count = re.subn(pattern, replacement.rstrip(), text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"test {name}: expected 1 block, found {count}")
+              return out
+
+          # 1) Keep the legacy wire spelling, but it no longer implies a first-use prompt.
+          path = "Sources/VaultCore/Models/SecretOperation.swift"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''            case .automatic: return .none
+            case .reusableApproval: return .reusableApproval
+            case .freshApproval, .uncertain: return .freshApprovalRequired
+''',
+              '''            case .automatic, .reusableApproval:
+                // `reusableApproval` remains decodable for older MCP clients,
+                // but intent-first authorization no longer treats first use as
+                // approval-worthy by itself. Ordinary work follows the same
+                // automatic path and is promoted only by semantic/hard-floor
+                // review.
+                return .none
+            case .freshApproval, .uncertain:
+                return .freshApprovalRequired
+''',
+              "legacy reusable recommendation mapping"
+          )
+          write(path, text)
+
+          # 2) Make automatic and legacy-reusable recommendations share all semantic safety checks.
+          path = "Sources/VaultAuthorization/SecretOperationPolicyEngine.swift"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''        let semanticConflict = semantic.executionRecommendation == .automatic
+            && Self.automaticRecommendationNeedsReview(semantic)
+''',
+              '''        let semanticConflict = Self.isAutomaticApprovalRecommendation(semantic)
+            && Self.automaticRecommendationNeedsReview(semantic)
+''',
+              "semantic conflict automatic compatibility"
+          )
+          text = replace_once(
+              text,
+              '''        let scopeConflict = semantic.executionRecommendation == .automatic
+            && !binding.reasons.isEmpty
+''',
+              '''        let scopeConflict = Self.isAutomaticApprovalRecommendation(semantic)
+            && !binding.reasons.isEmpty
+''',
+              "scope conflict automatic compatibility"
+          )
+          text = replace_once(
+              text,
+              '''    private static func normalizedSemanticRequirement(
+        _ assessment: AgentRiskAssessment
+    ) -> AuthorizationRequirement {
+        if assessment.executionRecommendation == .automatic,
+           automaticRecommendationNeedsReview(assessment) {
+            return .freshApprovalRequired
+        }
+        return assessment.executionRecommendation.authorizationRequirement
+    }
+
+    private static func automaticRecommendationNeedsReview(_ assessment: AgentRiskAssessment) -> Bool {
+''',
+              '''    private static func normalizedSemanticRequirement(
+        _ assessment: AgentRiskAssessment
+    ) -> AuthorizationRequirement {
+        if isAutomaticApprovalRecommendation(assessment),
+           automaticRecommendationNeedsReview(assessment) {
+            return .freshApprovalRequired
+        }
+        return assessment.executionRecommendation.authorizationRequirement
+    }
+
+    private static func isAutomaticApprovalRecommendation(_ assessment: AgentRiskAssessment) -> Bool {
+        switch assessment.executionRecommendation {
+        case .automatic, .reusableApproval:
+            return true
+        case .freshApproval, .uncertain:
+            return false
+        }
+    }
+
+    private static func automaticRecommendationNeedsReview(_ assessment: AgentRiskAssessment) -> Bool {
+''',
+              "semantic normalization helper"
+          )
+          text = text.replace(
+              '"HTTP 请求属于普通操作，首次需要本机审批，之后可在执行窗口内复用"',
+              '"HTTP 请求属于普通操作；是否需要用户审批由结构化语义判断决定"'
+          )
+          text = text.replace(
+              '"SFTP/SCP 操作属于普通操作，首次需要本机审批，之后可在执行窗口内复用"',
+              '"SFTP/SCP 操作属于普通操作；是否需要用户审批由结构化语义判断决定"'
+          )
+          write(path, text)
+
+          # 3) The deterministic SSH classifier remains a soft signal, not a mandatory first-use gate.
+          path = "Sources/VaultAuthorization/SSHCommandRiskClassifier.swift"
+          text = read(path)
+          text = text.replace(
+              '''/// SVLT uses a device-owner authorization lease, not a semantic command
+/// firewall.
+///
+/// The classifier answers exactly one question: "which authorization level
+/// does this command need?" It never answers "is this command allowed?".
+///
+/// - Every technically valid SSH command defaults to `reusableApproval`:
+///   one device-owner approval opens the scoped five-minute window.
+''',
+              '''/// SVLT uses intent-first semantic authorization, not a semantic command
+/// firewall.
+///
+/// This classifier supplies a deterministic risk signal. Its ordinary
+/// `reusableApproval` result is a legacy/local classification label and does
+/// not itself force a first-use prompt; the structured semantic assessment
+/// decides whether the concrete operation is automatic or needs approval.
+///
+/// - Every technically valid SSH command defaults to the ordinary
+///   `reusableApproval` classification signal.
+'''
+          )
+          text = text.replace(
+              '"SSH 批处理属于普通操作，首次需要本机审批，之后可在执行窗口内复用"',
+              '"SSH 批处理属于普通操作；是否需要用户审批由结构化语义判断决定"'
+          )
+          text = text.replace(
+              '"SSH 命令属于普通操作，首次需要本机审批，之后可在执行窗口内复用"',
+              '"SSH 命令属于普通操作；是否需要用户审批由结构化语义判断决定"'
+          )
+          write(path, text)
+
+          # 4) MCP compatibility: old `reusableApproval` proposals are normalized to automatic.
+          path = "mcp-server/src/agent-assessment.ts"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''  .describe(
+    "Main Agent semantic assessment. Sensitive/privileged is distinct from dangerous: ordinary user-aligned work should recommend automatic; use freshApproval only for genuine destructive/high-impact effects or unnecessary Secret plaintext exposure; use uncertain only when effect or task alignment cannot be resolved."
+  );
+''',
+              '''  .describe(
+    "Main Agent semantic assessment. Sensitive/privileged is distinct from dangerous: ordinary user-aligned work should recommend automatic and does not require a first-use approval; use freshApproval only for genuine destructive/high-impact effects or unnecessary Secret plaintext exposure; use uncertain only when effect or task alignment cannot be resolved. reusableApproval is accepted only as a legacy compatibility spelling and is normalized to automatic."
+  );
+''',
+              "assessment guidance"
+          )
+          text = replace_once(
+              text,
+              '''  return {
+    source: "mainAgent",
+    declaredRisk: proposal.executionRecommendation === "automatic" ? "silent" : "approvalRequired",
+    ...proposal
+  };
+''',
+              '''  const executionRecommendation = proposal.executionRecommendation === "reusableApproval"
+    ? "automatic"
+    : proposal.executionRecommendation;
+  return {
+    source: "mainAgent",
+    declaredRisk: executionRecommendation === "automatic" ? "silent" : "approvalRequired",
+    ...proposal,
+    executionRecommendation
+  };
+''',
+              "main agent reusable normalization"
+          )
+          write(path, text)
+
+          path = "mcp-server/src/risk-judge.ts"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''function normalizeAssessment(assessment: AgentRiskAssessment): AgentRiskAssessment {
+  let executionRecommendation = assessment.executionRecommendation;
+  if (assessment.executionRecommendation === "automatic" && (assessment.effectSeverity === "broad" || assessment.effectSeverity === "systemic" || assessment.reversibility === "irreversible" || assessment.secretHandling === "thirdPartyExposure" || assessment.secretHandling === "plaintextSecretExposure")) executionRecommendation = "freshApproval";
+''',
+              '''function normalizeAssessment(assessment: AgentRiskAssessment): AgentRiskAssessment {
+  let executionRecommendation = assessment.executionRecommendation === "reusableApproval"
+    ? "automatic"
+    : assessment.executionRecommendation;
+  if (executionRecommendation === "automatic" && (assessment.effectSeverity === "broad" || assessment.effectSeverity === "systemic" || assessment.reversibility === "irreversible" || assessment.secretHandling === "thirdPartyExposure" || assessment.secretHandling === "plaintextSecretExposure")) executionRecommendation = "freshApproval";
+''',
+              "judge reusable normalization"
+          )
+          write(path, text)
+
+          # 5) Policy tests: legacy reusable is compatibility input for automatic, not a first-use approval level.
+          path = "Tests/VaultAuthorizationTests/SecretOperationPolicyEngineTests.swift"
+          text = read(path)
+          text = replace_once(
+              text,
+              '#expect(decision(.reusableApproval).authorizationRequirement == .reusableApproval)',
+              '#expect(decision(.reusableApproval).authorizationRequirement == .none)',
+              "policy reusable expectation"
+          )
+          text = replace_once(
+              text,
+              '#expect(decision.authorizationRequirement == .reusableApproval, "statement: \\(statement)")',
+              '#expect(decision.authorizationRequirement == .none, "statement: \\(statement)")',
+              "verified judge reusable expectation"
+          )
+          write(path, text)
+
+          # 6) Service fixtures: an explicit approvalRequired/denied hint now means
+          # an actual fresh recommendation. Automatic/reusable behavior is tested explicitly.
+          path = "Tests/VaultAuthorizationTests/SecretOperationServiceTests.swift"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''                case .approvalRequired, .denied:
+                    // The legacy denied hint is intentionally only a visible
+                    // Agent warning; the daemon still evaluates the concrete
+                    // operation and the structured assessment independently.
+                    executionRecommendation = .reusableApproval
+''',
+              '''                case .approvalRequired, .denied:
+                    // Tests that explicitly ask for an approval-required hint
+                    // should exercise a real user-approval path. Ordinary
+                    // first-use behavior is covered with `.automatic` or the
+                    // legacy `.reusableApproval` compatibility spelling.
+                    executionRecommendation = .freshApproval
+''',
+              "service fixture explicit approval mapping"
+          )
+
+          text = replace_test(text, "firstOrdinaryOperationTakesOneApprovalAndOpensTheWindow", r'''@Test func automaticOrdinaryOperationDoesNotRequireFirstUseApproval() async throws {
+    let fixture = try await OperationServiceFixture()
+    defer { fixture.remove() }
+
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "hostname", agentRisk: .silent)
+    )
+
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.executor.count == 1)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+}''')
+
+          text = replace_test(text, "executionApprovalExplainsItsSessionScopedReuse", r'''@Test func legacyReusableRecommendationDoesNotRequireFirstUseApproval() async throws {
+    let fixture = try await OperationServiceFixture(approval: .allow)
+    defer { fixture.remove() }
+    let assessment = AgentRiskAssessment(
+        declaredRisk: .approvalRequired,
+        reason: "Compatibility recommendation from an older client",
+        userGoal: "Create the requested working directory",
+        taskContext: "One bounded SSH operation",
+        intendedEffect: "Create one task-owned directory",
+        expectedEffect: "Create only the requested directory",
+        expectedResult: "The directory exists",
+        intentAlignment: .direct,
+        effectSeverity: .bounded,
+        reversibility: .recoverable,
+        secretHandling: .credentialUse,
+        executionRecommendation: .reusableApproval,
+        confidence: 0.95
+    )
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentAssessment: assessment)
+    )
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.executor.count == 1)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+}''')
+
+          text = replace_test(text, "failedScopedOperationKeepsOwnerAuthorizationUntilSessionInvalidation", r'''@Test func failedFreshApprovedOperationDoesNotCreateReusableSession() async throws {
+    let fixture = try await OperationServiceFixture(executorStatus: "FAILED")
+    defer { fixture.remove() }
+
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
+
+    #expect(output.status == "FAILED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()) == false)
+    #expect((await fixture.auditEntries()).last?.result == "FAILED")
+}''')
+
+          text = replace_test(text, "eligibleSecretOperationsReuseExecutionAuthorizationWithoutTimeExpiry", r'''@Test func automaticOperationsStayPromptFreeWithoutCreatingASessionGrant() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 3_000)
+    let clock = ServiceTestClock(start)
+    let authorizationSession = AuthorizationSession(now: { clock.now })
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .silent)
+    )
+    let scope = fixture.executionScope()
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+
+    clock.now = start.addingTimeInterval(7 * 86_400)
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "touch /share/svlt-test", agentRisk: .silent)
+    )
+    #expect(await fixture.approver.count == 0)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+    #expect(await fixture.auditEntries().compactMap(\.authorizationMode).isEmpty)
+}''')
+
+          text = replace_test(text, "boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval", r'''@Test func boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval() async throws {
+    let authorizationSession = AuthorizationSession()
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession)
+    defer { fixture.remove() }
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
+    let scope = fixture.executionScope()
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "rm -rf /share/svlt-test", agentRisk: .approvalRequired)
+    )
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+}''')
+
+          text = replace_test(text, "agentApprovalHintKeepsReusableOperationsInsideTheSessionAuthorization", r'''@Test func explicitApprovalRecommendationDoesNotBecomeReusableSessionAuthorization() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 6_000)
+    let clock = ServiceTestClock(start)
+    let authorizationSession = AuthorizationSession(now: { clock.now })
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession, now: { clock.now })
+    defer { fixture.remove() }
+    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(mkdir)
+    let scope = fixture.executionScope(for: mkdir)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+    clock.now = start.addingTimeInterval(86_400)
+    let touch = fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(touch)
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+}''')
+
+          text = replace_test(text, "agentApprovalHintOnHostnameBehavesAsAnOrdinarySessionOperation", r'''@Test func explicitDeniedHintCannotSilentlyBecomeASessionGrant() async throws {
+    let authorizationSession = AuthorizationSession()
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession)
+    defer { fixture.remove() }
+    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(mkdir)
+    let scope = fixture.executionScope(for: mkdir)
+    let hostname = fixture.ssh(command: "hostname", agentRisk: .denied)
+    _ = try await fixture.service.performSecretOperation(hostname)
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+}''')
+
+          text = replace_test(text, "containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval", r'''@Test func containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval() async throws {
+    let authorizationSession = AuthorizationSession()
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession)
+    defer { fixture.remove() }
+    let restart = fixture.ssh(command: "docker restart web", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(restart)
+    let scope = fixture.executionScope(for: restart)
+    let startContainer = fixture.ssh(command: "docker start web", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(startContainer)
+    #expect(await fixture.approver.count == 2)
+    let remove = fixture.ssh(command: "docker rm -f web", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(remove)
+    #expect(await fixture.approver.count == 3)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope) == false)
+}''')
+
+          text = replace_test(text, "concurrentEligibleOperationsShareOneApproval", r'''@Test func concurrentFreshRecommendationsDoNotShareOneApproval() async throws {
+    let fixture = try await OperationServiceFixture(approval: .delayed)
+    defer { fixture.remove() }
+
+    let outputs = try await withThrowingTaskGroup(of: SecretOperationOutput.self) { group in
+        for command in ["mkdir /share/svlt-a", "touch /share/svlt-b", "mkdir /share/svlt-c"] {
+            group.addTask {
+                try await fixture.service.performSecretOperation(
+                    fixture.ssh(command: command, agentRisk: .approvalRequired)
+                )
+            }
+        }
+
+        var outputs: [SecretOperationOutput] = []
+        for try await output in group {
+            outputs.append(output)
+        }
+        return outputs
+    }
+
+    #expect(outputs.count == 3)
+    #expect(await fixture.approver.count == 3)
+    #expect(await fixture.executor.count == 3)
+}''')
+          write(path, text)
+
+          # 7) MCP test locks compatibility normalization.
+          path = "mcp-server/test/risk-judge.test.ts"
+          text = read(path)
+          marker = '''  it("calls the independent judge for uncertainty and sends rich bounded task context", async () => {
+'''
+          addition = '''  it("normalizes the legacy reusable recommendation to automatic without a first-use prompt", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      request({ executionRecommendation: "reusableApproval", declaredRisk: "approvalRequired" }),
+      fastPreflight,
+      configuration,
+      { async fetch() { throw new Error("not expected"); } }
+    );
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("automatic");
+    expect(judged.descriptor.agentAssessment.declaredRisk).toBe("silent");
+  });
+
+'''
+          text = replace_once(text, marker, addition + marker, "risk judge compatibility test")
+          write(path, text)
+
+          # 8) Documentation follows the actual intent-first behavior.
+          path = "docs/security/context-bounded-risk-judge.md"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''3. `FAST` proceeds with the main Agent assessment and no second model call. `HARD` goes directly to fresh owner approval. `DENIED` stays denied. Only `GRAY` invokes SVLT's separately configured semantic judge.
+''',
+              '''3. `FAST` proceeds with the main Agent assessment and no second model call. An `automatic` result executes without a special first-use approval. `HARD` goes directly to fresh owner approval. `DENIED` stays denied. Only `GRAY` invokes SVLT's separately configured semantic judge.
+''',
+              "context doc fast route"
+          )
+          text += '''\n## First-use behavior\n\nOrdinary work has no separate first-use approval gate. The structured semantic decision is made for the concrete operation itself: `automatic` executes without a macOS owner prompt, while `freshApproval` requests owner authentication. The historical `reusableApproval` recommendation remains accepted on the wire for older clients but is normalized to the same automatic path; it no longer means “approve the first request, then reuse that approval”. Hard-floor and unresolved/failed gray-zone decisions still require fresh approval.\n'''
+          write(path, text)
+
+          path = "docs/security/operation-authorization.md"
+          text = read(path)
+          text = replace_once(
+              text,
+              '''  -> local requirement: none | reusableApproval | freshApprovalRequired
+  -> AgentRiskAssessment shown as display/audit metadata only
+  -> technical failure or owner approval / session-scoped grant
+  -> capability preflight
+  -> exact device-owner approval or session-scoped execution grant
+''',
+              '''  -> deterministic preflight: FAST | HARD | GRAY | DENIED
+  -> structured AgentRiskAssessment / optional independent judge
+  -> semantic result: automatic | freshApproval
+  -> capability preflight
+  -> automatic execution or exact device-owner approval
+''',
+              "operation doc flow"
+          )
+          text = replace_once(
+              text,
+              '''`AgentRiskAssessment` 只有显示和审计作用，不能升级、降级或拒绝本地策略已经计算出的授权结果。技术性错误（格式、引用集合、目标字段或身份不可验证）会在认证前失败；其他技术上可执行的请求由设备所有者通过 Touch ID/密码决定。
+''',
+              '''`AgentRiskAssessment` 是 intent-first 授权决策的一部分，而不是仅用于显示。技术性错误（格式、引用集合、目标字段或身份不可验证）仍在认证前失败；non-downgradable hard floor 始终要求本机审批。除此之外，普通操作由结构化语义判断决定是 `automatic` 直接执行，还是 `freshApproval` 请求 Touch ID/密码；不存在“第一次使用必定审批”的额外门槛。
+''',
+              "operation doc assessment role"
+          )
+          text = text.replace(
+              '| 已绑定或未绑定目标的 Secret-bearing SSH/数据库/SFTP 操作 | `reusableApproval` | 首次认证建立当前 scope 的会话级授权；不设固定时间超时，目标/协议提示不额外升级 |',
+              '| 普通 Secret-bearing SSH/数据库/SFTP 操作 | `automatic`（语义判断） | 首次也不因“第一次使用”单独审批；结构化语义判断或 GRAY 独立裁判决定是否升级到 `freshApprovalRequired` |'
+          )
+          text = text.replace(
+              '| 数据库明确只读语句（SELECT/SHOW/EXPLAIN 等） | `reusableApproval` | 只读语句共享 `database.read` 操作族，不要求每条查询重新认证 |',
+              '| 数据库明确只读语句（SELECT/SHOW/EXPLAIN 等） | `automatic`（语义判断） | deterministic classifier 仍提供 `database.read` 信号，但不制造首次审批门槛 |'
+          )
+          text = text.replace(
+              '| 数据库 INSERT、SELECT INTO、schema/session maintenance | `reusableApproval` | 仅在对应的窄操作族内复用，不能借用 `database.read` 或其他数据库操作族 |',
+              '| 数据库 INSERT、SELECT INTO、schema/session maintenance | 由语义判断决定 | 普通、对齐且可恢复时可自动；高影响/未决语义进入 GRAY 或 fresh approval |'
+          )
+          start = text.find('对可执行的 `reusableApproval` 操作，设备所有者完成一次认证后')
+          end_marker = '本地明文导出属于 non-downgradable `freshApprovalRequired` 操作'
+          end = text.find(end_marker, start)
+          if start == -1 or end == -1:
+              raise SystemExit("operation doc reusable section not found")
+          replacement = '''`reusableApproval` 现在只作为旧客户端/旧协议的兼容枚举保留。进入 intent-first 语义决策后，它与 `automatic` 一样不会制造首次使用审批；MCP 层会把旧值规范化成 `automatic`，Swift policy 也按同样规则处理直接 IPC 调用。真正需要用户决定的操作必须得到 `freshApprovalRequired`。因此是否出现 Touch ID/密码提示取决于当前操作的语义判断、GRAY 裁判结果和 hard floor，而不是“是否第一次使用某个 Secret/目标”。\n\n`AuthorizationSession` 仍保留 scope-grant 兼容状态与安全代际失效机制，以便读取旧审计/兼容旧调用路径；它不再是普通 intent-first 执行的前置条件。锁屏、睡眠、用户会话切换/注销、显式锁定、Agent 重启和 security generation 变化仍清除所有受保护运行时状态。\n\n'''
+          text = text[:start] + replacement + text[end:]
+          write(path, text)
+
+          path = "README.md"
+          text = read(path)
+          needle = '''The independent judge receives only a bounded, redacted task packet. It never receives SVLT-managed plaintext, `secret://` identifiers, the Agent framework's system prompt, full chat history, memory, or tools. Common password/token/private-key shapes are redacted before any remote judge call.
+'''
+          addition = needle + '''\nThere is no separate “first use” approval gate for ordinary Agent execution. If the structured semantic decision is `automatic`, the operation can run immediately even for a Secret/scope that has never been used before. Owner authentication is requested only when the decision or hard floor resolves to fresh approval. The legacy `reusableApproval` recommendation remains wire-compatible but is normalized to the automatic path.\n'''
+          text = replace_once(text, needle, addition, "README first-use behavior")
+          write(path, text)
+          PY
+
+          git diff --check
+
+      - name: Run Swift test suite
+        run: |
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/svlt-derived" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run MCP tests and build
+        working-directory: mcp-server
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run build
+
+      - name: Commit refactor and remove temporary workflow
+        run: |
+          git rm .github/workflows/codex-automatic-approval-first-use.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Sources Tests mcp-server README.md docs/security
+          git diff --cached --check
+          git commit -m "fix: let semantic authorization decide first-use approval"
+          git push origin HEAD:codex/automatic-approval-first-use
