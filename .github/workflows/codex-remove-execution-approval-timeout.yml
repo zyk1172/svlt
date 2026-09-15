@@ -1,0 +1,1162 @@
+name: Apply Session-Scoped Approval Refactor
+
+on:
+  push:
+    branches:
+      - codex/remove-execution-approval-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  refactor:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/remove-execution-approval-timeout
+          fetch-depth: 0
+      - name: Replace timed execution approval with session-scoped reuse
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 occurrence, found {count}")
+              return text.replace(old, new, 1)
+
+          def regex_once(text: str, pattern: str, repl: str, label: str) -> str:
+              out, count = re.subn(pattern, repl, text, count=1, flags=re.S)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected 1 regex match, found {count}")
+              return out
+
+          Path("Sources/VaultAuthorization/AuthorizationSession.swift").write_text(r'''import Foundation
+
+/// In-memory authorization state owned by one running Agent. Reusable Agent
+/// execution authorization is session-scoped rather than time-scoped: elapsed
+/// time alone never forces a new owner approval. The daemon clears the state
+/// on sleep, screen lock, session changes, explicit lock, and process restart.
+public actor AuthorizationSession {
+    private let readTTL: TimeInterval?
+    private let credentialTTL: TimeInterval
+    private let externalSendTTL: TimeInterval
+    private let now: @Sendable () -> Date
+
+    private var readAuthorized = false
+    private var readExpiresAt: Date?
+    private var credentialAuthorized = false
+    private var credentialExpiresAt: Date?
+    private var externalSendExpiresAt: [String: Date] = [:]
+    private var executionAuthorizations: Set<ExecutionAuthorizationScope> = []
+    private var singleUseAuthorizations: Set<RiskClass> = []
+
+    public init(
+        readTTL: TimeInterval? = nil,
+        credentialTTL: TimeInterval = 600,
+        externalSendTTL: TimeInterval = 60,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
+        self.readTTL = readTTL
+        self.credentialTTL = credentialTTL
+        self.externalSendTTL = externalSendTTL
+        self.now = now
+    }
+
+    public func authorizeRead() async {
+        readAuthorized = true
+        readExpiresAt = readTTL.map { now().addingTimeInterval($0) }
+    }
+
+    public func authorizeCredential() async {
+        guard credentialTTL > 0 else {
+            credentialAuthorized = false
+            credentialExpiresAt = nil
+            return
+        }
+        credentialAuthorized = true
+        credentialExpiresAt = now().addingTimeInterval(credentialTTL)
+    }
+
+    public func authorizeExternalSend(destination: String) async {
+        guard !destination.isEmpty, externalSendTTL > 0 else {
+            return
+        }
+        externalSendExpiresAt[destination] = now().addingTimeInterval(externalSendTTL)
+    }
+
+    /// Grants reusable authorization for one exact execution scope for the
+    /// lifetime of the current security session. This grant has no TTL and is
+    /// never extended or expired by request activity or wall-clock time.
+    public func authorizeExecution(for scope: ExecutionAuthorizationScope) {
+        executionAuthorizations.insert(scope)
+    }
+
+    public func hasActiveExecutionAuthorization(for scope: ExecutionAuthorizationScope) -> Bool {
+        executionAuthorizations.contains(scope)
+    }
+
+    public func invalidateExecutionAuthorization(for scope: ExecutionAuthorizationScope) {
+        executionAuthorizations.remove(scope)
+    }
+
+    public func authorizeSingleUse(for risk: RiskClass) async {
+        guard risk != .read else {
+            await authorizeRead()
+            return
+        }
+        singleUseAuthorizations.insert(risk)
+    }
+
+    public func consumeAuthorization(for risk: RiskClass) async -> Bool {
+        switch risk {
+        case .read:
+            return consumeRead()
+        case .writeOrExternalSend, .deleteOrCredentialChange:
+            return singleUseAuthorizations.remove(risk) != nil
+        }
+    }
+
+    public func consumeCredential() async -> Bool {
+        guard credentialAuthorized else {
+            return false
+        }
+        guard let credentialExpiresAt, now() < credentialExpiresAt else {
+            credentialAuthorized = false
+            self.credentialExpiresAt = nil
+            return false
+        }
+        return true
+    }
+
+    public func consumeExternalSend(destination: String) async -> Bool {
+        guard !destination.isEmpty,
+              let expiresAt = externalSendExpiresAt[destination]
+        else {
+            // Keep the old single-use API usable for callers that deliberately
+            // requested a generic external-send authorization. Destination-
+            // bound authorizations always use the dictionary above.
+            return singleUseAuthorizations.remove(.writeOrExternalSend) != nil
+        }
+        guard now() < expiresAt else {
+            externalSendExpiresAt[destination] = nil
+            return false
+        }
+        return true
+    }
+
+    public func invalidate() async {
+        readAuthorized = false
+        readExpiresAt = nil
+        credentialAuthorized = false
+        credentialExpiresAt = nil
+        externalSendExpiresAt.removeAll()
+        executionAuthorizations.removeAll()
+        singleUseAuthorizations.removeAll()
+    }
+
+    private func consumeRead() -> Bool {
+        guard readAuthorized else {
+            return false
+        }
+        if let readExpiresAt, now() >= readExpiresAt {
+            readAuthorized = false
+            self.readExpiresAt = nil
+            return false
+        }
+        return true
+    }
+}
+''', encoding="utf-8")
+
+          Path("Sources/VaultService/ScopedMasterKeyCoordinator.swift").write_text(r'''import CryptoKit
+import Foundation
+import VaultAuthorization
+
+/// Coordinates the in-memory master-key capability that backs one scoped
+/// execution authorization for the current Agent security session.
+///
+/// The coordinator deliberately owns only transient key material and the
+/// tasks associated with it. It has no IPC surface and never persists or
+/// returns plaintext. There is no timer: matching key material is cleared only
+/// when its authorization scope or the wider security session is invalidated.
+public actor ScopedMasterKeyCoordinator {
+    private struct Authorization: Sendable {
+        let key: SymmetricKey
+    }
+
+    private struct Flight: Sendable {
+        let task: Task<SymmetricKey, Error>
+    }
+
+    private let invalidateExecutionAuthorization:
+        @Sendable (ExecutionAuthorizationScope) async -> Void
+    private var authorizations: [ExecutionAuthorizationScope: Authorization] = [:]
+    private var flights: [ExecutionAuthorizationScope: Flight] = [:]
+
+    public init(
+        invalidateExecutionAuthorization: @escaping @Sendable (ExecutionAuthorizationScope) async -> Void
+    ) {
+        self.invalidateExecutionAuthorization = invalidateExecutionAuthorization
+    }
+
+    /// Whether this coordinator still has the key captured for a scope.
+    /// This is intentionally separate from `AuthorizationSession`: both the
+    /// session grant and the matching key must be present before a scoped
+    /// operation can reuse authorization.
+    public func hasAuthorization(for scope: ExecutionAuthorizationScope) -> Bool {
+        authorizations[scope] != nil
+    }
+
+    /// Resolve a key for an already-scoped operation. Missing session
+    /// authorization invalidates stale key material before loading a new key.
+    /// Provider loading is one per-scope flight so concurrent callers cannot
+    /// duplicate authentication or race stale invalidation against commit.
+    public func resolveKey(
+        for scope: ExecutionAuthorizationScope,
+        isAuthorizationActive: @escaping @Sendable () async -> Bool,
+        load: @escaping @Sendable () async throws -> SymmetricKey
+    ) async throws -> SymmetricKey {
+        if await isAuthorizationActive(), let authorization = authorizations[scope] {
+            return authorization.key
+        }
+
+        if let flight = flights[scope] {
+            return try await flight.task.value
+        }
+
+        clearAuthorization(for: scope)
+        let invalidateExecutionAuthorization = self.invalidateExecutionAuthorization
+        let task = Task<SymmetricKey, Error> {
+            await invalidateExecutionAuthorization(scope)
+            try Task.checkCancellation()
+            return try await load()
+        }
+        flights[scope] = Flight(task: task)
+        do {
+            let key = try await task.value
+            // Keep the completed flight until the caller commits the matching
+            // session authorization. Concurrent callers then share the same
+            // provider result and the same owner-approval handoff.
+            return key
+        } catch {
+            flights.removeValue(forKey: scope)
+            throw error
+        }
+    }
+
+    /// Capture the key obtained immediately after owner approval. The key is
+    /// session-scoped and intentionally has no wall-clock or monotonic expiry.
+    public func storeAuthorizedKey(
+        _ key: SymmetricKey,
+        for scope: ExecutionAuthorizationScope
+    ) {
+        clearAuthorization(for: scope)
+        authorizations[scope] = Authorization(key: key)
+        flights.removeValue(forKey: scope)
+    }
+
+    /// Drop all transient capability material during lock, sleep, shutdown,
+    /// user/session change, explicit lock, or another security-state
+    /// invalidation. The caller invalidates the matching authorization session
+    /// in the same transition.
+    public func invalidateAll() {
+        for flight in flights.values {
+            flight.task.cancel()
+        }
+        flights.removeAll()
+        for authorization in authorizations.values {
+            wipe(authorization.key)
+        }
+        authorizations.removeAll()
+    }
+
+    /// Drop one scope and its associated in-flight work.
+    public func abandon(scope: ExecutionAuthorizationScope) async {
+        flights.removeValue(forKey: scope)?.task.cancel()
+        clearAuthorization(for: scope)
+        await invalidateExecutionAuthorization(scope)
+    }
+
+    private func clearAuthorization(for scope: ExecutionAuthorizationScope) {
+        if let authorization = authorizations.removeValue(forKey: scope) {
+            wipe(authorization.key)
+        }
+    }
+
+    private func wipe(_ key: SymmetricKey) {
+        var keyData = key.withUnsafeBytes { Data($0) }
+        keyData.resetBytes(in: 0..<keyData.count)
+    }
+}
+''', encoding="utf-8")
+
+          path = Path("Sources/VaultService/VaultDaemonCore.swift")
+          text = path.read_text(encoding="utf-8")
+          text = replace_once(text, "    public let executionAuthorizationTTL: TimeInterval\n", "", "remove daemon execution TTL property")
+          text = replace_once(text, "        executionAuthorizationTTL: TimeInterval = 300,\n", "", "remove daemon execution TTL init parameter")
+          text = replace_once(text, "        self.executionAuthorizationTTL = executionAuthorizationTTL\n", "", "remove daemon execution TTL assignment")
+          text = replace_once(
+              text,
+              "            authorizationSession: AuthorizationSession(\n                readTTL: configuration.readAuthorizationTTL,\n                credentialTTL: configuration.credentialAuthorizationTTL,\n                externalSendTTL: configuration.externalSendAuthorizationTTL,\n                executionTTL: configuration.executionAuthorizationTTL\n            ),",
+              "            authorizationSession: AuthorizationSession(\n                readTTL: configuration.readAuthorizationTTL,\n                credentialTTL: configuration.credentialAuthorizationTTL,\n                externalSendTTL: configuration.externalSendAuthorizationTTL\n            ),",
+              "remove production execution TTL wiring"
+          )
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("Sources/VaultService/VaultAppServices.swift")
+          text = path.read_text(encoding="utf-8")
+          text = regex_once(
+              text,
+              r'enum SecretOperationAuthorizationPath: Sendable \{.*?\n\}\n\nprivate enum ExecutionAuthorizationCommit: Equatable, Sendable \{.*?\n\}',
+              '''enum SecretOperationAuthorizationPath: Sendable {
+    case notRequired
+    case freshLocalApproval(LocalAuthenticationContext?)
+    case sessionAuthorizationReuse
+
+    /// This context is short-lived request state, never an IPC value or a
+    /// reusable authorization capability. It is passed only to the immediate
+    /// Keychain-backed master-key lookup that follows the same owner approval.
+    var authenticationContext: LocalAuthenticationContext? {
+        guard case let .freshLocalApproval(context) = self else {
+            return nil
+        }
+        return context
+    }
+
+    var auditMode: AuditAuthorizationMode? {
+        switch self {
+        case .notRequired:
+            return nil
+        case .freshLocalApproval:
+            return .freshLocalApproval
+        case .sessionAuthorizationReuse:
+            // Keep the legacy wire value so existing encrypted audit records
+            // and older App/Agent peers remain decodable.
+            return .executionWindowReuse
+        }
+    }
+
+    var auditOutcome: AuditAuthorizationOutcome {
+        switch self {
+        case .notRequired:
+            return .notRequired
+        case .freshLocalApproval, .sessionAuthorizationReuse:
+            return .approved
+        }
+    }
+
+    var operationAuditAction: String {
+        switch self {
+        case .sessionAuthorizationReuse:
+            return "智能体专用操作（会话授权复用）"
+        case .notRequired, .freshLocalApproval:
+            return "智能体专用操作"
+        }
+    }
+
+    func operationAuditAction(for action: SecretOperationAction) -> String {
+        guard action == .localExecution else {
+            return operationAuditAction
+        }
+        return "userApprovedSecretRelease"
+    }
+}
+
+private enum ExecutionAuthorizationCommit: Equatable, Sendable {
+    case authorizationEstablished
+    case authorizationReused
+    case needsFreshApproval
+}''',
+              "authorization path enums"
+          )
+          text = text.replace("isExecutionLeaseEligible", "isExecutionReuseEligible")
+          text = replace_once(
+              text,
+              '''        let executionReuseEligible = isExecutionReuseEligible(descriptor.actionType)
+''',
+              '''        let executionReuseEligible = isExecutionReuseEligible(descriptor.actionType)
+''',
+              "noop guard"
+          ) if False else text
+          text = replace_once(
+              text,
+              '''        let executorAction = isExecutionReuseEligible(descriptor.actionType)
+        let executorCapability = isExecutorBackedAction(descriptor.actionType)
+''',
+              '''        let executionReuseEligible = isExecutionReuseEligible(descriptor.actionType)
+        let executorCapability = isExecutorBackedAction(descriptor.actionType)
+''',
+              "rename execution reuse eligibility local"
+          )
+          text = replace_once(
+              text,
+              '''        let executionWindowEnabled: Bool
+        if executorAction {
+            executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
+        } else {
+            executionWindowEnabled = false
+        }
+        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+''',
+              '''        var executionScope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionReuseEligible
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+''',
+              "remove timed execution-window gating"
+          )
+          text = replace_once(
+              text,
+              '''        let executionWindowEnabled = await authorizationSession.executionAuthorizationWindowEnabled()
+        var scope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval && executionWindowEnabled
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+''',
+              '''        var scope: ExecutionAuthorizationScope? = decision.authorizationRequirement == .reusableApproval
+            ? scopedAuthorizationScope(for: descriptor, generation: operationGeneration)
+            : nil
+''',
+              "remove timed export-window gating"
+          )
+          text = text.replace("shouldEmitExecutionWindowReuseAudit", "shouldEmitExecutionSessionReuseAudit")
+          text = text.replace("emitExecutionWindowReuseAudit", "emitExecutionSessionReuseAudit")
+          text = text.replace("authorizationPath = .executionWindowReuse", "authorizationPath = .sessionAuthorizationReuse")
+          text = text.replace("case .leaseEstablished, .approvedWithoutLease:", "case .authorizationEstablished:")
+          text = text.replace("case .leaseReused:", "case .authorizationReused:")
+          text = replace_once(
+              text,
+              '''            let executionWindowDuration = await authorizationSession.executionAuthorizationWindowDuration()
+            let summary = approvalSummary(
+                descriptor: descriptor,
+                metadata: metadata,
+                decision: decision,
+                executionWindowDuration: executionWindowDuration,
+                hostKeyReview: hostKeyReview
+            )
+''',
+              '''            let summary = approvalSummary(
+                descriptor: descriptor,
+                metadata: metadata,
+                decision: decision,
+                hostKeyReview: hostKeyReview
+            )
+''',
+              "remove duration from approval prompt"
+          )
+          text = text.replace("return .executionWindowReuse", "return .sessionAuthorizationReuse")
+          text = text.replace("isLeaseActive:", "isAuthorizationActive:")
+          text = replace_once(
+              text,
+              '''        decision: PolicyDecision,
+        executionWindowDuration: TimeInterval? = nil,
+        hostKeyReview: SSHHostKeyReview? = nil
+''',
+              '''        decision: PolicyDecision,
+        hostKeyReview: SSHHostKeyReview? = nil
+''',
+              "approval summary signature"
+          )
+          text = replace_once(
+              text,
+              '''        let base = "SVLT 请求本机审批：\\(displayName(for: descriptor))；操作：\\(detail)；目标：\\(target)；凭据：\\(labelText)\\(riskSection)\\(batchRequirement)\\(hostKeySection)"
+        guard let executionWindowDuration else {
+            return base
+        }
+        let seconds = executionWindowDuration.formatted(.number.precision(.fractionLength(0...3)))
+        return "\\(base)；本次审批可在同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型下复用最多 \\(seconds) 秒；不会授权其他凭据、目标或协议"
+''',
+              '''        let base = "SVLT 请求本机审批：\\(displayName(for: descriptor))；操作：\\(detail)；目标：\\(target)；凭据：\\(labelText)\\(riskSection)\\(batchRequirement)\\(hostKeySection)"
+        guard decision.authorizationRequirement == .reusableApproval else {
+            return base
+        }
+        return "\\(base)；本次审批可在当前 Agent 授权会话内，按同一调用主体、同一凭据、同一目标、同一端口、同一协议及执行类型复用；不设固定时间超时；锁屏、睡眠、用户会话切换、显式锁定、Agent 重启或安全状态变化后失效；不会授权其他凭据、目标或协议"
+''',
+              "session-scoped approval summary"
+          )
+          text = regex_once(
+              text,
+              r'    private func commitExecutionAuthorization\(.*?\n    private func abandonExecutionAuthorization\(',
+              '''    private func commitExecutionAuthorization(
+        scope: ExecutionAuthorizationScope,
+        generation: UInt64,
+        masterKey: SymmetricKey
+    ) async throws -> ExecutionAuthorizationCommit {
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard await scopedMasterKeyCoordinator.hasAuthorization(for: scope) else {
+                await authorizationSession.invalidateExecutionAuthorization(for: scope)
+                return .needsFreshApproval
+            }
+            if await secretOperationService.removeExecutionApprovalFlight(scope: scope) {
+                await statusObserver?(status())
+            }
+            return .authorizationReused
+        }
+
+        guard let flight = await secretOperationService.executionApprovalFlight(for: scope),
+              flight.generation == generation
+        else {
+            return .needsFreshApproval
+        }
+
+        do {
+            _ = try await flight.task.value
+        } catch {
+            await finishExecutionApprovalFlight(
+                scope: scope,
+                approvalID: flight.id,
+                generation: flight.generation
+            )
+            throw mappedSecretOperationError(error)
+        }
+
+        guard generation == securityGeneration else {
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        if await authorizationSession.hasActiveExecutionAuthorization(for: scope) {
+            guard await scopedMasterKeyCoordinator.hasAuthorization(for: scope) else {
+                await authorizationSession.invalidateExecutionAuthorization(for: scope)
+                return .needsFreshApproval
+            }
+            if await secretOperationService.removeExecutionApprovalFlight(
+                scope: scope,
+                matching: flight.id
+            ) {
+                await statusObserver?(status())
+            }
+            return .authorizationReused
+        }
+
+        guard await secretOperationService.executionApprovalFlight(for: scope)?.id == flight.id else {
+            return .needsFreshApproval
+        }
+
+        await authorizationSession.authorizeExecution(for: scope)
+        guard generation == securityGeneration else {
+            await authorizationSession.invalidateExecutionAuthorization(for: scope)
+            throw SecretOperationError.authorizationCancelled
+        }
+
+        await scopedMasterKeyCoordinator.storeAuthorizedKey(masterKey, for: scope)
+
+        if await secretOperationService.removeExecutionApprovalFlight(
+            scope: scope,
+            matching: flight.id
+        ) {
+            await statusObserver?(status())
+        }
+        return .authorizationEstablished
+    }
+
+    private func abandonExecutionAuthorization(''',
+              "session-scoped commit implementation"
+          )
+          text = text.replace('action: "执行授权窗口复用"', 'action: "会话授权复用"')
+          text = text.replace(
+              "/// Scoped Agent operations may reuse only the key material captured when\n    /// that exact scope acquired device-owner authorization. Falling back to\n    /// the broader credential cache here would let its independent TTL extend\n    /// an Agent authorization lease.",
+              "/// Scoped Agent operations may reuse only the key material captured when\n    /// that exact scope acquired device-owner authorization. Falling back to\n    /// the broader credential cache here would let an unrelated cache policy\n    /// outlive or bypass the Agent session authorization boundary."
+          )
+          text = text.replace("ordinary lease", "ordinary session authorization")
+          text = text.replace("export lease", "export session authorization")
+          text = text.replace("reusable lease", "reusable session authorization")
+          text = text.replace("lease candidate", "session-authorization candidate")
+          text = text.replace("establish a reusable export lease", "establish a reusable export session authorization")
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("Sources/VaultCore/Models/AuditEvent.swift")
+          text = path.read_text(encoding="utf-8")
+          text = replace_once(text, '        case .executionWindowReuse: return "执行授权窗口复用"', '        case .executionWindowReuse: return "会话授权复用"', "audit display label")
+          path.write_text(text, encoding="utf-8")
+
+          Path("Tests/VaultAuthorizationTests/AuthorizationSessionTests.swift").write_text(r'''import Foundation
+import Testing
+@testable import VaultAuthorization
+
+private let testExecutionScope = ExecutionAuthorizationScope(
+    principal: "agent",
+    secretReferenceIDs: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+    normalizedDestination: "qnap.local",
+    port: 22,
+    protocolType: "ssh",
+    actionFamily: "sshCommand",
+    generation: 7
+)
+
+@Test func readAuthorizationExpiresAtConfiguredTTL() async {
+    let clock = TestClock(Date(timeIntervalSinceReferenceDate: 1_000))
+    let session = AuthorizationSession(readTTL: 300, now: { clock.now })
+
+    await session.authorizeRead()
+    #expect(await session.consumeAuthorization(for: .read))
+
+    clock.now = Date(timeIntervalSinceReferenceDate: 1_299.999)
+    #expect(await session.consumeAuthorization(for: .read))
+
+    clock.now = Date(timeIntervalSinceReferenceDate: 1_300)
+    #expect(await session.consumeAuthorization(for: .read) == false)
+}
+
+@Test func externalSendAuthorizationIsSingleUse() async {
+    let session = AuthorizationSession()
+
+    await session.authorizeSingleUse(for: .writeOrExternalSend)
+
+    #expect(await session.consumeAuthorization(for: .writeOrExternalSend))
+    #expect(await session.consumeAuthorization(for: .writeOrExternalSend) == false)
+}
+
+@Test func executionAuthorizationDoesNotExpireWithElapsedTime() async {
+    let clock = TestClock(Date(timeIntervalSinceReferenceDate: 2_000))
+    let session = AuthorizationSession(now: { clock.now })
+
+    await session.authorizeExecution(for: testExecutionScope)
+    #expect(await session.hasActiveExecutionAuthorization(for: testExecutionScope))
+
+    clock.now = clock.now.addingTimeInterval(86_400)
+    #expect(await session.hasActiveExecutionAuthorization(for: testExecutionScope))
+}
+
+@Test func executionAuthorizationEndsOnlyWhenItsScopeIsInvalidated() async {
+    let session = AuthorizationSession()
+
+    await session.authorizeExecution(for: testExecutionScope)
+    #expect(await session.hasActiveExecutionAuthorization(for: testExecutionScope))
+
+    await session.invalidateExecutionAuthorization(for: testExecutionScope)
+    #expect(await session.hasActiveExecutionAuthorization(for: testExecutionScope) == false)
+}
+
+@Test func deleteAuthorizationIsSingleUse() async {
+    let session = AuthorizationSession()
+
+    await session.authorizeSingleUse(for: .deleteOrCredentialChange)
+
+    #expect(await session.consumeAuthorization(for: .deleteOrCredentialChange))
+    #expect(await session.consumeAuthorization(for: .deleteOrCredentialChange) == false)
+}
+
+@Test func readAuthorizationCannotAuthorizeHigherRiskClass() async {
+    let session = AuthorizationSession()
+
+    await session.authorizeRead()
+
+    #expect(await session.consumeAuthorization(for: .writeOrExternalSend) == false)
+    #expect(await session.consumeAuthorization(for: .deleteOrCredentialChange) == false)
+}
+
+@Test func invalidateClearsAuthorizations() async {
+    let session = AuthorizationSession()
+
+    await session.authorizeRead()
+    await session.authorizeSingleUse(for: .writeOrExternalSend)
+    await session.authorizeExecution(for: testExecutionScope)
+    await session.invalidate()
+
+    #expect(await session.consumeAuthorization(for: .read) == false)
+    #expect(await session.consumeAuthorization(for: .writeOrExternalSend) == false)
+    #expect(await session.hasActiveExecutionAuthorization(for: testExecutionScope) == false)
+}
+
+@Test func executionAuthorizationDoesNotCrossScopes() async {
+    let session = AuthorizationSession()
+    let otherScope = ExecutionAuthorizationScope(
+        principal: "agent",
+        secretReferenceIDs: ["secret://0123456789ABCDEFGHJKMNPQRT"],
+        normalizedDestination: "other.local",
+        port: 22,
+        protocolType: "ssh",
+        actionFamily: "sshCommand",
+        generation: 7
+    )
+
+    await session.authorizeExecution(for: testExecutionScope)
+
+    #expect(await session.hasActiveExecutionAuthorization(for: testExecutionScope))
+    #expect(await session.hasActiveExecutionAuthorization(for: otherScope) == false)
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedNow: Date
+
+    init(_ now: Date) {
+        self.storedNow = now
+    }
+
+    var now: Date {
+        get { lock.withLock { storedNow } }
+        set { lock.withLock { storedNow = newValue } }
+    }
+}
+''', encoding="utf-8")
+
+          Path("Tests/VaultAuthorizationTests/ScopedMasterKeyCoordinatorTests.swift").write_text(r'''import CryptoKit
+import Foundation
+import Testing
+import VaultAuthorization
+import VaultService
+
+private let coordinatorTestScope = ExecutionAuthorizationScope(
+    principal: "agent",
+    secretReferenceIDs: ["secret://0123456789ABCDEFGHJKMNPQRS"],
+    normalizedDestination: "qnap.local",
+    port: 22,
+    protocolType: "ssh",
+    actionFamily: "sshCommand",
+    generation: 1
+)
+
+@Test func scopedMasterKeyCoordinatorReusesOnlyAnActiveCapturedKey() async throws {
+    let invalidations = InvalidationRecorder()
+    let coordinator = ScopedMasterKeyCoordinator { scope in
+        await invalidations.record(scope)
+    }
+    let authorization = AuthorizationState(active: true)
+    let capturedKey = SymmetricKey(data: Data(repeating: 0x31, count: 32))
+    let replacementKey = SymmetricKey(data: Data(repeating: 0x32, count: 32))
+
+    await coordinator.storeAuthorizedKey(capturedKey, for: coordinatorTestScope)
+    let reused = try await coordinator.resolveKey(
+        for: coordinatorTestScope,
+        isAuthorizationActive: { await authorization.isActive },
+        load: { replacementKey }
+    )
+    #expect(keyData(reused) == keyData(capturedKey))
+    #expect(await invalidations.count == 0)
+
+    await authorization.setActive(false)
+    let refreshed = try await coordinator.resolveKey(
+        for: coordinatorTestScope,
+        isAuthorizationActive: { await authorization.isActive },
+        load: { replacementKey }
+    )
+    #expect(keyData(refreshed) == keyData(replacementKey))
+    #expect(await invalidations.count == 1)
+    #expect(await coordinator.hasAuthorization(for: coordinatorTestScope) == false)
+}
+
+@Test func scopedMasterKeyCoordinatorSharesOneInFlightInvalidationAndLoad() async throws {
+    let invalidations = InvalidationRecorder()
+    let coordinator = ScopedMasterKeyCoordinator { scope in
+        await invalidations.record(scope)
+    }
+    let gate = KeyLoadGate()
+    let key = SymmetricKey(data: Data(repeating: 0x33, count: 32))
+
+    let first = Task {
+        try await coordinator.resolveKey(
+            for: coordinatorTestScope,
+            isAuthorizationActive: { false },
+            load: { try await gate.load(key) }
+        )
+    }
+    await gate.waitForStart()
+
+    let second = Task {
+        try await coordinator.resolveKey(
+            for: coordinatorTestScope,
+            isAuthorizationActive: { false },
+            load: { try await gate.load(key) }
+        )
+    }
+    await gate.release()
+
+    let firstKey = try await first.value
+    let secondKey = try await second.value
+    #expect(keyData(firstKey) == keyData(key))
+    #expect(keyData(secondKey) == keyData(key))
+    #expect(await gate.loadCount == 1)
+    #expect(await invalidations.count == 1)
+}
+
+@Test func scopedMasterKeyCoordinatorKeepsCapturedKeyUntilExplicitInvalidation() async throws {
+    let invalidations = InvalidationRecorder()
+    let coordinator = ScopedMasterKeyCoordinator { scope in
+        await invalidations.record(scope)
+    }
+    let key = SymmetricKey(data: Data(repeating: 0x34, count: 32))
+
+    await coordinator.storeAuthorizedKey(key, for: coordinatorTestScope)
+    try await Task.sleep(for: .milliseconds(100))
+
+    #expect(await coordinator.hasAuthorization(for: coordinatorTestScope))
+    #expect(await invalidations.count == 0)
+
+    await coordinator.abandon(scope: coordinatorTestScope)
+    #expect(await coordinator.hasAuthorization(for: coordinatorTestScope) == false)
+    #expect(await invalidations.count == 1)
+}
+
+private func keyData(_ key: SymmetricKey) -> Data {
+    key.withUnsafeBytes { Data($0) }
+}
+
+private actor AuthorizationState {
+    private(set) var isActive: Bool
+
+    init(active: Bool) {
+        self.isActive = active
+    }
+
+    func setActive(_ active: Bool) {
+        isActive = active
+    }
+}
+
+private actor InvalidationRecorder {
+    private(set) var scopes: [ExecutionAuthorizationScope] = []
+
+    var count: Int { scopes.count }
+
+    func record(_ scope: ExecutionAuthorizationScope) {
+        scopes.append(scope)
+    }
+}
+
+private actor KeyLoadGate {
+    private(set) var loadCount = 0
+    private var released = false
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func load(_ key: SymmetricKey) async throws -> SymmetricKey {
+        loadCount += 1
+        startContinuation?.resume()
+        startContinuation = nil
+        if !released {
+            await withCheckedContinuation { continuation in
+                releaseContinuation = continuation
+            }
+        }
+        return key
+    }
+
+    func waitForStart() async {
+        guard loadCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            startContinuation = continuation
+        }
+    }
+
+    func release() {
+        released = true
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+''', encoding="utf-8")
+
+          path = Path("Tests/VaultAuthorizationTests/VaultDaemonCoreTests.swift")
+          text = path.read_text(encoding="utf-8")
+          text = regex_once(
+              text,
+              r'@Test func daemonConfigurationKeepsExecutionAuthorizationTTLIndependent\(\) \{.*?\n\}\n\n',
+              '''@Test func daemonConfigurationKeepsOnlyNonExecutionAuthorizationTTLs() {
+    let configuration = VaultDaemonConfiguration(
+        vaultRootURL: URL(filePath: "/tmp/svlt-config-vault"),
+        auditRootURL: URL(filePath: "/tmp/svlt-config-audit"),
+        ipcConfiguration: UnixSocketServerConfiguration(
+            directoryURL: URL(filePath: "/tmp/svlt-config-ipc")
+        ),
+        credentialAuthorizationTTL: 600,
+        externalSendAuthorizationTTL: 60
+    )
+
+    #expect(configuration.credentialAuthorizationTTL == 600)
+    #expect(configuration.externalSendAuthorizationTTL == 60)
+}
+
+''',
+              "daemon configuration test"
+          )
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("Tests/VaultAuthorizationTests/SecretOperationServiceTests.swift")
+          text = path.read_text(encoding="utf-8")
+          text = regex_once(
+              text,
+              r'@Test func executionApprovalExplainsItsScopedReuseWindow\(\) async throws \{.*?\n\}\n\n',
+              '''@Test func executionApprovalExplainsItsSessionScopedReuse() async throws {
+    let fixture = try await OperationServiceFixture(approval: .allow)
+    defer { fixture.remove() }
+
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
+
+    let summary = await fixture.approver.summaries.first ?? ""
+    #expect(summary.contains("当前 Agent 授权会话"))
+    #expect(summary.contains("不设固定时间超时"))
+    #expect(summary.contains("锁屏、睡眠"))
+    #expect(summary.contains("不会授权其他凭据、目标或协议"))
+    #expect(!summary.contains("300 秒"))
+}
+
+''',
+              "approval summary test"
+          )
+          text = text.replace("@Test func failedScopedOperationKeepsOwnerAuthorizationUntilExpiry() async throws {", "@Test func failedScopedOperationKeepsOwnerAuthorizationUntilSessionInvalidation() async throws {")
+          text = text.replace("// §10/§11: the 300-second lease records that the owner authorized this\n    // scope. A remote execution failure is reported honestly but never\n    // revokes the owner's decision.", "// The session-scoped grant records that the owner authorized this exact\n    // scope. A remote execution failure is reported honestly but never\n    // revokes the owner's decision.")
+          text = regex_once(
+              text,
+              r'@Test func eligibleSecretOperationsReuseExecutionAuthorizationUntilExpiry\(\) async throws \{.*?\n\}\n\n@Test func boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval',
+              '''@Test func eligibleSecretOperationsReuseExecutionAuthorizationWithoutTimeExpiry() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 3_000)
+    let clock = ServiceTestClock(start)
+    let authorizationSession = AuthorizationSession(now: { clock.now })
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
+    let scope = fixture.executionScope()
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+
+    // Elapsed time alone must not revoke owner authorization.
+    clock.now = start.addingTimeInterval(86_400)
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
+    )
+
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 2)
+    let authorizationModes = await fixture.auditEntries().compactMap(\\.authorizationMode)
+    #expect(authorizationModes.contains(.freshLocalApproval))
+    #expect(authorizationModes.contains(.executionWindowReuse))
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+
+    // Explicit security-session invalidation is what requires a new approval.
+    await authorizationSession.invalidateExecutionAuthorization(for: scope)
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test-2", agentRisk: .approvalRequired)
+    )
+
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 3)
+}
+
+@Test func boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval''',
+              "no-timeout execution authorization test"
+          )
+          text = regex_once(
+              text,
+              r'@Test func boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval\(\) async throws \{.*?\n\}\n\n@Test func forgedIndependentJudgeSourceCannotDowngradeGrayOperation',
+              '''@Test func boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval() async throws {
+    let authorizationSession = AuthorizationSession()
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession)
+    defer { fixture.remove() }
+
+    _ = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    )
+    let scope = fixture.executionScope()
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+
+    let output = try await fixture.service.performSecretOperation(
+        fixture.ssh(command: "rm -rf /share/svlt-test", agentRisk: .approvalRequired)
+    )
+
+    #expect(output.status == "COMPLETED")
+    // A GRAY operation cannot reuse the ordinary session grant until the
+    // daemon validates a reviewID returned by its own preflight. Its fresh
+    // one-shot approval must not revoke the existing ordinary grant.
+    #expect(await fixture.approver.count == 2)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+}
+
+@Test func forgedIndependentJudgeSourceCannotDowngradeGrayOperation''',
+              "gray operation keeps session grant"
+          )
+          text = regex_once(
+              text,
+              r'@Test func agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow\(\) async throws \{.*?\n\}\n\n@Test func agentApprovalHintOnHostnameBehavesAsAnOrdinaryWindowOperation',
+              '''@Test func agentApprovalHintKeepsReusableOperationsInsideTheSessionAuthorization() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 6_000)
+    let clock = ServiceTestClock(start)
+    let authorizationSession = AuthorizationSession(now: { clock.now })
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    let output = try await fixture.service.performSecretOperation(mkdir)
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let scope = fixture.executionScope(for: mkdir)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+
+    clock.now = start.addingTimeInterval(86_400)
+    let touch = fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
+    let reused = try await fixture.service.performSecretOperation(touch)
+    #expect(reused.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 2)
+    let modes = await fixture.auditEntries().compactMap(\\.authorizationMode)
+    #expect(modes.contains(.executionWindowReuse))
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+}
+
+@Test func agentApprovalHintOnHostnameBehavesAsAnOrdinarySessionOperation''',
+              "agent hint session reuse test"
+          )
+          text = regex_once(
+              text,
+              r'@Test func agentApprovalHintOnHostnameBehavesAsAnOrdinarySessionOperation\(\) async throws \{.*?\n\}\n\n@Test func containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval',
+              '''@Test func agentApprovalHintOnHostnameBehavesAsAnOrdinarySessionOperation() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 7_000)
+    let clock = ServiceTestClock(start)
+    let authorizationSession = AuthorizationSession(now: { clock.now })
+    let fixture = try await OperationServiceFixture(
+        authorizationSession: authorizationSession,
+        now: { clock.now }
+    )
+    defer { fixture.remove() }
+
+    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(mkdir)
+    let scope = fixture.executionScope(for: mkdir)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+
+    clock.now = start.addingTimeInterval(172_800)
+    let hostname = fixture.ssh(command: "hostname", agentRisk: .denied)
+    let output = try await fixture.service.performSecretOperation(hostname)
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+}
+
+@Test func containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval''',
+              "hostname session reuse test"
+          )
+          text = regex_once(
+              text,
+              r'@Test func containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval\(\) async throws \{.*?\n\}\n\n@Test func concurrentEligibleOperationsShareOneApproval',
+              '''@Test func containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval() async throws {
+    let authorizationSession = AuthorizationSession()
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession)
+    defer { fixture.remove() }
+
+    let restart = fixture.ssh(command: "docker restart web", agentRisk: .approvalRequired)
+    let output = try await fixture.service.performSecretOperation(restart)
+    #expect(output.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    let scope = fixture.executionScope(for: restart)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+
+    let startContainer = fixture.ssh(command: "docker start web", agentRisk: .approvalRequired)
+    let reused = try await fixture.service.performSecretOperation(startContainer)
+    #expect(reused.status == "COMPLETED")
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 2)
+
+    let remove = fixture.ssh(command: "docker rm -f web", agentRisk: .approvalRequired)
+    let removal = try await fixture.service.performSecretOperation(remove)
+    #expect(removal.status == "COMPLETED")
+    // Container removal remains a fresh/GRAY decision, but the ordinary
+    // session authorization remains intact for later ordinary operations.
+    #expect(await fixture.approver.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+}
+
+@Test func concurrentEligibleOperationsShareOneApproval''',
+              "container lifecycle session grant test"
+          )
+          text = regex_once(
+              text,
+              r'@Test func concurrentOperationsWithDisabledExecutionWindowDoNotShareApproval\(\) async throws \{.*?\n\}\n\n',
+              '',
+              "remove obsolete disabled execution-window test"
+          )
+          text = re.sub(r'^\s*executionTTL:\s*300,\n', '', text, flags=re.M)
+          text = re.sub(r'^\s*monotonicNow:\s*\{\s*clock\.monotonicNow\s*\},\n', '', text, flags=re.M)
+          if "executionAuthorizationExpiresAt" in text or "executionTTL:" in text:
+              raise SystemExit("SecretOperationServiceTests still contains removed execution TTL APIs")
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("docs/security/operation-authorization.md")
+          text = path.read_text(encoding="utf-8")
+          text = text.replace("technical failure or owner approval / scoped lease", "technical failure or owner approval / session-scoped grant")
+          text = text.replace("exact device-owner approval or scoped execution lease", "exact device-owner approval or session-scoped execution grant")
+          text = text.replace("首次认证打开当前 scope 的固定 300 秒窗口；目标/协议提示不额外升级", "首次认证建立当前 scope 的会话级授权；不设固定时间超时，目标/协议提示不额外升级")
+          text = text.replace("不自动拒绝，也不建立普通可复用 lease", "不自动拒绝，也不建立普通可复用会话授权")
+          text = text.replace("不建立可复用 lease", "不建立可复用会话授权")
+          text = text.replace("不建立执行 lease", "不建立执行会话授权")
+          text = regex_once(
+              text,
+              r'对可执行的 `approvalRequired` 操作，设备认证完成后最多建立一个固定 300 秒的.*?明文显示和复制仍保持 exact、\none-shot 认证。\n',
+              '''对可执行的 `reusableApproval` 操作，设备所有者完成一次认证后，SVLT 建立一个仅存在于当前 Agent 安全会话中的 scope grant。它绑定调用主体、完整的 `secret://` 引用集合、规范化目标和端口、协议、执行动作类型以及 security generation；它不是全局授权，也没有固定 TTL。时间流逝本身不会使授权失效，因此不再存在“300 秒内自动放行、超时后重新审批”的行为。每个后续请求仍会先做 executor capability preflight，再重新读取 metadata 和执行策略；高风险或 `freshApprovalRequired` 操作仍然逐次认证。
+
+会话级授权只会在安全边界变化时失效，包括锁屏、睡眠、用户会话切换/注销、显式锁定、Agent 进程重启、安全代际变化或该 scope 被明确撤销。远端执行失败、transport/session 失败以及普通请求之间的空闲时间都不会撤销已经建立的 owner grant。与 scope 对应的解密 capability 只保存在内存中，并与授权状态一起失效。
+
+这里的 reusable grant 是明确的 scope grant，而不是“只批准屏幕上这一条命令”的 exact-operation grant。这样可以让 Agent 连续完成同一主机/同一凭据任务，而不会因为任意的计时器再次打断用户；每个后续请求仍重新经过固定高危规则。数据库 scope 进一步按 `database.read`、`database.ordinary.insert`、`database.ordinary.schema-maintenance` 和 `database.ordinary.session` 等操作族隔离；DELETE/UPDATE/MERGE、管理权限、动态执行以及未知 SQL 不会创建 reusable grant。数据库 executor 当前尚未开放，后续启用前仍必须保留这些分类测试和 owner-visible 授权模型，不能退回到 broad database scope。
+
+本地明文导出属于 non-downgradable `freshApprovalRequired` 操作，每次都需要设备所有者确认，不建立会话级 execution grant。明文显示和复制同样保持 exact、one-shot 认证。
+''',
+              "rewrite timed lease documentation"
+          )
+          path.write_text(text, encoding="utf-8")
+
+          # Preserve the historical audit wire value, but eliminate the timed
+          # execution-approval feature from active source, tests, and security docs.
+          forbidden = [
+              "executionAuthorizationTTL",
+              "executionTTL:",
+              "executionAuthorizationExpiresAt",
+              "executionAuthorizationWindowEnabled",
+              "executionAuthorizationWindowDuration",
+              "复用最多 300 秒",
+              "固定 300 秒",
+              "five-minute window",
+          ]
+          scan_roots = [Path("Sources"), Path("Tests"), Path("docs/security")]
+          for needle in forbidden:
+              hits = []
+              for root in scan_roots:
+                  for file in root.rglob("*"):
+                      if not file.is_file():
+                          continue
+                      try:
+                          value = file.read_text(encoding="utf-8")
+                      except UnicodeDecodeError:
+                          continue
+                      if needle in value:
+                          hits.append(str(file))
+              if hits:
+                  raise SystemExit(f"forbidden timed-approval token {needle!r} remains in: {hits}")
+          PY
+      - name: Run Swift test suite
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project SVLT.xcodeproj \
+            -scheme AgentSecretVault \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/svlt-derived" \
+            -parallel-testing-enabled NO \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Commit refactor and remove temporary workflow
+        run: |
+          git rm .github/workflows/codex-remove-execution-approval-timeout.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Sources Tests docs/security
+          git commit -m "fix: make reusable approvals session-scoped"
+          git push origin HEAD:codex/remove-execution-approval-timeout
