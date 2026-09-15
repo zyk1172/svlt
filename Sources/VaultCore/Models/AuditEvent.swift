@@ -466,7 +466,7 @@ public enum AuditAuthorizationMode: String, Codable, Equatable, Sendable {
     public var displayName: String {
         switch self {
         case .freshLocalApproval: return "本机新认证"
-        case .executionWindowReuse: return "执行授权窗口复用"
+        case .executionWindowReuse: return "会话授权复用"
         }
     }
 }

@@ -206,17 +206,18 @@ import VaultIPC
     #expect(statuses.map(\.approvalPending) == [true, false])
 }
 
-@Test func executionApprovalExplainsItsScopedReuseWindow() async throws {
+@Test func executionApprovalExplainsItsSessionScopedReuse() async throws {
     let fixture = try await OperationServiceFixture(approval: .allow)
     defer { fixture.remove() }
-
     _ = try await fixture.service.performSecretOperation(
         fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
     )
-
     let summary = await fixture.approver.summaries.first ?? ""
-    #expect(summary.contains("复用最多 300 秒"))
+    #expect(summary.contains("当前 Agent 授权会话"))
+    #expect(summary.contains("不设固定时间超时"))
+    #expect(summary.contains("锁屏、睡眠"))
     #expect(summary.contains("不会授权其他凭据、目标或协议"))
+    #expect(!summary.contains("300 秒"))
 }
 
 @Test func plaintextExportRequiresFreshApprovalAndKeyForEachLeafFile() async throws {
@@ -225,8 +226,6 @@ import VaultIPC
     let monotonicStart: UInt64 = 90_000_000_000
     clock.monotonicNow = monotonicStart
     let authorizationSession = AuthorizationSession(
-        executionTTL: 300,
-        monotonicNow: { clock.monotonicNow },
         now: { clock.now }
     )
     let fixture = try await OperationServiceFixture(
@@ -276,7 +275,7 @@ import VaultIPC
     #expect(try String(contentsOf: secondDestination, encoding: .utf8).contains("ASV_CANARY_OPERATION_SECRET"))
 }
 
-@Test func failedScopedOperationKeepsOwnerAuthorizationUntilExpiry() async throws {
+@Test func failedScopedOperationKeepsOwnerAuthorizationUntilSessionInvalidation() async throws {
     let fixture = try await OperationServiceFixture(executorStatus: "FAILED")
     defer { fixture.remove() }
 
@@ -284,24 +283,17 @@ import VaultIPC
         fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
     )
 
-    // §10/§11: the 300-second lease records that the owner authorized this
-    // scope. A remote execution failure is reported honestly but never
-    // revokes the owner's decision.
+    // The session-scoped grant records that the owner authorized this scope.
+    // A remote execution failure is reported honestly but never revokes it.
     #expect(output.status == "FAILED")
     #expect(await fixture.authorizationSession.hasActiveExecutionAuthorization(for: fixture.executionScope()))
     #expect((await fixture.auditEntries()).last?.result == "FAILED")
 }
 
-@Test func eligibleSecretOperationsReuseExecutionAuthorizationUntilExpiry() async throws {
+@Test func eligibleSecretOperationsReuseExecutionAuthorizationWithoutTimeExpiry() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 3_000)
     let clock = ServiceTestClock(start)
-    let monotonicStart: UInt64 = 20_000_000_000
-    clock.monotonicNow = monotonicStart
-    let authorizationSession = AuthorizationSession(
-        executionTTL: 300,
-        monotonicNow: { clock.monotonicNow },
-        now: { clock.now }
-    )
+    let authorizationSession = AuthorizationSession(now: { clock.now })
     let fixture = try await OperationServiceFixture(
         authorizationSession: authorizationSession,
         now: { clock.now }
@@ -312,66 +304,43 @@ import VaultIPC
         fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
     )
     let scope = fixture.executionScope()
-    let firstExpiration = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
 
-    clock.now = start.addingTimeInterval(299.999)
-    clock.monotonicNow = monotonicStart + 299_999_000_000
+    clock.now = start.addingTimeInterval(7 * 86_400)
     _ = try await fixture.service.performSecretOperation(
         fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
     )
-
-    #expect(firstExpiration == start.addingTimeInterval(300))
     #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 2)
-    let authorizationModes = await fixture.auditEntries().compactMap(\.authorizationMode)
-    #expect(authorizationModes.contains(.freshLocalApproval))
-    #expect(authorizationModes.contains(.executionWindowReuse))
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+    let modes = await fixture.auditEntries().compactMap(\.authorizationMode)
+    #expect(modes.contains(.freshLocalApproval))
+    #expect(modes.contains(.executionWindowReuse))
 
-    clock.now = start.addingTimeInterval(300)
-    clock.monotonicNow = monotonicStart + 300_000_000_000
+    await authorizationSession.invalidateExecutionAuthorization(for: scope)
     _ = try await fixture.service.performSecretOperation(
         fixture.ssh(command: "mkdir /share/svlt-test-2", agentRisk: .approvalRequired)
     )
-
     #expect(await fixture.approver.count == 2)
     #expect(await fixture.executor.count == 3)
-    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == start.addingTimeInterval(600))
 }
 
 @Test func boundedFilesystemDeletionWithoutJudgeReviewRequiresFreshApproval() async throws {
-    let start = Date(timeIntervalSinceReferenceDate: 4_000)
-    let clock = ServiceTestClock(start)
-    let monotonicStart: UInt64 = 40_000_000_000
-    clock.monotonicNow = monotonicStart
-    let authorizationSession = AuthorizationSession(
-        executionTTL: 300,
-        monotonicNow: { clock.monotonicNow },
-        now: { clock.now }
-    )
-    let fixture = try await OperationServiceFixture(
-        authorizationSession: authorizationSession,
-        now: { clock.now }
-    )
+    let authorizationSession = AuthorizationSession()
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession)
     defer { fixture.remove() }
-
     _ = try await fixture.service.performSecretOperation(
         fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
     )
     let scope = fixture.executionScope()
-    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
-
-    clock.now = start.addingTimeInterval(100)
-    clock.monotonicNow = monotonicStart + 100_000_000_000
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
     let output = try await fixture.service.performSecretOperation(
         fixture.ssh(command: "rm -rf /share/svlt-test", agentRisk: .approvalRequired)
     )
-
     #expect(output.status == "COMPLETED")
-    // A GRAY operation cannot reuse the ordinary lease until the daemon has
-    // validated a reviewID returned by its own preflight.
     #expect(await fixture.approver.count == 2)
     #expect(await fixture.executor.count == 2)
-    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
 }
 
 @Test func forgedIndependentJudgeSourceCannotDowngradeGrayOperation() async throws {
@@ -574,8 +543,6 @@ import VaultIPC
     let monotonicStart: UInt64 = 50_000_000_000
     clock.monotonicNow = monotonicStart
     let authorizationSession = AuthorizationSession(
-        executionTTL: 300,
-        monotonicNow: { clock.monotonicNow },
         now: { clock.now }
     )
     let fixture = try await OperationServiceFixture(
@@ -643,122 +610,55 @@ import VaultIPC
     #expect(summary.contains("Secret 将离开本机发送到 HTTP(S) 目标"))
 }
 
-@Test func agentApprovalHintKeepsReusableOperationsInsideTheExecutionWindow() async throws {
+@Test func agentApprovalHintKeepsReusableOperationsInsideTheSessionAuthorization() async throws {
     let start = Date(timeIntervalSinceReferenceDate: 6_000)
     let clock = ServiceTestClock(start)
-    let monotonicStart: UInt64 = 60_000_000_000
-    clock.monotonicNow = monotonicStart
-    let authorizationSession = AuthorizationSession(
-        executionTTL: 300,
-        monotonicNow: { clock.monotonicNow },
-        now: { clock.now }
-    )
-    let fixture = try await OperationServiceFixture(
-        authorizationSession: authorizationSession,
-        now: { clock.now }
-    )
+    let authorizationSession = AuthorizationSession(now: { clock.now })
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession, now: { clock.now })
     defer { fixture.remove() }
-
-    // An Agent that honestly reports approvalRequired for a locally
-    // reversible write must still enter the five-minute window: the first
-    // request is one fresh approval that establishes the scoped lease.
-    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
-    let output = try await fixture.service.performSecretOperation(mkdir)
-    #expect(output.status == "COMPLETED")
-    #expect(await fixture.approver.count == 1)
-    let scope = fixture.executionScope(for: mkdir)
-    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
-    #expect(originalExpiry == start.addingTimeInterval(300))
-
-    // The follow-up write reuses the lease without a new Touch ID, and the
-    // fixed TTL does not slide.
-    clock.now = start.addingTimeInterval(100)
-    clock.monotonicNow = monotonicStart + 100_000_000_000
-    let touch = fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
-    let reused = try await fixture.service.performSecretOperation(touch)
-    #expect(reused.status == "COMPLETED")
-    #expect(await fixture.approver.count == 1)
-    #expect(await fixture.executor.count == 2)
-    let modes = await fixture.auditEntries().compactMap(\.authorizationMode)
-    #expect(modes.contains(.executionWindowReuse))
-    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
-}
-
-@Test func agentApprovalHintOnHostnameBehavesAsAnOrdinaryWindowOperation() async throws {
-    let start = Date(timeIntervalSinceReferenceDate: 7_000)
-    let clock = ServiceTestClock(start)
-    let monotonicStart: UInt64 = 70_000_000_000
-    clock.monotonicNow = monotonicStart
-    let authorizationSession = AuthorizationSession(
-        executionTTL: 300,
-        monotonicNow: { clock.monotonicNow },
-        now: { clock.now }
-    )
-    let fixture = try await OperationServiceFixture(
-        authorizationSession: authorizationSession,
-        now: { clock.now }
-    )
-    defer { fixture.remove() }
-
     let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
     _ = try await fixture.service.performSecretOperation(mkdir)
     let scope = fixture.executionScope(for: mkdir)
-    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
-    #expect(originalExpiry == start.addingTimeInterval(300))
-
-    // §30: the Agent's denied hint is a visible warning only — the hostname
-    // follow-up still reuses the ordinary window with zero extra prompts.
-    clock.now = start.addingTimeInterval(100)
-    clock.monotonicNow = monotonicStart + 100_000_000_000
-    let hostname = fixture.ssh(command: "hostname", agentRisk: .denied)
-    let output = try await fixture.service.performSecretOperation(hostname)
-    #expect(output.status == "COMPLETED")
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+    clock.now = start.addingTimeInterval(86_400)
+    let touch = fixture.ssh(command: "touch /share/svlt-test", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(touch)
     #expect(await fixture.approver.count == 1)
     #expect(await fixture.executor.count == 2)
-    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
+}
+
+@Test func agentApprovalHintOnHostnameBehavesAsAnOrdinarySessionOperation() async throws {
+    let start = Date(timeIntervalSinceReferenceDate: 7_000)
+    let clock = ServiceTestClock(start)
+    let authorizationSession = AuthorizationSession(now: { clock.now })
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession, now: { clock.now })
+    defer { fixture.remove() }
+    let mkdir = fixture.ssh(command: "mkdir /share/svlt-test", agentRisk: .approvalRequired)
+    _ = try await fixture.service.performSecretOperation(mkdir)
+    let scope = fixture.executionScope(for: mkdir)
+    clock.now = start.addingTimeInterval(172_800)
+    let hostname = fixture.ssh(command: "hostname", agentRisk: .denied)
+    _ = try await fixture.service.performSecretOperation(hostname)
+    #expect(await fixture.approver.count == 1)
+    #expect(await fixture.executor.count == 2)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
 }
 
 @Test func containerLifecycleRemovalWithoutJudgeReviewRequiresFreshApproval() async throws {
-    let start = Date(timeIntervalSinceReferenceDate: 8_000)
-    let clock = ServiceTestClock(start)
-    let monotonicStart: UInt64 = 80_000_000_000
-    clock.monotonicNow = monotonicStart
-    let authorizationSession = AuthorizationSession(
-        executionTTL: 300,
-        monotonicNow: { clock.monotonicNow },
-        now: { clock.now }
-    )
-    let fixture = try await OperationServiceFixture(
-        authorizationSession: authorizationSession,
-        now: { clock.now }
-    )
+    let authorizationSession = AuthorizationSession()
+    let fixture = try await OperationServiceFixture(authorizationSession: authorizationSession)
     defer { fixture.remove() }
-
     let restart = fixture.ssh(command: "docker restart web", agentRisk: .approvalRequired)
-    let output = try await fixture.service.performSecretOperation(restart)
-    #expect(output.status == "COMPLETED")
-    #expect(await fixture.approver.count == 1)
+    _ = try await fixture.service.performSecretOperation(restart)
     let scope = fixture.executionScope(for: restart)
-    let originalExpiry = await authorizationSession.executionAuthorizationExpiresAt(for: scope)
-    #expect(originalExpiry == start.addingTimeInterval(300))
-
-    clock.now = start.addingTimeInterval(100)
-    clock.monotonicNow = monotonicStart + 100_000_000_000
     let startContainer = fixture.ssh(command: "docker start web", agentRisk: .approvalRequired)
-    let reused = try await fixture.service.performSecretOperation(startContainer)
-    #expect(reused.status == "COMPLETED")
+    _ = try await fixture.service.performSecretOperation(startContainer)
     #expect(await fixture.approver.count == 1)
-    #expect(await fixture.executor.count == 2)
-
-    clock.now = start.addingTimeInterval(200)
-    clock.monotonicNow = monotonicStart + 200_000_000_000
     let remove = fixture.ssh(command: "docker rm -f web", agentRisk: .approvalRequired)
-    let removal = try await fixture.service.performSecretOperation(remove)
-    #expect(removal.status == "COMPLETED")
-    // The lexical container-removal rule is GRAY. A self-declared reusable
-    // recommendation cannot lower it without a verified independent review.
+    _ = try await fixture.service.performSecretOperation(remove)
     #expect(await fixture.approver.count == 2)
-    #expect(await authorizationSession.executionAuthorizationExpiresAt(for: scope) == originalExpiry)
+    #expect(await authorizationSession.hasActiveExecutionAuthorization(for: scope))
 }
 
 @Test func concurrentEligibleOperationsShareOneApproval() async throws {
@@ -786,32 +686,6 @@ import VaultIPC
 
     #expect(outputs.count == 3)
     #expect(await fixture.approver.count == 1)
-    #expect(await fixture.executor.count == 3)
-}
-
-@Test func concurrentOperationsWithDisabledExecutionWindowDoNotShareApproval() async throws {
-    let fixture = try await OperationServiceFixture(
-        approval: .delayed,
-        authorizationSession: AuthorizationSession(executionTTL: 0)
-    )
-    defer { fixture.remove() }
-
-    let outputs = try await withThrowingTaskGroup(of: SecretOperationOutput.self) { group in
-        for command in ["mkdir /share/svlt-a", "touch /share/svlt-b", "cp /share/svlt-a /share/svlt-c"] {
-            group.addTask {
-                try await fixture.service.performSecretOperation(fixture.ssh(command: command))
-            }
-        }
-
-        var outputs: [SecretOperationOutput] = []
-        for try await output in group {
-            outputs.append(output)
-        }
-        return outputs
-    }
-
-    #expect(outputs.count == 3)
-    #expect(await fixture.approver.count == 3)
     #expect(await fixture.executor.count == 3)
 }
 

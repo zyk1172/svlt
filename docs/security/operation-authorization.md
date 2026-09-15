@@ -12,9 +12,9 @@ opaque descriptor
   -> SecretOperationPolicyEngine
   -> local requirement: none | reusableApproval | freshApprovalRequired
   -> AgentRiskAssessment shown as display/audit metadata only
-  -> technical failure or owner approval / scoped lease
+  -> technical failure or owner approval / session-scoped grant
   -> capability preflight
-  -> exact device-owner approval or scoped execution lease
+  -> exact device-owner approval or session-scoped execution grant
   -> latest policy check
   -> resolve and execute
 ```
@@ -26,17 +26,17 @@ opaque descriptor
 | 操作 | 默认状态 | 关键条件 |
 | --- | --- | --- |
 | 状态、使用策略、引用元数据 | `silent` | 不解密、不返回 Secret |
-| 已绑定或未绑定目标的 Secret-bearing SSH/数据库/SFTP 操作 | `reusableApproval` | 首次认证打开当前 scope 的固定 300 秒窗口；目标/协议提示不额外升级 |
+| 已绑定或未绑定目标的 Secret-bearing SSH/数据库/SFTP 操作 | `reusableApproval` | 首次认证建立当前 scope 的会话级授权；不设固定时间超时，目标/协议提示不额外升级 |
 | SSH 电源控制、文件删除、块设备/文件系统破坏、存储/RAID 破坏、容器破坏 | `freshApprovalRequired` | 只匹配固定五类；raw shell、多行、wrapper 和未知命令本身不构成额外类别 |
 | Secret-bearing HTTP/API 网络发送（包括公网 HTTPS） | `freshApprovalRequired` | 显示精确目标并由设备所有者决定；不按 hostname 推断公网/私网 |
 | HTTP `DELETE`、明文 `http://` 携 Secret、凭据 query 参数 | `freshApprovalRequired` | 固定 HTTP fresh registry；明文 HTTP 还须匹配保存的 scheme/host/port profile；任何 redirect 只是 transport stop |
 | 数据库明确只读语句（SELECT/SHOW/EXPLAIN 等） | `reusableApproval` | 只读语句共享 `database.read` 操作族，不要求每条查询重新认证 |
 | 数据库 INSERT、SELECT INTO、schema/session maintenance | `reusableApproval` | 仅在对应的窄操作族内复用，不能借用 `database.read` 或其他数据库操作族 |
 | 数据库 DELETE/UPDATE/MERGE、DROP/TRUNCATE/破坏性 ALTER、权限账户管理、动态执行或外部文件边界 | `freshApprovalRequired` | 固定数据库 fresh registry；CTE 和嵌套语句也会被检查 |
-| 未知或不可解析的数据库 SQL | `freshApprovalRequired` | 保守地要求一次性设备所有者认证，不自动拒绝，也不建立普通可复用 lease |
+| 未知或不可解析的数据库 SQL | `freshApprovalRequired` | 保守地要求一次性设备所有者认证，不自动拒绝，也不建立普通可复用会话授权 |
 | SFTP 删除、覆盖、替换目标 | `freshApprovalRequired` | 固定 SFTP fresh registry |
-| Secret-bearing 明文 FTP | `freshApprovalRequired` | 仅回环/私有目标；每次重新认证，不建立可复用 lease |
-| 为已有 Secret 增加精确目标/协议绑定 | `freshApprovalRequired` | App 显示 exact scheme/host/port；在进程内重新封装认证元数据，不解密出 IPC、不建立执行 lease |
+| Secret-bearing 明文 FTP | `freshApprovalRequired` | 仅回环/私有目标；每次重新认证，不建立可复用会话授权 |
+| 为已有 Secret 增加精确目标/协议绑定 | `freshApprovalRequired` | App 显示 exact scheme/host/port；在进程内重新封装认证元数据，不解密出 IPC、不建立执行会话授权 |
 | 明文显示、复制、删除或安全设置变更 | `freshApprovalRequired` | 使用 `deviceOwnerAuthentication` |
 | `localExecution`（交给任意本地进程） | `freshApprovalRequired` | 明确标记 `userApprovedSecretRelease`，由设备所有者决定 |
 
@@ -63,21 +63,13 @@ SSH 不再复用用户全局 `~/.ssh/known_hosts`。SVLT 在自己的 Applicatio
 
 批准完成后，服务只消费与原描述符完全匹配的票据。修改 Secret、目标、命令、URL、HTTP method 或文件目标都会使旧票据失效；消费后不能 replay。
 
-对可执行的 `approvalRequired` 操作，设备认证完成后最多建立一个固定 300 秒的
-内存 lease。Lease 绑定调用主体、完整的 `secret://` 引用集合、规范化目标和端口、
-协议、执行动作类型以及 security generation；它不是全局授权。每个后续请求仍会
-先做 executor capability preflight，再重新读取 metadata 和执行策略；执行器失败或
-transport/session 失败只报告该次执行失败，不清除已经建立的 owner lease，直到其
-固定期限到达。Lease 有效期使用 monotonic clock，墙上时间只用于审计展示。
+对可执行的 `reusableApproval` 操作，设备所有者完成一次认证后，SVLT 建立一个仅存在于当前 Agent 安全会话中的 scope grant。它绑定调用主体、完整的 `secret://` 引用集合、规范化目标和端口、协议、执行动作类型以及 security generation；它不是全局授权，也没有固定 TTL。时间流逝本身不会使授权失效，因此不再存在“300 秒内自动放行、超时后重新审批”的行为。每个后续请求仍会先做 executor capability preflight，再重新读取 metadata 和执行策略；高风险或 `freshApprovalRequired` 操作仍然逐次认证。
 
-这里的 reusable lease 是明确的 scope grant，而不是“只批准屏幕上这一条命令”的 exact-operation grant。这样做是为了保留 Agent 在一个短执行窗口内连续完成同一主机/同一凭据任务的能力；每个后续请求仍重新经过固定高危规则。数据库 scope 进一步按 `database.read`、`database.ordinary.insert`、`database.ordinary.schema-maintenance` 和 `database.ordinary.session` 等操作族隔离；DELETE/UPDATE/MERGE、管理权限、动态执行以及未知 SQL 不会创建 reusable lease。数据库 executor 当前尚未开放，后续启用前仍必须保留这些分类测试和 owner-visible 授权模型，不能退回到 broad database scope。
+会话级授权只会在安全边界变化时失效，包括锁屏、睡眠、用户会话切换/注销、显式锁定、Agent 进程重启、安全代际变化或该 scope 被明确撤销。远端执行失败、transport/session 失败以及普通请求之间的空闲时间都不会撤销已经建立的 owner grant。与 scope 对应的解密 capability 只保存在内存中，并与授权状态一起失效。
 
-本地明文导出使用独立但同样固定 300 秒的 scope：调用主体、完整引用集合、
-`exportPlaintext` 动作、经验证的 export root 和 security generation。叶文件名不属于
-scope，因此同一导出目录中的不同新文件可以复用；不同引用、调用主体、根目录或安全
-代际不能复用。活跃 lease 只保留该 scope 专用的内存解密 capability，不能借用更宽的
-credential key cache 延长 Agent 侧 user-presence 授权。明文显示和复制仍保持 exact、
-one-shot 认证。
+这里的 reusable grant 是明确的 scope grant，而不是“只批准屏幕上这一条命令”的 exact-operation grant。这样可以让 Agent 连续完成同一主机/同一凭据任务，而不会因为任意计时器再次打断用户；每个后续请求仍重新经过固定高危规则。数据库 scope 继续按窄操作族隔离；DELETE/UPDATE/MERGE、管理权限、动态执行以及未知 SQL 不会创建 reusable grant。
+
+本地明文导出属于 non-downgradable `freshApprovalRequired` 操作，每次都需要设备所有者确认，不建立会话级 execution grant。明文显示和复制同样保持 exact、one-shot 认证。
 
 ## 明文边界
 
@@ -87,4 +79,4 @@ one-shot 认证。
 
 ## 当前边界
 
-SSH、HTTP/API、SFTP/SCP 和私有地址 FTP 的 purpose-built executor 已接入 Agent；数据库、浏览器和本地 App 的策略与不透明 IPC 描述符已接入，但对应 executor 仍返回 `ACTION_EXECUTOR_UNAVAILABLE`，不会降级到明文或通用命令。FTP 不支持公网目标，且每笔请求都需要设备所有者重新认证。已有 Secret 的精确目标/协议绑定通过 `secret_bind_destination` 完成：它以原子 pair 写入经过认证的绑定元数据，只在 Agent 进程内重封装，不建立执行 lease；成功响应返回实际保存的 canonical destination，并在显式 pin 时返回非敏感的 port/pin 元数据。`secret_review_ssh_host_key` 只返回当前展示的 host-key 指纹，不解析 Secret。真实 SSH/SFTP/FTP 验收需要在有明确绑定的测试 Secret 和设备可达时执行；自动化测试覆盖目标形态与风险决策，不伪造真实设备成功结果。
+SSH、HTTP/API、SFTP/SCP 和私有地址 FTP 的 purpose-built executor 已接入 Agent；数据库、浏览器和本地 App 的策略与不透明 IPC 描述符已接入，但对应 executor 仍返回 `ACTION_EXECUTOR_UNAVAILABLE`，不会降级到明文或通用命令。FTP 不支持公网目标，且每笔请求都需要设备所有者重新认证。已有 Secret 的精确目标/协议绑定通过 `secret_bind_destination` 完成：它以原子 pair 写入经过认证的绑定元数据，只在 Agent 进程内重封装，不建立执行会话授权；成功响应返回实际保存的 canonical destination，并在显式 pin 时返回非敏感的 port/pin 元数据。`secret_review_ssh_host_key` 只返回当前展示的 host-key 指纹，不解析 Secret。真实 SSH/SFTP/FTP 验收需要在有明确绑定的测试 Secret 和设备可达时执行；自动化测试覆盖目标形态与风险决策，不伪造真实设备成功结果。
