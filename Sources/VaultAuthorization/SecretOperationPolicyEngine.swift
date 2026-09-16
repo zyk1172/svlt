@@ -26,6 +26,12 @@ public struct SecretOperationPolicyEngine: Sendable {
         }
     }
 
+    private enum VerifiedSemanticReview: Sendable {
+        case none
+        case independentJudge
+        case boundedMainAgentFallback
+    }
+
     private let configuration: Configuration
     private let sshCommandClassifier: SSHCommandRiskClassifier
     private let databaseStatementClassifier: DatabaseStatementClassifier
@@ -142,7 +148,7 @@ public struct SecretOperationPolicyEngine: Sendable {
         evaluate(
             descriptor,
             metadata: metadata,
-            allowingVerifiedIndependentJudge: false
+            verifiedSemanticReview: .none
         )
     }
 
@@ -157,14 +163,30 @@ public struct SecretOperationPolicyEngine: Sendable {
         evaluate(
             descriptor,
             metadata: metadata,
-            allowingVerifiedIndependentJudge: true
+            verifiedSemanticReview: .independentJudge
+        )
+    }
+
+    /// Evaluates the exact main-Agent assessment that the daemon bound during
+    /// GRAY preflight and later accepted under the narrow bounded fallback
+    /// policy. This path is intentionally distinct from an independent judge:
+    /// a main-Agent `freshApproval`/`denied` hint remains evidence rather than
+    /// a final veto when the bound structured semantics are clearly ordinary.
+    public func evaluateWithVerifiedBoundedMainAgentFallback(
+        _ descriptor: SecretOperationDescriptor,
+        metadata: [SecretPolicyMetadata]
+    ) -> PolicyDecision {
+        evaluate(
+            descriptor,
+            metadata: metadata,
+            verifiedSemanticReview: .boundedMainAgentFallback
         )
     }
 
     private func evaluate(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
-        allowingVerifiedIndependentJudge: Bool
+        verifiedSemanticReview: VerifiedSemanticReview
     ) -> PolicyDecision {
         let normalizedDestination = descriptor.normalizedDestination
         let local = localDecision(
@@ -186,26 +208,36 @@ public struct SecretOperationPolicyEngine: Sendable {
                Self.isNonDowngradableFreshRule(local.policyRuleID) {
                 effectiveRequirement = .freshApprovalRequired
             } else if preflight.route == .gray {
-                if allowingVerifiedIndependentJudge,
-                   semantic.source == .independentJudge {
-                    // `allowingVerifiedIndependentJudge` is supplied only by
-                    // VaultAppServices after it consumes the daemon-owned
-                    // review record. `source` remains an audit label and is
-                    // not sufficient to reach this branch.
+                switch verifiedSemanticReview {
+                case .independentJudge where semantic.source == .independentJudge:
+                    // The daemon has consumed the independent-judge review
+                    // binding, so the judge's fresh/deny result is final.
                     effectiveRequirement = Self.normalizedSemanticRequirement(
                         semantic,
                         treatingVerifiedIndependentJudgeAsFinal: true
                     )
-                } else {
-                    // GRAY without a validated judge review stays fresh,
-                    // regardless of whether the descriptor claims automatic
-                    // or reusable approval.
+                case .boundedMainAgentFallback where semantic.source == .mainAgent:
+                    // VaultAppServices reaches this branch only after consuming
+                    // a daemon-owned review binding whose exact original
+                    // assessment hash also matched. The main Agent remains the
+                    // audit source; do not relabel it as an independent judge.
+                    effectiveRequirement = Self.normalizedSemanticRequirement(semantic)
+                default:
+                    // GRAY without the matching daemon-validated review kind
+                    // stays fresh regardless of the descriptor recommendation.
                     effectiveRequirement = .freshApprovalRequired
                 }
             } else {
+                let independentJudgeIsFinal: Bool
+                switch verifiedSemanticReview {
+                case .independentJudge:
+                    independentJudgeIsFinal = true
+                case .none, .boundedMainAgentFallback:
+                    independentJudgeIsFinal = false
+                }
                 effectiveRequirement = Self.normalizedSemanticRequirement(
                     semantic,
-                    treatingVerifiedIndependentJudgeAsFinal: allowingVerifiedIndependentJudge
+                    treatingVerifiedIndependentJudgeAsFinal: independentJudgeIsFinal
                 )
             }
 
