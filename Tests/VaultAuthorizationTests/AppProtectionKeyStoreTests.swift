@@ -50,6 +50,40 @@ import VaultCore
     ])
 }
 
+@Test func externalSendWrappingKeyCacheWorksWithoutDestination() async throws {
+    let deviceKeyStore = CountingDeviceKeyStore(keyData: Data(repeating: 0x46, count: 32))
+    let protectionKeyStore = AppProtectionKeyStore(
+        deviceKeyStore: deviceKeyStore,
+        externalSendTTL: 60
+    )
+
+    _ = try await protectionKeyStore.deviceKey(for: .externalSend, reason: "first external send")
+    _ = try await protectionKeyStore.deviceKey(for: .externalSend, reason: "second external send")
+
+    #expect(await deviceKeyStore.reasons == ["first external send"])
+
+    await protectionKeyStore.clearAll()
+    _ = try await protectionKeyStore.deviceKey(for: .externalSend, reason: "after security invalidation")
+
+    #expect(await deviceKeyStore.reasons == [
+        "first external send",
+        "after security invalidation"
+    ])
+}
+
+@Test func freshExternalSendBypassesAndClearsTheWrappingKeyCache() async throws {
+    let deviceKeyStore = CountingDeviceKeyStore(keyData: Data(repeating: 0x47, count: 32))
+    let protectionKeyStore = AppProtectionKeyStore(
+        deviceKeyStore: deviceKeyStore,
+        externalSendTTL: 60
+    )
+
+    _ = try await protectionKeyStore.deviceKey(for: .externalSend, reason: "ordinary")
+    _ = try await protectionKeyStore.freshDeviceKey(for: .externalSend, reason: "high risk")
+
+    #expect(await deviceKeyStore.reasons == ["ordinary", "high risk"])
+}
+
 @Test func protectionKeyStoreCachesOnlyTheCandidateSelectedByVaultVerification() async throws {
     let rejectedKey = Data(repeating: 0x51, count: 32)
     let acceptedKey = Data(repeating: 0x52, count: 32)
