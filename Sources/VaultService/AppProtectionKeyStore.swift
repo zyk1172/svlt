@@ -2,10 +2,12 @@ import Foundation
 import VaultAuthorization
 import VaultCore
 
-/// Keeps only in-memory wrapping keys. These cache windows support explicit
-/// reveal/export flows and are not an Agent operation authorization lease;
-/// ordinary effect-based `AUTO` operations do not create or consult them.
-/// No key is written to disk or UserDefaults.
+/// Keeps only in-memory wrapping keys. These cache windows are key-availability
+/// optimizations, not Agent operation authorization leases. Ordinary
+/// effect-based `AUTO` operations may reuse a cached wrapping key, but every
+/// operation still goes through principal, Secret binding, destination,
+/// protocol, and effect policy evaluation. No key is written to disk or
+/// UserDefaults.
 public actor AppProtectionKeyStore {
     private struct CachedKey: Sendable {
         var data: Data
