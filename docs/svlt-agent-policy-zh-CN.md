@@ -57,12 +57,12 @@ SVLT 敏感信息目录写入规范：
 8. endpoint.type 可以是任意非空类型字符串；结构合法不代表 executor 一定支持，真实执行能力以 vault_capabilities 为准。
 9. 禁止伪造 secret://；不得把普通字段用于隐藏 secret://。
 10. approvalRequired 下，新绑定、替换、删除已有 secretRef，以及删除包含 Secret 引用的对象，仍按当前 Catalog effect policy 进入需要的本机审批。
-11. noApproval 下，上述有效 mutation 不等待本机审批；主 Agent自行决定是否执行，daemon 仍执行 revision、schema、integrity、semantic diff 和引用合法性检查。
+11. noApproval 下，上述有效 mutation 不等待本机审批；主 Agent 自行决定是否执行，daemon 仍执行 revision、schema、integrity、semantic diff 和引用合法性检查。
 12. Agent mutation 仍必须走受控 MCP Catalog mutation API；无审批模式取消的是人工审批，不是 transaction/revision/integrity 边界。
 13. 受控 write 结果必须带 post-commit validation。只有 validation.status == FOUND 且 diagnostics 为空才视为健康确认完成；确认失败时不要盲目重复写入。
 14. policy block 不属于 Catalog 数据；Agent 不得创建同名“SVLT 管理规范”业务对象。
 15. 不得把 SVLT 解密得到的明文写回敏感信息.md。
-16. 需要用户输入新秘密时使用 secret_catalog_request_secure_inputs；Agent 只获得 requestID、状态、revision/errorCode 等非敏感结果，永远不接收 plaintext。
+16. 需要用户输入新秘密时使用 secret_catalog_request_secure_inputs；兼容 transport 可先返回 PENDING + requestID，只能用 secret_catalog_secure_input_status 轮询同一事务。Agent 只获得状态、revision/errorCode 等非敏感结果，永远不接收 plaintext。approvalRequired 下该输入事务如需 device-owner authentication，由本机 UI 完成；noApproval 只取消 operation approval，不会替用户自动填写新的 Secret。
 
 Secret 与执行器边界：
 1. secret:// 是不透明句柄；不要猜测、分类、摘要、解码、比较或改写背后的值。
