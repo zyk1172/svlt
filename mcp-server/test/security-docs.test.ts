@@ -81,10 +81,28 @@ describe("security documentation", () => {
     expect(usage).not.toContain('"passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
     expect(usage).not.toContain('"tokenRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
   });
+
   it("retires legacy semantic marker protocols from the intent-first design", async () => {
     const design = await readFile(path.join(repositoryRoot, "docs/security/context-bounded-risk-judge.md"), "utf8");
     expect(design).toContain("String marker protocols");
     expect(design).toContain("retired");
   });
 
+  it("keeps the installed SVLT skill aligned with end-to-end automatic approval", async () => {
+    const skill = await readFile(
+      path.join(repositoryRoot, "plugins/svlt/skills/svlt/SKILL.md"),
+      "utf8"
+    );
+
+    for (const phrase of [
+      "judge 未配置、超时或临时不可用本身不是危险效果",
+      "daemon-bound bounded main-Agent fallback",
+      "automatic-v2",
+      "此认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批",
+      "judge 不可用本身不得被当成 fresh-approval 理由"
+    ]) {
+      expect(skill).toContain(phrase);
+    }
+    expect(skill).not.toContain("`GRAY` 由独立 semantic judge 复核");
+  });
 });
