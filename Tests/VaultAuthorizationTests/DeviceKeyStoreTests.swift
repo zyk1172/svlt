@@ -136,12 +136,13 @@ import Testing
     #expect(await materialStore.loadCount == 1)
 }
 
-@Test func existingAccessibleLegacyKeychainItemMigratesToAutomaticNamespace() async throws {
+@Test func accessibleLegacyKeyIsNotPromotedUntilVaultVerification() async throws {
     let expectedKey = Data(repeating: 0x55, count: 32)
     let keychain = FakeKeychainClient(
         copyResults: [
             (errSecItemNotFound, nil),
             (errSecSuccess, expectedKey),
+            (errSecItemNotFound, nil),
             (errSecItemNotFound, nil)
         ],
         addResults: [errSecSuccess],
@@ -155,13 +156,16 @@ import Testing
     )
 
     #expect(try await store.loadOrCreateDeviceKeyData() == expectedKey)
+    #expect(keychain.addedAttributes.isEmpty)
+
+    try await store.promoteVerifiedDeviceKeyData(expectedKey)
     #expect(keychain.addedAttributes.count == 1)
     #expect((keychain.addedAttributes[0][kSecAttrService as String] as? String) == "com.agent-secret-vault.weak-item-test.automatic-v2")
     #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] == nil)
     #expect((keychain.addedAttributes[0][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 }
 
-@Test func legacyUserPresenceKeyPromptsOnceThenUsesMigratedAutomaticKey() async throws {
+@Test func legacyUserPresenceKeyPromptsOnceAfterVerifiedPromotion() async throws {
     let expectedKey = Data(repeating: 0x56, count: 32)
     let keychain = FakeKeychainClient(
         copyResults: [
@@ -169,6 +173,7 @@ import Testing
             (errSecInteractionNotAllowed, nil),
             (errSecItemNotFound, nil),
             (errSecSuccess, expectedKey),
+            (errSecItemNotFound, nil),
             (errSecItemNotFound, nil),
             (errSecSuccess, expectedKey)
         ],
@@ -187,11 +192,40 @@ import Testing
     )
 
     #expect(try await store.deviceKey(reason: "first AUTO operation") == expectedKey)
+    #expect(keychain.addedAttributes.isEmpty)
+
+    // Production calls this only after MasterKeyCoordinator and record
+    // verification have accepted these exact bytes.
+    try await store.promoteVerifiedDeviceKey(expectedKey)
+
     #expect(try await store.deviceKey(reason: "second AUTO operation") == expectedKey)
     #expect(await evaluator.count == 1)
     #expect(keychain.addedAttributes.count == 1)
     #expect((keychain.addedAttributes[0][kSecAttrService as String] as? String) == "com.agent-secret-vault.user-presence-migration-test.automatic-v2")
     #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] == nil)
+}
+
+@Test func promotionRejectsAConflictingAutomaticKey() async throws {
+    let verifiedKey = Data(repeating: 0x61, count: 32)
+    let conflictingKey = Data(repeating: 0x62, count: 32)
+    let keychain = FakeKeychainClient(
+        copyResults: [(errSecSuccess, conflictingKey)],
+        addResults: []
+    )
+    let store = KeychainDeviceKeyMaterialStore(
+        service: "com.agent-secret-vault.conflict-test",
+        account: "device-wrapping-key",
+        keychain: keychain,
+        randomKeyData: { verifiedKey }
+    )
+
+    do {
+        try await store.promoteVerifiedDeviceKeyData(verifiedKey)
+        Issue.record("Expected conflicting automatic wrapping key to fail closed.")
+    } catch let error as DeviceKeyStoreError {
+        #expect(error == .automaticKeyConflict)
+    }
+    #expect(keychain.addedAttributes.isEmpty)
 }
 
 @Test func keychainMaterialStoreCreatesAutomaticNamespaceWhenNoLegacyKeyExists() async throws {
