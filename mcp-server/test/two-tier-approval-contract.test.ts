@@ -33,7 +33,8 @@ describe("two-tier approval source contract", () => {
     expect(catalog).toContain("无审批模式自动通过");
 
     expect(mcpClient).toContain('export type VaultApprovalMode = "approvalRequired" | "noApproval"');
-    expect(mcpClient).toContain('if ((await readVaultApprovalMode()) === "noApproval")');
+    expect(mcpClient).toContain("const approvalMode = await readVaultApprovalMode(this.approvalModePath)");
+    expect(mcpClient).toContain('approvalMode === "noApproval"');
     expect(mcpClient).toContain("applyContextBoundedRiskJudge");
 
     expect(skill).toContain("approvalRequired");
