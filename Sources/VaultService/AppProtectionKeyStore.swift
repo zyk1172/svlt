@@ -18,7 +18,7 @@ public actor AppProtectionKeyStore {
     private let now: @Sendable () -> Date
     private var lowProtectionKey: Data?
     private var credentialKey: CachedKey?
-    private var externalSendKeys: [String: CachedKey] = [:]
+    private var externalSendKey: CachedKey?
 
     public init(
         deviceKeyStore: any DeviceKeyStoring,
@@ -38,7 +38,7 @@ public actor AppProtectionKeyStore {
 
     public var isUnlocked: Bool {
         let credentialActive = credentialKey.map { now() < $0.expiresAt } ?? false
-        let externalActive = externalSendKeys.values.contains { now() < $0.expiresAt }
+        let externalActive = externalSendKey.map { now() < $0.expiresAt } ?? false
         return lowProtectionKey != nil || credentialActive || externalActive
     }
 
@@ -73,7 +73,7 @@ public actor AppProtectionKeyStore {
     public func deviceKeyCandidates(
         for policy: SecretPolicy,
         reason: String,
-        destination: String? = nil,
+        destination _: String? = nil,
         authenticationContext: LocalAuthenticationContext? = nil
     ) async throws -> [Data] {
         switch policy {
@@ -95,16 +95,18 @@ public actor AppProtectionKeyStore {
                 authenticationContext: authenticationContext
             )
         case .externalSend:
-            guard let destination, !destination.isEmpty else {
-                return try await deviceKeyStore.deviceKeyCandidates(
-                    reason: reason,
-                    authenticationContext: authenticationContext
-                )
+            // This cache contains only the vault wrapping key, not an
+            // authorization grant. The wrapping key is vault-global, while
+            // destination/Secret/protocol authorization is re-evaluated by
+            // SecretOperationPolicyEngine for every operation. Keeping the key
+            // cache destination-scoped made the production provider miss the
+            // cache whenever the provider signature omitted destination, which
+            // caused repeated Keychain/Touch ID work without adding a real
+            // security boundary.
+            if let externalSendKey, now() < externalSendKey.expiresAt {
+                return [externalSendKey.data]
             }
-            if let cached = externalSendKeys[destination], now() < cached.expiresAt {
-                return [cached.data]
-            }
-            externalSendKeys[destination] = nil
+            self.externalSendKey = nil
             return try await deviceKeyStore.deviceKeyCandidates(
                 reason: reason,
                 authenticationContext: authenticationContext
@@ -148,7 +150,7 @@ public actor AppProtectionKeyStore {
     public func rememberDeviceKey(
         _ key: Data,
         for policy: SecretPolicy,
-        destination: String? = nil
+        destination _: String? = nil
     ) {
         switch policy {
         case .read:
@@ -162,10 +164,10 @@ public actor AppProtectionKeyStore {
                 expiresAt: now().addingTimeInterval(credentialTTL)
             )
         case .externalSend:
-            guard let destination, !destination.isEmpty, externalSendTTL > 0 else {
+            guard externalSendTTL > 0 else {
                 return
             }
-            externalSendKeys[destination] = CachedKey(
+            externalSendKey = CachedKey(
                 data: key,
                 expiresAt: now().addingTimeInterval(externalSendTTL)
             )
@@ -179,11 +181,7 @@ public actor AppProtectionKeyStore {
     public func clearAll() {
         clear(&lowProtectionKey)
         clearCachedKey(for: .credential)
-        for key in externalSendKeys.values {
-            var data = key.data
-            data.resetBytes(in: 0..<data.count)
-        }
-        externalSendKeys.removeAll()
+        clearCachedKey(for: .externalSend)
     }
 
     private func clearCachedKey(for policy: SecretPolicy) {
@@ -196,11 +194,10 @@ public actor AppProtectionKeyStore {
             }
             credentialKey = nil
         case .externalSend:
-            for key in externalSendKeys.values {
-                var data = key.data
-                data.resetBytes(in: 0..<data.count)
+            if var cached = externalSendKey {
+                cached.data.resetBytes(in: 0..<cached.data.count)
             }
-            externalSendKeys.removeAll()
+            externalSendKey = nil
         }
     }
 
