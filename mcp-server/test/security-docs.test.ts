@@ -105,4 +105,21 @@ describe("security documentation", () => {
     }
     expect(skill).not.toContain("`GRAY` 由独立 semantic judge 复核");
   });
+
+  it("packages and installs the same Codex skill with every release", async () => {
+    const packageRelease = await readFile(
+      path.join(repositoryRoot, "scripts/package-release.sh"),
+      "utf8"
+    );
+    const installRelease = await readFile(
+      path.join(repositoryRoot, "scripts/install-release.sh"),
+      "utf8"
+    );
+
+    expect(packageRelease).toContain('CODEX_SKILL_STAGING="$STAGING_DIR/CodexSkill/svlt"');
+    expect(packageRelease).toContain('plugins/svlt/skills/svlt');
+    expect(installRelease).toContain('CODEX_SKILL_SOURCE="$RELEASE_DIR/CodexSkill/svlt"');
+    expect(installRelease).toContain('CODEX_SKILL_TARGET="$CODEX_HOME/skills/svlt"');
+    expect(installRelease).toContain('cmp -s "$CODEX_SKILL_SOURCE/SKILL.md" "$CODEX_SKILL_TARGET/SKILL.md"');
+  });
 });
