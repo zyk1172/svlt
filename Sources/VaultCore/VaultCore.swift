@@ -16,26 +16,42 @@ public enum VaultApprovalMode: String, Codable, CaseIterable, Sendable {
     case noApproval
 }
 
-/// Process-local cache backed by one owner-readable file. The daemon is the
-/// authoritative writer through App-control IPC; policy code reads this state
-/// synchronously so every authorization path observes the same mode.
+/// Cross-process approval-mode state backed by one owner-readable file. The App
+/// writes the setting; the daemon re-reads it at every authorization boundary,
+/// so a running Agent cannot keep using a stale in-memory mode after the user
+/// changes the first-page control.
 public final class VaultApprovalModeState: @unchecked Sendable {
     public static let shared = VaultApprovalModeState()
 
+    public static var defaultStorageURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/AgentSecretVault", isDirectory: true)
+            .appendingPathComponent("approval-mode.json", isDirectory: false)
+            .standardizedFileURL
+    }
+
     private let lock = NSLock()
-    private var storedMode: VaultApprovalMode = .approvalRequired
+    private var storedMode: VaultApprovalMode
     private var storageURL: URL?
 
-    public init() {}
+    public init(storageURL: URL? = VaultApprovalModeState.defaultStorageURL) {
+        let normalized = storageURL?.standardizedFileURL
+        self.storageURL = normalized
+        self.storedMode = Self.load(from: normalized) ?? .approvalRequired
+    }
 
     public var mode: VaultApprovalMode {
         lock.lock()
         defer { lock.unlock() }
+        // Missing/corrupt state always fails closed. Re-read on every access so
+        // the independent App and daemon processes observe changes immediately.
+        storedMode = Self.load(from: storageURL) ?? .approvalRequired
         return storedMode
     }
 
-    /// Configures persistence and reloads the persisted value. Missing or
-    /// malformed state fails closed to `approvalRequired`.
+    /// Repoints the process-local reader to the daemon configuration's state
+    /// file. Tests use temporary vault roots; production resolves to the same
+    /// default location used by the GUI App.
     public func configure(storageURL: URL?) {
         lock.lock()
         defer { lock.unlock() }
