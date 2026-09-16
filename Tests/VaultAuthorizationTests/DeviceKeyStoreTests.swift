@@ -108,9 +108,9 @@ import Testing
 
     #expect(try await store.deviceKey(reason: "one operation") == expectedKey)
     #expect(await evaluator.count == 0)
-    #expect(keychain.copyQueries.count == 2)
+    #expect(keychain.copyQueries.count == 1)
     #expect(keychain.copyQueries[0][kSecUseAuthenticationContext as String] == nil)
-    #expect(keychain.copyQueries[1][kSecUseAuthenticationContext as String] == nil)
+    #expect((keychain.copyQueries[0][kSecAttrService as String] as? String) == "com.agent-secret-vault.context-test.automatic-v2")
 }
 
 @Test func legacyKeychainLookupReusesTheOperationApprovalContextWithoutASecondPrompt() async throws {
@@ -136,26 +136,72 @@ import Testing
     #expect(await materialStore.loadCount == 1)
 }
 
-@Test func existingAccessibleOnlyKeychainItemRemainsUsableAfterAuthentication() async throws {
+@Test func existingAccessibleLegacyKeychainItemMigratesToAutomaticNamespace() async throws {
+    let expectedKey = Data(repeating: 0x55, count: 32)
     let keychain = FakeKeychainClient(
-        copyResults: [(errSecSuccess, Data(repeating: 0x55, count: 32))],
-        addResults: [],
+        copyResults: [
+            (errSecItemNotFound, nil),
+            (errSecSuccess, expectedKey),
+            (errSecItemNotFound, nil)
+        ],
+        addResults: [errSecSuccess],
         attributeResults: [(errSecSuccess, [kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly])]
     )
     let store = KeychainDeviceKeyMaterialStore(
         service: "com.agent-secret-vault.weak-item-test",
         account: "device-wrapping-key",
         keychain: keychain,
-        randomKeyData: { Data(repeating: 0x55, count: 32) }
+        randomKeyData: { expectedKey }
     )
 
-    #expect(try await store.loadOrCreateDeviceKeyData() == Data(repeating: 0x55, count: 32))
+    #expect(try await store.loadOrCreateDeviceKeyData() == expectedKey)
+    #expect(keychain.addedAttributes.count == 1)
+    #expect((keychain.addedAttributes[0][kSecAttrService as String] as? String) == "com.agent-secret-vault.weak-item-test.automatic-v2")
+    #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] == nil)
+    #expect((keychain.addedAttributes[0][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 }
 
-@Test func keychainMaterialStoreFallsBackToLegacyKeychainWhenAccessControlIsUnavailable() async throws {
+@Test func legacyUserPresenceKeyPromptsOnceThenUsesMigratedAutomaticKey() async throws {
+    let expectedKey = Data(repeating: 0x56, count: 32)
+    let keychain = FakeKeychainClient(
+        copyResults: [
+            (errSecItemNotFound, nil),
+            (errSecInteractionNotAllowed, nil),
+            (errSecItemNotFound, nil),
+            (errSecSuccess, expectedKey),
+            (errSecItemNotFound, nil),
+            (errSecSuccess, expectedKey)
+        ],
+        addResults: [errSecSuccess]
+    )
+    let materialStore = KeychainDeviceKeyMaterialStore(
+        service: "com.agent-secret-vault.user-presence-migration-test",
+        account: "device-wrapping-key",
+        keychain: keychain,
+        randomKeyData: { expectedKey }
+    )
+    let evaluator = CountingLocalAuthenticationEvaluator()
+    let store = DeviceKeyStore(
+        authenticator: LocalAuthenticator(evaluator: evaluator),
+        materialStore: materialStore
+    )
+
+    #expect(try await store.deviceKey(reason: "first AUTO operation") == expectedKey)
+    #expect(try await store.deviceKey(reason: "second AUTO operation") == expectedKey)
+    #expect(await evaluator.count == 1)
+    #expect(keychain.addedAttributes.count == 1)
+    #expect((keychain.addedAttributes[0][kSecAttrService as String] as? String) == "com.agent-secret-vault.user-presence-migration-test.automatic-v2")
+    #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] == nil)
+}
+
+@Test func keychainMaterialStoreCreatesAutomaticNamespaceWhenNoLegacyKeyExists() async throws {
     let expectedKey = Data(repeating: 0x44, count: 32)
     let keychain = FakeKeychainClient(
-        copyResults: [(errSecItemNotFound, nil)],
+        copyResults: [
+            (errSecItemNotFound, nil),
+            (errSecItemNotFound, nil),
+            (errSecItemNotFound, nil)
+        ],
         addResults: [errSecSuccess]
     )
     let store = KeychainDeviceKeyMaterialStore(
@@ -167,6 +213,7 @@ import Testing
 
     #expect(try await store.loadOrCreateDeviceKeyData() == expectedKey)
     #expect(keychain.addedAttributes.count == 1)
+    #expect((keychain.addedAttributes[0][kSecAttrService as String] as? String) == "com.agent-secret-vault.test.automatic-v2")
     #expect(keychain.addedAttributes[0][kSecAttrAccessControl as String] == nil)
     #expect((keychain.addedAttributes[0][kSecAttrAccessible as String] as? String) == (kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String))
 }
@@ -374,6 +421,9 @@ private final class FakeKeychainClient: KeychainClient, @unchecked Sendable {
 
     func add(_ attributes: [String: Any]) -> OSStatus {
         addedAttributes.append(attributes)
+        guard !addResults.isEmpty else {
+            return errSecSuccess
+        }
         return addResults.removeFirst()
     }
 }
