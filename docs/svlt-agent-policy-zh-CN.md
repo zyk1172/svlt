@@ -22,8 +22,9 @@
 1. SVLT 根据 operation intent、actual effect、blast radius、reversibility 和 credential exposure 判断 `AUTO`、`GRAY`、`HARD` 或 `DENIED`；Secret 的存在不是审批理由。
 2. 与任务对齐的普通只读、受控 Secret 认证、有限且可恢复的写入、普通 Docker/服务操作和普通 HTTP/数据库/SFTP 操作默认 `AUTO`。首次使用 Secret、换 Secret、operationID、sessionID、经过 300 秒以及是否使用 batch 都不改变这个结论。
 3. 只有真正危险、不可逆或高影响的电源、裸设备/文件系统、RAID/存储、破坏性数据库/Docker、关键身份权限和 credential exposure 才进入 fresh `HARD`/严格边界；已有 `DENIED` 规则保持 `DENIED`，不得用用户批准绕过。
-4. 只有无法从受限证据确定实际效果时才进入 `GRAY`，由独立 semantic judge 在不接收 Secret 明文、完整对话、system prompt、memory 或完整工具清单的前提下决定 `AUTO`、fresh `HARD` 或 `DENIED`。Agent 自报 `freshApproval` 只是证据，不能单独制造审批。
-5. batch 只能减少连接和协议开销，不是规避审批的必要手段。任何路径都不得把 SVLT 管理的 Secret 明文交给 Agent、日志、远程 judge 或任意无关进程。
+4. 只有无法从受限证据确定实际效果，或本地 deterministic classifier 命中需要语义复核的 soft-risk 操作族时才进入 `GRAY`。正常情况下由独立 semantic judge 在不接收 Secret 明文、完整对话、system prompt、memory 或完整工具清单的前提下决定 `AUTO`、fresh `HARD` 或 `DENIED`；但 judge 未配置、超时或临时不可用本身不是危险效果，也不能单独制造 Touch ID。对于 daemon 已签发 reviewID、原始 main-Agent assessment hash 精确匹配、任务明确对齐且影响 bounded/recoverable 的既有 semantic-gray 操作族，MCP/daemon 可以使用 daemon-bound bounded main-Agent fallback 继续 `AUTO`。绑定冲突、动态/不透明执行、低置信或 unknown 语义以及所有 `HARD`/`DENIED` 底线不得 fallback。Agent 自报 `freshApproval` 只是证据，不能单独制造审批，也不要因为 judge 不可用而把本来明确的 bounded operation 改报 `uncertain` 或 `freshApproval`。
+5. 普通 `AUTO` 的密钥可用性不是审批租约。旧版本留下的 `userPresence` wrapping key 最多会在迁移时触发一次设备所有者认证；只有该候选实际解开当前 master-key wrapper 并通过记录完整性验证后，daemon 才会把它 promote 到 `automatic-v2` 的 `WhenUnlockedThisDeviceOnly` 命名空间。该认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批。
+6. batch 只能减少连接和协议开销，不是规避审批的必要手段。任何路径都不得把 SVLT 管理的 Secret 明文交给 Agent、日志、远程 judge 或任意无关进程。
 
 Catalog 浏览与 ID 来源：
 1. 浏览分组使用目标 MCP `secret_catalog_list_indices`；结果必须包含空分组。浏览指定分组使用 `secret_catalog_list_entries(indexID)`，单条详情使用 `secret_catalog_get(entryID)`。

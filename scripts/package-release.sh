@@ -7,6 +7,7 @@ BUILD_DIR="$ROOT_DIR/build/release"
 STAGING_DIR="$DIST_DIR/SVLT-release"
 MCP_STAGING="$STAGING_DIR/MCP"
 OBSIDIAN_PLUGIN_STAGING="$STAGING_DIR/ObsidianPlugin/svlt"
+CODEX_SKILL_STAGING="$STAGING_DIR/CodexSkill/svlt"
 SIGNING_TEAM="JUQXD87P93"
 SIGNING_IDENTITY="${SVLT_SIGNING_IDENTITY:-}"
 NOTARY_PROFILE="${SVLT_NOTARY_PROFILE:-}"
@@ -20,7 +21,7 @@ fi
 cd "$ROOT_DIR"
 
 rm -rf "$BUILD_DIR" "$STAGING_DIR"
-mkdir -p "$DIST_DIR" "$BUILD_DIR" "$MCP_STAGING" "$OBSIDIAN_PLUGIN_STAGING"
+mkdir -p "$DIST_DIR" "$BUILD_DIR" "$MCP_STAGING" "$OBSIDIAN_PLUGIN_STAGING" "$CODEX_SKILL_STAGING"
 
 echo "==> Building MCP server"
 (cd "$ROOT_DIR/mcp-server" && npm ci && npm run build)
@@ -96,6 +97,7 @@ cp "$ROOT_DIR/mcp-server/package-lock.json" "$MCP_STAGING/package-lock.json"
 cp -R "$ROOT_DIR/mcp-server/dist" "$MCP_STAGING/dist"
 cp "$ROOT_DIR/obsidian-plugin/svlt/main.js" "$OBSIDIAN_PLUGIN_STAGING/main.js"
 cp "$ROOT_DIR/obsidian-plugin/svlt/manifest.json" "$OBSIDIAN_PLUGIN_STAGING/manifest.json"
+cp -R "$ROOT_DIR/plugins/svlt/skills/svlt"/. "$CODEX_SKILL_STAGING"/
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.sh"
 cp "$ROOT_DIR/scripts/install-release.sh" "$STAGING_DIR/install.command"
 cp "$ROOT_DIR/scripts/check-agent-resources.sh" "$STAGING_DIR/check-agent-resources.sh"
@@ -118,15 +120,18 @@ SVLT 安装方式
    ~/Library/Application Support/AgentSecretVault/MCP
 4. 安装脚本会生成可复制的 MCP 配置：
    ~/Library/Application Support/AgentSecretVault/svlt.mcp.json
-5. release 包内包含 Obsidian 插件：
+5. release 包内包含当前版本的 Codex Skill：
+   CodexSkill/svlt
+   安装脚本会自动覆盖安装到 ${CODEX_HOME:-~/.codex}/skills/svlt，避免继续使用旧版审批提示词。
+6. release 包内包含 Obsidian 插件：
    ObsidianPlugin/svlt
    安装脚本会在能唯一识别 Vault 时自动安装。也可以指定：
    ./install.sh "/你的/Obsidian/Vault/路径"
-6. 打开 SVLT，再把 MCP 配置粘贴到 Codex / Claude / Hermes / OpenClaw。
-7. 必须将 svlt-agent-policy-zh-CN.md 中的代码块粘贴到 Agent 的系统提示、项目规则或工作区规则。
+7. 打开 SVLT，再把 MCP 配置粘贴到 Codex / Claude / Hermes / OpenClaw。Codex 需要重启或重新加载 skills 后使用本次安装的 SVLT Skill。
+8. Claude / Hermes / OpenClaw 等不读取 Codex Skill 的 Agent，应将 svlt-agent-policy-zh-CN.md 中的代码块加入系统提示、项目规则或工作区规则。
    对 SVLT managed 数据，所有 writer 都必须遵守 v3 marker/schema、保留 Markdown 与双链、禁止秘密明文；安全审批按 semantic diff 判断，不按编辑器或传输渠道判断。
    用户当前明确选择的明文或其他 provider 不由 SVLT 强制接管。
-8. Catalog v3 格式与约束见 svlt-catalog-schema-v3.md；v2 仅作为 App 显式迁移输入，迁移前会备份。
+9. Catalog v3 格式与约束见 svlt-catalog-schema-v3.md；v2 仅作为 App 显式迁移输入，迁移前会备份。
 
 完整中文教程见：USER_GUIDE_zh-CN.md
 

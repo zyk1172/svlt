@@ -81,10 +81,54 @@ describe("security documentation", () => {
     expect(usage).not.toContain('"passwordRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
     expect(usage).not.toContain('"tokenRef": "secret://0123456789ABCDEFGHJKMNPQRS"');
   });
+
   it("retires legacy semantic marker protocols from the intent-first design", async () => {
     const design = await readFile(path.join(repositoryRoot, "docs/security/context-bounded-risk-judge.md"), "utf8");
     expect(design).toContain("String marker protocols");
     expect(design).toContain("retired");
   });
 
+  it("keeps all shipped Agent guidance aligned with end-to-end automatic approval", async () => {
+    const skill = await readFile(
+      path.join(repositoryRoot, "plugins/svlt/skills/svlt/SKILL.md"),
+      "utf8"
+    );
+    const genericPolicy = await readFile(
+      path.join(repositoryRoot, "docs/svlt-agent-policy-zh-CN.md"),
+      "utf8"
+    );
+
+    for (const document of [skill, genericPolicy]) {
+      for (const phrase of [
+        "judge 未配置、超时或临时不可用本身不是危险效果",
+        "daemon-bound bounded main-Agent fallback",
+        "automatic-v2"
+      ]) {
+        expect(document).toContain(phrase);
+      }
+    }
+
+    expect(skill).toContain("此认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批");
+    expect(skill).toContain("judge 不可用本身不得被当成 fresh-approval 理由");
+    expect(genericPolicy).toContain("该认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批");
+    expect(skill).not.toContain("`GRAY` 由独立 semantic judge 复核");
+    expect(genericPolicy).not.toContain("由独立 semantic judge在");
+  });
+
+  it("packages and installs the same Codex skill with every release", async () => {
+    const packageRelease = await readFile(
+      path.join(repositoryRoot, "scripts/package-release.sh"),
+      "utf8"
+    );
+    const installRelease = await readFile(
+      path.join(repositoryRoot, "scripts/install-release.sh"),
+      "utf8"
+    );
+
+    expect(packageRelease).toContain('CODEX_SKILL_STAGING="$STAGING_DIR/CodexSkill/svlt"');
+    expect(packageRelease).toContain('plugins/svlt/skills/svlt');
+    expect(installRelease).toContain('CODEX_SKILL_SOURCE="$RELEASE_DIR/CodexSkill/svlt"');
+    expect(installRelease).toContain('CODEX_SKILL_TARGET="$CODEX_HOME/skills/svlt"');
+    expect(installRelease).toContain('cmp -s "$CODEX_SKILL_SOURCE/SKILL.md" "$CODEX_SKILL_TARGET/SKILL.md"');
+  });
 });
