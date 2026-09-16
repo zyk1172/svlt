@@ -15,6 +15,8 @@ const BOUNDED_GRAY_FALLBACK_RULES = new Set([
   "database.fresh.unknown",
   "sftp.fresh.delete"
 ]);
+const BOUNDED_EFFECT_SEVERITIES = new Set<string>(["none", "minor", "bounded"]);
+const RECOVERABLE_REVERSIBILITIES = new Set<string>(["readOnly", "easy", "recoverable"]);
 const BLOCKED_GRAY_FALLBACK_REASON_FRAGMENTS = [
   "凭据执行目标或协议超出既有绑定范围",
   "操作包含动态或不透明执行"
@@ -144,8 +146,8 @@ function boundedMainAgentFallbackEligible(
   if (!BOUNDED_GRAY_FALLBACK_RULES.has(preflight.policyRuleID)) return false;
   if (assessment.source !== "mainAgent" || assessment.confidence < 0.65) return false;
   if (assessment.intentAlignment !== "direct" && assessment.intentAlignment !== "supporting") return false;
-  if (!(["none", "minor", "bounded"] as const).includes(assessment.effectSeverity)) return false;
-  if (!(["readOnly", "easy", "recoverable"] as const).includes(assessment.reversibility)) return false;
+  if (!BOUNDED_EFFECT_SEVERITIES.has(assessment.effectSeverity)) return false;
+  if (!RECOVERABLE_REVERSIBILITIES.has(assessment.reversibility)) return false;
   if (assessment.secretHandling !== "none" && assessment.secretHandling !== "credentialUse") return false;
   if (assessment.executionRecommendation === "uncertain") return false;
   return !preflight.reasons.some((reason) =>
