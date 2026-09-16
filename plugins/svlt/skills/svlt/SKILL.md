@@ -51,7 +51,8 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 授权分层（effect-based）：Secret 的存在、首次使用、operationID、sessionID、经过的时间和是否使用 batch 都不是审批理由。明确任务对齐、影响有限、可恢复的 SSH（包括 hostname、df、cat、日志/配置读取、普通 `sudo`、普通 `docker exec` 和未知 NAS CLI）直接 `AUTO`；只有真实危险、不可逆、高影响或无法确定效果的操作才进入 `GRAY`/`HARD`。电源、裸设备/文件系统、RAID/存储破坏和 Docker volume/prune 等固定破坏性底线每次 fresh approval；已有 Secret 泄露和其他 `DENIED` 边界继续严格执行。
 - MCP 连接建立后应声明客户端名称与版本；Audit/UI 只显示 `Codex（自报）`、`Pi（自报）` 等 display metadata。该 identity 不是可信 security principal，也不能改变 principal、Secret binding 或策略隔离。
 - `ssh_batch_with_secret` 只减少连接/协议开销，不是规避审批的必要手段。分别发起的普通 SSH operation 也应自动执行；不要为了审批策略把命令拼成 batch。
-- 以上是行为指导。SVLT 的职责是根据实际效果判断授权级别、展示事实并执行策略；`AUTO` 不弹出 owner approval，`GRAY` 由独立 semantic judge 复核，judge 可以降为 `AUTO`、升为 fresh `HARD` 或 `DENIED`。真正需要 owner 决定的操作才使用 Touch ID/密码。
+- 以上是行为指导。SVLT 的职责是根据实际效果判断授权级别、展示事实并执行策略；`AUTO` 不弹出 owner approval。`GRAY` 正常情况下交给独立 semantic judge；但 judge 未配置、超时或临时不可用本身不是危险效果，也不能单独制造 Touch ID。对于 daemon 已签发 reviewID、原始 main-Agent assessment hash 精确匹配、任务明确对齐且影响 bounded/recoverable 的既有 semantic-gray 操作族，MCP/daemon 可以走 daemon-bound bounded main-Agent fallback 并继续 `AUTO`。绑定冲突、动态/不透明执行、低置信或 unknown 语义、`HARD`/`DENIED` 底线仍不得 fallback。Agent 不要因为 judge 不可用而主动把一个本来明确的 bounded operation 改报 `uncertain` 或 `freshApproval`。
+- 普通 `AUTO` 的密钥可用性也不是审批租约。旧版本留下的 `userPresence` wrapping key 最多会在迁移时触发一次设备所有者认证；daemon 只有在该候选实际解开当前 master-key wrapper 并通过记录完整性验证后，才会把它 promote 到 `automatic-v2` 的 `WhenUnlockedThisDeviceOnly` 命名空间。此认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批。真正需要 owner 决定的具体高危效果才使用 recurring Touch ID/密码。
 
 ### 非 SSH 执行器与能力清单
 
@@ -64,7 +65,7 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `database_query_with_secret`、`sftp_transfer_with_secret`、`ftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，FTP 不得退回普通 FTP/curl 客户端且只允许私有/回环目标、每次重新认证，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
 - 导出工具只返回本地路径/状态；plaintext resolution 和安全文件写入留在 App/daemon 边界内。不要读取导出文件再把内容放入聊天或普通工具。
 - HTTP transport `sessionID` 只是 SVLT 内部连接复用句柄，不代表请求已授权。每次请求仍须通过 principal、secretRef、目标、策略和授权要求检查；transport session 不会让 DELETE 或其他 destructive action 免于 fresh approval。
-- 非 SSH 请求仍需准确填写 `intendedEffect` 和风险。授权级别是 `none`（AUTO）、`freshApprovalRequired`（真正危险/高影响或未决效果）和 `denied`；旧 `reusableApproval` 仅为兼容字段，进入策略边界后归一化为 `none`，不建立 5 分钟 lease。Agent 自报风险只提供效果证据，独立 judge 可在 GRAY 中作最终 AUTO/HARD/DENIED 判断。
+- 非 SSH 请求仍需准确填写 `intendedEffect` 和风险。授权级别是 `none`（AUTO）、`freshApprovalRequired`（真正危险/高影响或未决效果）和 `denied`；旧 `reusableApproval` 仅为兼容字段，进入策略边界后归一化为 `none`，不建立 5 分钟 lease。Agent 自报风险只提供效果证据；GRAY 优先由独立 judge 给出 AUTO/HARD/DENIED，judge 基础设施不可用时只有 daemon 已绑定且通过同一套 bounded/recoverable fallback 条件的 main-Agent assessment 才能继续 AUTO。judge 不可用本身不得被当成 fresh-approval 理由。
 - MCP 连接建立时声明 client name/version。Audit 中的 `Codex（自报）`、`Pi（自报）`、`Hermes（自报）` 只是显示 metadata；不得把它当成 security principal，也不能用它绕过 scope 隔离。
 
 ## Catalog Markdown 布局
