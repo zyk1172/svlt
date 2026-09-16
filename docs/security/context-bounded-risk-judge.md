@@ -6,10 +6,11 @@ SVLT is an Agent collaboration layer, not a generic command firewall. The user s
 
 1. The main Agent sends a structured semantic assessment with `userGoal`, `taskContext`, `intendedEffect`, `expectedEffect`, `expectedResult`, task alignment, effect severity, reversibility, Secret handling, recommendation, and confidence.
 2. The MCP boundary first asks the daemon for deterministic preflight. The daemon returns `FAST`, `HARD`, `GRAY`, or `DENIED` together with the local rule, approval floor, blast radius, and sanitized reasons. TypeScript does not duplicate the Swift classifier registry.
-3. `FAST` proceeds with the main Agent assessment and no second model call. `HARD` goes directly to fresh owner approval. `DENIED` stays denied. Only `GRAY` invokes SVLT's separately configured semantic judge.
+3. `FAST` proceeds with the main Agent assessment and no second model call. `HARD` goes directly to fresh owner approval. `DENIED` stays denied. `GRAY` normally invokes SVLT's separately configured semantic judge.
 4. Gray routing includes unresolved Agent semantics, dynamic/opaque execution, a target/protocol binding that needs review, and conflicts between an `automatic` recommendation and deterministic soft-risk families such as deletion or destructive data mutation. A new transport or Secret reference is not itself a gray signal.
-5. The daemon rechecks the deterministic floor on execution. A main-Agent `automatic` assessment cannot directly lower a daemon `GRAY` signal; an independent judgment is required.
-6. String marker protocols such as `SVLT_JUDGE_V1`, `SVLT_JUDGE_V2`, and `SVLT_AGENT_V2` are retired rather than preserved for compatibility.
+5. If the independent judge is not configured or is temporarily unavailable, SVLT does **not** automatically turn that infrastructure condition into a Touch ID prompt. A narrow daemon-bound fallback may keep an operation `AUTO` only when all of the following are true: the gray rule belongs to an existing soft-risk family; the original main-Agent assessment is high-confidence, direct/supporting, bounded and recoverable; Secret handling is only `none` or `credentialUse`; there is no target/protocol binding conflict; and the operation is not dynamic/opaque. The daemon-issued `reviewID` is bound to the principal, operation hash, policy rule, expiry, and the exact original assessment hash, so later mutation of the assessment cannot downgrade the operation.
+6. Missing review binding, unresolved/unknown semantics, broad/systemic or irreversible effects, binding conflicts, opaque execution, and every deterministic `HARD` floor still require fresh owner approval or stay denied. The fallback is therefore not "judge down = allow"; it is a deterministic bounded fallback for an already well-described operation.
+7. String marker protocols such as `SVLT_JUDGE_V1`, `SVLT_JUDGE_V2`, and `SVLT_AGENT_V2` are retired rather than preserved for compatibility.
 
 ## Approval is effect-based
 
@@ -23,11 +24,20 @@ Secret references are not approval signals.
 The main Agent's `freshApproval` recommendation is evidence, not a mandatory
 policy decision. If local preflight and the structured effect fields prove the
 operation is task-aligned, bounded and recoverable, SVLT may still route it to
-`AUTO`. Only an unresolved `GRAY` effect is sent to the independent judge; the
-judge can resolve it to `AUTO`, fresh `HARD`, or `DENIED`. The deterministic
-hard floor remains authoritative for power/storage destruction, credential
-exposure, arbitrary local-process release, insecure credential transport, and
-other existing DENIED boundaries.
+`AUTO`. An unresolved `GRAY` effect is sent to the independent judge when that
+judge is available; the judge can resolve it to `AUTO`, fresh `HARD`, or
+`DENIED`. If the judge is unavailable, only the narrowly bound fallback above
+may preserve `AUTO`. The deterministic hard floor remains authoritative for
+power/storage destruction, credential exposure, arbitrary local-process
+release, insecure credential transport, and other existing DENIED boundaries.
+
+## Key access is not operation approval
+
+The vault wrapping key and an operation approval are separate security concepts. Ordinary `AUTO` work must not manufacture a new owner-approval event merely because the daemon needs to open an already authorized `secret://` record.
+
+Current wrapping keys are stored in a `WhenUnlockedThisDeviceOnly` Keychain namespace and may be cached only in daemon memory. Lock, sleep, logout, user switch, or daemon security-state invalidation clears the in-memory state. Older releases may have created a wrapping key protected by `userPresence`; SVLT may request owner authentication once to read that legacy item, then copies the verified wrapping-key bytes into the current non-interactive namespace so later ordinary operations do not repeatedly revisit the legacy Touch ID boundary.
+
+This does not make destructive work automatic. Fresh `HARD` operations still obtain a separate `OperationApprover` decision for the concrete effect. Key availability never grants permission for a command, destination, Secret reference, protocol, or data mutation; those are re-evaluated for every operation.
 
 ## Sensitive is not dangerous
 
@@ -38,6 +48,8 @@ other existing DENIED boundaries.
 SVLT itself invokes the configured judge endpoint. It does not depend on Hermes, Codex, Claude, OpenClaw, or another Agent framework's sub-agent implementation. The judge receives a bounded redacted packet containing the user's goal, task context, intended/expected effect and result, the main Agent's assessment, SVLT's gray-zone signal, and the canonical concrete operation. The old 256-character problem budget is removed.
 
 The judge never receives managed Secret plaintext or `secret://` identifiers. Common bearer-token, password/token/API-key, and private-key shapes in semantic context are redacted before a remote call. It does not receive the Agent software's system prompt, complete chat history, memory, or tools.
+
+Judge availability is not itself a risk property of the requested operation. An unavailable judge therefore changes the decision only when the daemon lacks enough bound semantic evidence to prove the narrow fallback conditions; in that case the operation remains on the fresh-approval path.
 
 ## Hard floor
 
