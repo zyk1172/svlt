@@ -21,12 +21,12 @@ describe("SVLT approval mode file", () => {
   });
 
   it("accepts an owner-only noApproval mode file", async () => {
-    const file = await writeMode({ schemaVersion: 1, mode: "noApproval" }, 0o600);
+    const file = await writeMode({ version: 1, mode: "noApproval" }, 0o600);
     await expect(readVaultApprovalMode(file)).resolves.toBe("noApproval");
   });
 
   it("fails closed when the mode file is group or world readable", async () => {
-    const file = await writeMode({ schemaVersion: 1, mode: "noApproval" }, 0o600);
+    const file = await writeMode({ version: 1, mode: "noApproval" }, 0o600);
     await chmod(file, 0o644);
     await expect(readVaultApprovalMode(file)).resolves.toBe("approvalRequired");
   });
@@ -38,11 +38,11 @@ describe("SVLT approval mode file", () => {
     await expect(readVaultApprovalMode(malformed)).resolves.toBe("approvalRequired");
 
     const unknown = path.join(directory, "unknown.json");
-    await writeFile(unknown, JSON.stringify({ schemaVersion: 1, mode: "everythingAllowed" }), { mode: 0o600 });
+    await writeFile(unknown, JSON.stringify({ version: 1, mode: "everythingAllowed" }), { mode: 0o600 });
     await expect(readVaultApprovalMode(unknown)).resolves.toBe("approvalRequired");
 
     const stale = path.join(directory, "stale.json");
-    await writeFile(stale, JSON.stringify({ schemaVersion: 0, mode: "noApproval" }), { mode: 0o600 });
+    await writeFile(stale, JSON.stringify({ version: 0, mode: "noApproval" }), { mode: 0o600 });
     await expect(readVaultApprovalMode(stale)).resolves.toBe("approvalRequired");
   });
 });
@@ -54,7 +54,7 @@ async function makeDirectory(): Promise<string> {
 }
 
 async function writeMode(
-  payload: { schemaVersion: number; mode: string },
+  payload: { version: number; mode: string },
   mode: number
 ): Promise<string> {
   const directory = await makeDirectory();
