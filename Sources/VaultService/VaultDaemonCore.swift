@@ -101,6 +101,15 @@ public actor VaultDaemonCore {
             ofItemAtPath: configuration.auditRootURL.path
         )
 
+        // Production resolves to ~/Library/Application Support/AgentSecretVault/
+        // approval-mode.json. Tests using a temporary vault root get an isolated
+        // mode file automatically and cannot inherit a developer's GUI setting.
+        VaultApprovalModeState.shared.configure(
+            storageURL: configuration.vaultRootURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("approval-mode.json", isDirectory: false)
+        )
+
         let recordStore = FileRecordStore(baseDirectory: configuration.vaultRootURL)
         let deviceKeyStore = DeviceKeyStore()
         let protectionKeyStore = AppProtectionKeyStore(
