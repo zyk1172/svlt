@@ -30,9 +30,12 @@ export interface IpcPaths {
   token: string;
 }
 
+export type VaultApprovalMode = "approvalRequired" | "noApproval";
+
 export interface LocalIpcClientOptions {
   socketPath?: string;
   tokenPath?: string;
+  approvalModePath?: string;
   unavailableRetryCount?: number;
   unavailableRetryDelayMs?: number;
   requestTimeoutMs?: number;
@@ -71,9 +74,44 @@ export function appSupportIpcPaths(): IpcPaths {
   };
 }
 
+export function approvalModePath(): string {
+  return path.join(
+    os.homedir(),
+    "Library",
+    "Application Support",
+    "AgentSecretVault",
+    "approval-mode.json"
+  );
+}
+
+/// Read-only MCP view of the App-owned mode. The MCP never exposes a setter.
+/// Missing, malformed, non-owner, or overly permissive files fail closed to
+/// approvalRequired.
+export async function readVaultApprovalMode(
+  modePath: string = approvalModePath()
+): Promise<VaultApprovalMode> {
+  try {
+    const modeStat = await stat(modePath);
+    const permissionBits = modeStat.mode & 0o777;
+    if ((permissionBits & 0o077) !== 0) return "approvalRequired";
+    if (typeof process.getuid === "function" && modeStat.uid !== process.getuid()) {
+      return "approvalRequired";
+    }
+    const parsed = JSON.parse(await readFile(modePath, "utf8")) as {
+      version?: unknown;
+      mode?: unknown;
+    };
+    if (parsed.version !== 1) return "approvalRequired";
+    return parsed.mode === "noApproval" ? "noApproval" : "approvalRequired";
+  } catch {
+    return "approvalRequired";
+  }
+}
+
 export class LocalIpcClient {
   private readonly socketPath: string;
   private readonly tokenPath: string;
+  private readonly approvalModePath: string;
   private readonly unavailableRetryCount: number;
   private readonly unavailableRetryDelayMs: number;
   private readonly requestTimeoutMs: number;
@@ -83,6 +121,7 @@ export class LocalIpcClient {
     const defaults = appSupportIpcPaths();
     this.socketPath = options.socketPath ?? defaults.socket;
     this.tokenPath = options.tokenPath ?? defaults.token;
+    this.approvalModePath = options.approvalModePath ?? approvalModePath();
     this.unavailableRetryCount = options.unavailableRetryCount ?? DEFAULT_UNAVAILABLE_RETRY_COUNT;
     this.unavailableRetryDelayMs = options.unavailableRetryDelayMs ?? DEFAULT_UNAVAILABLE_RETRY_DELAY_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -123,9 +162,13 @@ export class LocalIpcClient {
       if (preflightResponse.type !== "secretOperationPreflight") {
         throw new Error("SVLT daemon returned an invalid preflight response");
       }
-      parsedRequest = LifecycleIpcRequest.parse(
-        await applyContextBoundedRiskJudge(initialRequest, preflightResponse.result)
-      );
+
+      const approvalMode = await readVaultApprovalMode(this.approvalModePath);
+      parsedRequest = approvalMode === "noApproval"
+        ? initialRequest
+        : LifecycleIpcRequest.parse(
+            await applyContextBoundedRiskJudge(initialRequest, preflightResponse.result)
+          );
     }
 
     // Keep the old public request shape for in-process compatibility while

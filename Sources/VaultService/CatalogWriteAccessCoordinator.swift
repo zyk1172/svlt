@@ -60,8 +60,24 @@ actor CatalogWriteAccessCoordinator {
         _ intent: CatalogAgentWriteIntent,
         reasonCategory: CatalogAgentWriteReasonCategory
     ) async throws -> AuditContext {
-        let requestID = UUID()
         let callerContext = AuditContext.current ?? AuditContext(source: .agent)
+
+        if VaultApprovalModeState.shared.mode == .noApproval {
+            // Full-access mode deliberately skips the App queue and owner-auth
+            // handshake. The exact Catalog mutation still passes revision,
+            // schema, integrity and semantic validation in the daemon.
+            let operationContext = callerContext.withRequestID(UUID())
+            await audit(
+                action: "智能体目录写入授权",
+                result: "无审批模式自动通过",
+                context: operationContext,
+                authorizationOutcome: .approved,
+                status: nil
+            )
+            return operationContext
+        }
+
+        let requestID = UUID()
         let operationContext = callerContext.withRequestID(requestID)
         let createdAt = now()
         let expiry = createdAt.addingTimeInterval(CatalogAgentWriteAuthorization.ticketLifetime)

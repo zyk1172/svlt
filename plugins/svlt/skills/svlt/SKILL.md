@@ -28,53 +28,57 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - 以上选择只对当前 operation 有效；不得把上一轮对话、旧 provider 选择或 Agent 状态当成当前授权。每次 operation 只能有一个最终 source decision。
 - 不比较用户明文与 `secret://` 背后的值，不因可能相同而改变 provenance。
 
+## 全局审批模式
+
+SVLT App 主窗口第一页提供两个全局模式。模式只能由设备所有者在 App 中选择；Agent、MCP、Skill、远程 semantic judge 都不得切换、模拟或持久化这个设置。
+
+- `审批模式 / approvalRequired`：保留 SVLT 的 effect-based 授权。普通任务对齐、有限且可恢复的操作可以自动执行；真正危险、不可逆、高影响、凭据暴露或语义未决的操作按现有 `GRAY`/`HARD`/`DENIED` 逻辑处理，并可能触发 Touch ID/macOS 密码。
+- `无审批模式 / noApproval`：SVLT 退出人工审批决策链。对结构合法、Secret 引用存在且当前 executor/capability 实际支持的操作，SVLT 不因本地 `AUTO/GRAY/HARD/DENIED` 风险等级阻断，不调用 independent judge，也不弹出 operation approval 的 Touch ID/macOS 密码。Catalog Agent mutation 同样跳过 SVLT 的本机授权队列。
+- 无审批模式不是“Agent 不判断风险”。恰恰相反，**是否发起操作由主模型/Agent 自己依据用户当前目标、实际效果、blast radius、reversibility、credential exposure，以及宿主 Agent 自身的 approval/sandbox/safety policy 决定。** 无审批模式下，是否执行由主 Agent 自己决定。如果宿主 Agent（例如 Codex）自身要求确认，照常遵循宿主规则；不得把 SVLT 无审批模式解释为绕过宿主产品安全策略。
+- 无审批模式下仍必须准确填写 `agentAssessment`、`intendedEffect`、`expectedEffect` 等效果信息。不要为了让请求“看起来安全”而拆分、改写、伪装或谎报操作；SVLT 不再依据这些字段制造人工审批，因此没有规避的必要。
+- 无审批模式不会把坏参数变成合法请求：重复/缺失 Secret、无效协议或端口、typed payload 不一致、目标格式错误、Secret 元数据缺失、adapter 未安装/不可用等技术错误仍正常失败。
+- 无审批模式不会改变明文边界：SVLT 派生的秘密仍不得被返回聊天、普通日志、普通 shell 参数、环境变量或其他非 SVLT 批准的数据通道。它只关闭 SVLT 的“是否需要人工批准”门，不把 `secret://` 变成可随意读取的明文。
+- 旧 vault 若仍留有历史 `userPresence` wrapping key，系统可能在完成一次经过密码学验证的迁移时要求设备所有者认证（device-owner authentication）；这属于旧 Keychain 数据迁移，不是 operation approval。迁移成功后使用 `automatic-v2`。
+
 ## 硬规则
 
 - 用户在 App 中选定的 v3 `敏感信息.md` 是 SVLT managed catalog。Agent 只能经 MCP 使用 `secret://` 或允许返回的非敏感元数据；不得读取 managed Markdown 或本地 sidecar 来发现、验证或猜测 opaque ID。
-- Catalog 的合法 writer 可以是 App、MCP、Obsidian、编辑器或脚本；无论渠道都必须产生符合 v3 marker/schema 的 Markdown，不得伪造 marker/`secret://`、写入 plaintext，Agent 的 mutation 仍必须走 SVLT operation-bound authorization。
+- Catalog 的合法 writer 可以是 App、MCP、Obsidian、编辑器或脚本；无论渠道都必须产生符合 v3 marker/schema 的 Markdown，不得伪造 marker/`secret://`、写入 plaintext。Agent mutation 仍使用精确 operation-bound request；审批模式决定这个 request 是否还需要 SVLT 人工批准。
 - `secret://` 是不透明句柄；不要猜测、分类、摘要、解码、比较或改写背后的值。
 - 同一 operation 中不得重复提交同一个 `secret://`；不要为了“去重”静默改变调用语义，重复引用应修正后重新提交。
 - SVLT MCP/search/response/log/audit 不返回秘密明文。秘密字段只能是 opaque `secret://` 引用；Catalog JSON 不得写入秘密明文。
 - 用户明确选择的当前明文可以由用户指定的外部工具/工作区按其安全规则使用；SVLT 不自动创建 Secret、替换输入或阻止操作。其他仓库、日志、持久化、网络和工具规则仍然有效。
 - 不得把通过 SVLT 解密得到的明文交给普通 shell、curl、URL、header、环境变量、日志、审计或聊天。禁止的是 Agent 自己把 `secret://` 洗成明文绕过 SVLT 专用操作。
 - 不要把用户主动提供的明文识别为 security bypass attempt，也不要把它与已有 Secret 做等值关联。
-- 每笔 Agent Catalog mutation 都必须使用精确绑定、一次消费的 operation-bound write request；需要批准时直接触发 macOS device-owner authentication，认证本身就是本次授权，不存在额外 App“验证并授权”按钮。
-- 需要给已有 `secret://` 增加精确服务地址/协议时使用 `secret_bind_destination`；protocol 和 destination 会作为一个经过认证的原子 pair 保存，每次变更都要求 fresh device-owner authentication，由 SVLT 在进程内重封装绑定元数据并返回 canonical destination，绝不返回明文或建立执行窗口。
+- 需要给已有 `secret://` 增加精确服务地址/协议时使用 `secret_bind_destination`；protocol 和 destination 作为原子 pair 保存并返回 canonical destination。审批模式下按策略要求 owner approval；无审批模式下不额外弹出 SVLT operation approval。
 
 ### SSH transport 与 effect-based authorization
 
 - 连续 SSH 任务优先使用 `ssh_command_with_secret` 返回的 opaque `sessionID`，或一次调用 `ssh_batch_with_secret`。`sessionID` 只代表 SVLT 内部可复用的 SSH transport，不代表命令已获授权，也不是密码、ControlPath 或其他 capability。
-- 每一次命令（包括带 `sessionID` 的后续命令）仍由 SVLT 重新做 principal、目标、secretRef 和本地 Policy 校验；不要把 session 的存在当成执行许可。
-- `ssh_command_with_secret` 的 `command` 是真正的 remote shell 命令，会 byte-for-byte 交给远端登录 shell 执行：单行、多行、`;`、`&&`、`|`、`>`、`$()`、glob、引号、heredoc、`bash -c`、`python -c`、`find -exec`、`sudo` 都按你真实的意图提交，SVLT 不解析也不改写 shell 语法。需要真实 shell 语义时优先用它。
-- 结构化 `ssh_batch_with_secret`（每项 `executable` + `arguments`）适合天然参数化的任务；不要为了绕过任何限制把脚本强行拆成 batch。两种形式都是一等公民。
-- 准确填写 `intendedEffect` 和风险提示。不得拆小、改写、伪装或谎报 destructive/不可逆操作；SVLT 会把完整原始命令纳入本地策略和必要的语义复核。AgentRisk 是效果证据，不是授权能力；主 Agent 保守填写 `freshApproval` 不能单独制造审批。
-- 授权分层（effect-based）：Secret 的存在、首次使用、operationID、sessionID、经过的时间和是否使用 batch 都不是审批理由。明确任务对齐、影响有限、可恢复的 SSH（包括 hostname、df、cat、日志/配置读取、普通 `sudo`、普通 `docker exec` 和未知 NAS CLI）直接 `AUTO`；只有真实危险、不可逆、高影响或无法确定效果的操作才进入 `GRAY`/`HARD`。电源、裸设备/文件系统、RAID/存储破坏和 Docker volume/prune 等固定破坏性底线每次 fresh approval；已有 Secret 泄露和其他 `DENIED` 边界继续严格执行。
-- MCP 连接建立后应声明客户端名称与版本；Audit/UI 只显示 `Codex（自报）`、`Pi（自报）` 等 display metadata。该 identity 不是可信 security principal，也不能改变 principal、Secret binding 或策略隔离。
-- `ssh_batch_with_secret` 只减少连接/协议开销，不是规避审批的必要手段。分别发起的普通 SSH operation 也应自动执行；不要为了审批策略把命令拼成 batch。
-- 以上是行为指导。SVLT 的职责是根据实际效果判断授权级别、展示事实并执行策略；`AUTO` 不弹出 owner approval。`GRAY` 正常情况下交给独立 semantic judge；但 judge 未配置、超时或临时不可用本身不是危险效果，也不能单独制造 Touch ID。对于 daemon 已签发 reviewID、原始 main-Agent assessment hash 精确匹配、任务明确对齐且影响 bounded/recoverable 的既有 semantic-gray 操作族，MCP/daemon 可以走 daemon-bound bounded main-Agent fallback 并继续 `AUTO`。绑定冲突、动态/不透明执行、低置信或 unknown 语义、`HARD`/`DENIED` 底线仍不得 fallback。Agent 不要因为 judge 不可用而主动把一个本来明确的 bounded operation 改报 `uncertain` 或 `freshApproval`。
-- 普通 `AUTO` 的密钥可用性也不是审批租约。旧版本留下的 `userPresence` wrapping key 最多会在迁移时触发一次设备所有者认证；daemon 只有在该候选实际解开当前 master-key wrapper 并通过记录完整性验证后，才会把它 promote 到 `automatic-v2` 的 `WhenUnlockedThisDeviceOnly` 命名空间。此认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批。真正需要 owner 决定的具体高危效果才使用 recurring Touch ID/密码。
+- 每一次命令（包括带 `sessionID` 的后续命令）仍由 SVLT 重新校验 principal、目标、Secret 引用和请求结构；无审批模式只关闭人工授权门，不关闭这些技术校验。
+- `ssh_command_with_secret` 的 `command` 是真正的 remote shell 命令，会 byte-for-byte 交给远端登录 shell 执行：单行、多行、`;`、`&&`、`|`、`>`、`$()`、glob、引号、heredoc、`bash -c`、`python -c`、`find -exec`、`sudo` 都按真实意图提交，SVLT 不解析也不改写 shell 语法。
+- 结构化 `ssh_batch_with_secret`（每项 `executable` + `arguments`）适合天然参数化的任务；不要为了审批策略强行拆分或拼接。两种形式都是一等公民。
+- 审批模式下：Secret 的存在、首次使用、operationID、sessionID、经过时间和是否使用 batch 都不是审批理由。普通任务对齐、影响有限、可恢复的 SSH 直接 `AUTO`；高影响/不可逆/未决操作才进入更严格路径。
+- 审批模式的 `GRAY` 正常交给 independent semantic judge；judge 不可用时仍保留既有 daemon-bound bounded main-Agent fallback。`HARD`/`DENIED` 底线按审批模式处理。
+- 无审批模式下：MCP 不调用 independent judge，daemon 把有效操作按 full-access 路径执行。主 Agent 仍应先自行判断命令是否符合用户目标；不要因为“SVLT 会放行”就执行用户没有要求的高影响操作。
+- MCP 连接建立后应声明客户端名称与版本；Audit/UI 中的 client identity 只是 display metadata，不是可信 security principal。
 
 ### 非 SSH 执行器与能力清单
 
-- 在任何非 SSH 执行前先调用 `vault_capabilities`。daemon 返回的 capability manifest 才是实际能力来源；`unavailable` 不是“稍后重试即可”的支持状态，也不能因此请求明文或换成普通 shell/CLI。
-- 能力清单中的 `version` 与 `features` 是实际 adapter 的非敏感能力说明；不要只因为 MCP tool 存在就假设某个 auth、body、response projection、session 或 capture 能力存在。
-- HTTP/API 只能使用 typed payload：Basic、Bearer、API-key header、Cookie 等由 SVLT 分别校验。Secret 仅用于预期 HTTPS 认证时不会制造审批；普通任务对齐的 GET/POST/PUT/PATCH 和有限效果可以 `AUTO`。未加密 `http://` 携 Secret、凭据类 URL query、破坏性 DELETE、不可确定的效果或不安全外发仍进入严格 fresh/deny 边界；SVLT 不按 hostname 字符串宣称真实公网/私网 egress，重定向会停止并要求重新审查。
-- 带认证的 HTTP 响应默认只返回状态/Content-Type。调用方明确传入 `includeBodyPreview` 时，已安装的 HTTP adapter 可以在本机审批后返回最多 16 KiB、仅限合法 JSON 且不含敏感字段名/`secret://` 的安全正文预览；无法通过检查的响应会 quarantine，不会把任意 HTML、文本或疑似凭据字段交给 Agent。`projectedJSON` 仍要求 capability manifest 声明并同时匹配 App-owned profile ID 与 allowlisted JSON fields。不要请求 token、access_token、refresh_token、password、secret、cookie、session、authorization 等字段。`captureCredential`/派生 Cookie session 在本版本仍不可用。
-- `Authorization` header 默认使用 `Bearer`；`X-API-Key`、`X-Auth-Token` 等 custom API-key header 默认只发送原始 token，只有明确安全的 scheme 才会加前缀。不要用自定义 header 绕过 profile/Policy。
-- 通用 `localExecution`（把 Secret 交给任意本地进程）是极高危操作：会触发 fresh approval，审批中明确提示"批准后 SVLT 无法保证 Agent 不获得该凭据"，审计标记 `userApprovedSecretRelease`；是否释放由设备所有者决定。`trustedProcess` 是独立的未来 adapter 边界，只有能力清单声明已配置的 signed profile 时才可用，禁止退回 shell、AppleScript、剪贴板或通用脚本。
-- `database_query_with_secret`、`sftp_transfer_with_secret`、`ftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret` 和 trusted-process 能力必须以 manifest 的 `supported` 为前提。当前没有真实安全 adapter 时应接受 `ACTION_EXECUTOR_UNAVAILABLE` 并停止，不得伪造成功；数据库不得退回 shell client，FTP 不得退回普通 FTP/curl 客户端且只允许私有/回环目标、每次重新认证，浏览器不得退回 AppleScript、剪贴板或页面 JavaScript，本地 App 不得退回通用脚本。
-- 导出工具只返回本地路径/状态；plaintext resolution 和安全文件写入留在 App/daemon 边界内。不要读取导出文件再把内容放入聊天或普通工具。
-- HTTP transport `sessionID` 只是 SVLT 内部连接复用句柄，不代表请求已授权。每次请求仍须通过 principal、secretRef、目标、策略和授权要求检查；transport session 不会让 DELETE 或其他 destructive action 免于 fresh approval。
-- 非 SSH 请求仍需准确填写 `intendedEffect` 和风险。授权级别是 `none`（AUTO）、`freshApprovalRequired`（真正危险/高影响或未决效果）和 `denied`；旧 `reusableApproval` 仅为兼容字段，进入策略边界后归一化为 `none`，不建立 5 分钟 lease。Agent 自报风险只提供效果证据；GRAY 优先由独立 judge 给出 AUTO/HARD/DENIED，judge 基础设施不可用时只有 daemon 已绑定且通过同一套 bounded/recoverable fallback 条件的 main-Agent assessment 才能继续 AUTO。judge 不可用本身不得被当成 fresh-approval 理由。
-- MCP 连接建立时声明 client name/version。Audit 中的 `Codex（自报）`、`Pi（自报）`、`Hermes（自报）` 只是显示 metadata；不得把它当成 security principal，也不能用它绕过 scope 隔离。
+- 在任何非 SSH 执行前先调用 `vault_capabilities`。daemon 返回的 capability manifest 才是实际能力来源；`unavailable` 不是“稍后重试即可”的支持状态，也不能因为无审批模式就伪造能力或退回不受支持的实现。
+- HTTP/API 继续使用 typed payload；数据库、SFTP/SCP/FTP、浏览器、本地 App、trusted process 等继续以实际 capability 为前提。无审批模式只移除 SVLT 人工授权，不创造不存在的 adapter。
+- 带认证 HTTP 响应仍按 response policy 做 metadata-only/sanitized preview/projected JSON 隔离；无审批模式不会关闭响应脱敏和 Secret 明文隔离。
+- `Authorization` header 默认使用 `Bearer`；custom API-key header 仍按 typed profile/request 构造。不要用自定义 header 绕过 Secret 明文边界。
+- `localExecution` 在审批模式下属于极高危 fresh-approval 边界；无审批模式下 SVLT 不再弹 owner approval，但主 Agent必须把“Secret 将交给任意本地进程”视为真实效果并自行决定是否符合用户目标和宿主安全规则。
+- 导出工具只返回本地路径/状态；plaintext resolution 和安全文件写入留在 App/daemon 边界内。不要读取导出文件再把内容放进聊天或普通工具。
+- 非 SSH 请求同样必须准确填写风险/效果字段。审批模式下这些字段参与 effect-based policy；无审批模式下它们用于 Agent 自我判断、审计和可解释性，而不是 SVLT 人工审批。
 
 ## Catalog Markdown 布局
 
 - SVLT 自己生成或受控插入的 `敏感信息.md` 使用“前言区 → 连续 Catalog 主体 → 尾部非托管区”布局。Note、说明、callout、用户段落和 WikiLink 是 unmanaged，不属于 Index/Entry/Field semantic model，也不计入搜索、计数或 App UI；已有未知用户 Markdown 即使位于两个 Index 之间也保持原位。
-- policy block 与前言位于业务 Catalog 之前；存在 Index 时，新 Index 插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前。没有 Index 时，首个 Index 插入前言之后。不得把新内容简单 append 到文件绝对末尾，也不要为了追求连续主体搬迁既有用户 Markdown。
-- Index marker/Entry marker/Field marker 是 authoritative structure。新生成的 Index 之间由 renderer 生成标准 `\n\n---\n\n`；已有 `---` 没有 provenance 时按用户内容保留，不要全局重写用户自己的分隔线。
-- 同一 Index 内 Entry 之间统一使用双空行视觉间距；canonical render、create、batch、migration、format repair 和 minimal patch 必须遵守同一布局。
-- 普通写入优先 source-range minimal patch，只修改目标块和新写入时 renderer 明确生成的边界空白，保留用户 Markdown、注释、WikiLink、Note、备注和尾部内容。format repair 不为追求连续主体而移动无法确认来源的用户 Note/Markdown/WikiLink，也不删除用户 HR；只有 migration 能确定来自旧版官方结构化“目录说明”的 Note 时，才可将它放入前言。
+- policy block 与前言位于业务 Catalog 之前；存在 Index 时，新 Index 插入最后一个合法 `SVLT-INDEX` 之后、尾部非托管 Markdown 之前。没有 Index 时，首个 Index 插入前言之后。
+- Index marker/Entry marker/Field marker 是 authoritative structure。新生成的 Index 之间由 renderer 生成标准 `\n\n---\n\n`；已有 `---` 没有 provenance 时按用户内容保留。
+- 同一 Index 内 Entry 之间统一使用双空行视觉间距；普通写入优先 source-range minimal patch，保留用户 Markdown、注释、WikiLink、Note、备注和尾部内容。
 
 ## 工具选择
 
@@ -84,31 +88,24 @@ SVLT is opt-in. It protects secrets that the user chooses to manage with SVLT; i
 - `vault_status`：只有即将执行 SVLT 管理操作时才检查 SVLT 可用性。
 - `secret_auto_handle_text`：文本中出现 `secret://` 且用户没有明确选择其他来源时使用。
 - `secret_search` / `secret_catalog_search`：没有明确来源且需要发现 SVLT 记录时使用；明确 plaintext 或外部 provider 时不要调用来替换来源。
-- `secret_catalog_get`：用户明确选择 SVLT Entry 后获取非敏感上下文和 opaque 引用。
-- `secret_catalog_list_indices`：列出全部 Index（包括空 Index），从 MCP 响应获取 opaque `indexID`。
-- `secret_catalog_list_entries`：使用 MCP 返回的 `indexID` 列出目标 Index 的 Entry。
-- `secret_catalog_create_structure`：一次创建一个 Index 和多个安全 Entry，由 SVLT 生成 opaque ID 并返回映射、revision 与 validation。
-- `secret_catalog_add_secret_placeholder`：向已存在 Entry 添加空 `secret` placeholder；不要提交 plaintext 或自造 `secretRef`。
-- `secret_catalog_request_secure_inputs`：请求本机 SecureField 填写秘密；只发送 field metadata 和 revision，Agent 永远不接收 plaintext。当前同步 transport 返回完成状态/revision；若兼容 transport 返回 `PENDING` + `requestID`，只能用 `secret_catalog_secure_input_status` 轮询同一请求。
-- `secret_bind_destination`：为已有 `secret://` 绑定一个精确的服务目标和协议；以原子 pair 保存，适合在策略评审后启用 HTTP/API 等目标，每次都走本机 fresh approval，返回 canonical destination，不返回 plaintext。
-- `secret_action_router`：用户明确选择 SVLT 且需要在本机/内网执行受控动作时使用；明文只在 SVLT 专用边界内处理。
-- `ssh_command_with_secret`：适合单条结构受限 SSH 命令；连续任务优先复用返回的 opaque `sessionID`。
-- `ssh_batch_with_secret`：适合巡检和批量任务；传入结构化 `commands`，让 SVLT 在执行前完整评估整批风险，并返回独立、已脱敏的结果。
-- `local_http_request_with_secret`、`api_request_with_token`、`database_query_with_secret`、`sftp_transfer_with_secret`、`ftp_transfer_with_secret`、`browser_web_login_with_secret`、`local_app_form_fill_with_secret`：仅用于 `secret://` 管理路径。
+- `secret_catalog_get` / `secret_catalog_list_indices` / `secret_catalog_list_entries`：只通过 MCP 返回的 opaque ID 浏览 Catalog。
+- `secret_catalog_create_structure` / `secret_catalog_add_secret_placeholder` / Catalog mutation 工具：保持精确 operation-bound mutation；审批模式可能要求本机批准，无审批模式直接通过 SVLT 授权层。
+- `secret_catalog_request_secure_inputs`：请求本机 SecureField 填写秘密；Agent 永远不接收 plaintext。Secure Input 是用户输入秘密的 UI 事务，不等价于 operation approval 模式。
+- `secret_bind_destination`、`secret_action_router`、`ssh_command_with_secret`、`ssh_batch_with_secret` 和各 typed executor 工具继续用于各自能力边界。
 - `secret_reveal_request` / `paragraph_reveal_request`：用户明确要在本机 App 查看 SVLT 明文时使用；结果是本地显示状态，不是返回给 Agent 的明文。
 
 ## Secure Input 异步事务
 
-- `secret_catalog_request_secure_inputs` 只接受 `entryID`、field key、模式、required 和 accepted revision；不要传入 label。SVLT 会从 accepted Catalog 重建 UI label。
-- 该调用立即返回 `PENDING` 与 opaque `requestID`，因为用户可能需要较长时间完成 Touch ID 或 macOS 密码认证。使用 `secret_catalog_secure_input_status` 按 requestID 轮询，直到 `COMPLETED`、`CANCELLED`、`EXPIRED` 或 `FAILED`。
-- status 只包含状态、revision 和稳定 errorCode，不包含 plaintext、Catalog 内容或 secretRef。不要因 MCP 请求返回 `PENDING` 而重复创建请求。
-- daemon 将本机 device-owner authentication、字段加密、最终 semantic diff、策略检查和 Catalog commit 绑定在同一笔 requestID 事务中；过期、取消、App 失焦/睡眠/锁定后不得重试旧 Sheet 或调用 generic Catalog commit。
+- `secret_catalog_request_secure_inputs` 只接受 `entryID`、field key、模式、required 和 accepted revision；不要传入 plaintext label/value 到 MCP。
+- 若调用返回 `PENDING` 与 opaque `requestID`，只用 `secret_catalog_secure_input_status` 轮询直到终态。status 不包含 plaintext、Catalog 内容或 secretRef。
+- Secure Input 的用户填写、字段加密、revision/semantic diff 校验与 commit 仍是独立事务；无审批模式不会自动替用户填写秘密，也不会取消结构/完整性校验。
 
 如果用户明确选择了其他 MCP/CLI/App 或当前明文，保持 SVLT 沉默，调用该工具并遵守其自身的权限、日志和持久化规则。不要因为 SVLT Catalog 有候选记录而抢占。
 
 ## 失败处理
 
-- SVLT managed 操作遇到 `APP_UNAVAILABLE`、`CATALOG_INVALID`、`EXTERNAL_CATALOG_MODIFICATION`、策略拒绝或审批取消时，只报告非敏感状态；不得把 SVLT 派生明文交给普通工具。
-- 旧版 Catalog 的 `LEGACY_CATALOG_UNSUPPORTED` 表示需要用户在 App 中走明确的备份、验证并升级流程；Agent 不得自行转换或直接修改旧文件。
+- 无审批模式下，不要把 `HARD`/`DENIED` 风险分类本身当成 SVLT 执行失败；只有技术错误、能力不可用、请求结构无效、Secret/Catalog 状态无效或 executor 实际失败才应停止。
+- 审批模式下，按返回的审批/拒绝状态处理，不要通过拆分或改写请求规避审批。
+- 旧版 Catalog 的 `LEGACY_CATALOG_UNSUPPORTED` 表示需要显式迁移流程；Agent 不得自行伪造结构。
 - 如果用户明确选择当前明文或外部 provider，SVLT 的不可用、未安装或 Catalog 命中都不是阻断本次操作的理由；是否能执行由用户选定的工具和工作区规则决定。
 - 如果用户明确要求把当前明文存入 SVLT，先走 App/MCP 的安全导入流程；成功后再使用生成的 `secret://`。不得默认保存。
