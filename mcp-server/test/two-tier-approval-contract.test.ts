@@ -26,7 +26,7 @@ describe("two-tier approval source contract", () => {
     expect(semanticReview).toContain("route: .fast");
     expect(semanticReview).toContain("authorizationRequirement: .none");
 
-    expect(approver).toContain("VaultApprovalModeState.shared.mode == .noApproval");
+    expect(approver).toContain("guard VaultApprovalModeState.shared.mode == .approvalRequired else");
     expect(approver).toContain("return nil");
 
     expect(catalog).toContain("VaultApprovalModeState.shared.mode == .noApproval");
