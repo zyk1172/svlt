@@ -66,6 +66,57 @@ enum SemanticReviewFallbackPolicy {
     }
 }
 
+/// Rules that describe a malformed/incomplete descriptor or missing local
+/// Secret metadata rather than a policy judgment. Full-access mode never
+/// converts these into executable operations; the caller must still send a
+/// well-formed operation referencing records that actually exist.
+private enum NoApprovalTechnicalPolicy {
+    static let ruleIDs: Set<String> = [
+        "secret-reference.duplicate",
+        "secret-reference.missing",
+        "secret-metadata.duplicate",
+        "secret-metadata.missing",
+        "operation.port.invalid",
+        "operation.payload.reference-mismatch",
+        "operation.payload.action-mismatch",
+        "operation.reference.invalid",
+        "operation.reference-mismatch",
+        "ssh.protocol.invalid",
+        "ssh.command-forms.ambiguous",
+        "ssh.batch.invalid",
+        "ssh.destination.missing",
+        "ssh.port-mismatch",
+        "http.url.invalid",
+        "http.protocol-mismatch",
+        "http.port-mismatch",
+        "http.destination-mismatch",
+        "browser.url.invalid",
+        "database.protocol.invalid",
+        "database.destination.missing",
+        "database.port-mismatch",
+        "database.payload.invalid",
+        "database.parameters.invalid",
+        "sftp.protocol.invalid",
+        "sftp.destination.missing",
+        "sftp.port-mismatch",
+        "ftp.protocol.invalid",
+        "ftp.destination.missing",
+        "ftp.port-mismatch",
+        "file-transfer.payload.invalid",
+        "browser.payload.invalid",
+        "local-app.protocol.invalid",
+        "local-app.destination.missing",
+        "local-app.payload.invalid",
+        "export.payload.invalid",
+        "trusted-process.payload.invalid",
+        "local-execution.payload.invalid"
+    ]
+
+    static func isTechnical(_ ruleID: String) -> Bool {
+        ruleIDs.contains(ruleID)
+    }
+}
+
 extension VaultAppServices {
     public func approvalMode() async -> VaultApprovalMode {
         VaultApprovalModeState.shared.mode
@@ -74,9 +125,6 @@ extension VaultAppServices {
     @discardableResult
     public func setApprovalMode(_ mode: VaultApprovalMode) async throws -> VaultApprovalMode {
         let persisted = try VaultApprovalModeState.shared.setMode(mode)
-        // A mode change is a security-boundary transition. Cancel operations
-        // that began under the previous posture so execution always observes
-        // the current daemon-authoritative mode from start to finish.
         await invalidateSecurityState()
         return persisted
     }
@@ -88,11 +136,15 @@ extension VaultAppServices {
         let preflight = operationPolicyEngine.semanticPreflight(descriptor, metadata: metadata)
 
         if VaultApprovalModeState.shared.mode == .noApproval {
-            // In full-access mode the MCP layer must not invoke the semantic
-            // judge or manufacture a fresh owner approval. Structural and
-            // executor validation still run when the daemon executes the
-            // descriptor, so malformed/unsupported operations still fail for
-            // technical reasons rather than as an authorization decision.
+            if preflight.technicalFailure,
+               NoApprovalTechnicalPolicy.isTechnical(preflight.policyRuleID) {
+                return preflight
+            }
+
+            // Full-access mode deliberately collapses every policy-only
+            // FAST/GRAY/HARD/DENIED result to FAST. The Agent remains
+            // responsible for deciding whether the requested effect is
+            // appropriate; SVLT still rejects malformed or impossible input.
             return SecretOperationPreflight(
                 route: .fast,
                 policyRuleID: preflight.policyRuleID,
@@ -154,15 +206,18 @@ extension VaultAppServices {
             decision = operationPolicyEngine.evaluate(descriptor, metadata: metadata)
         }
 
-        guard VaultApprovalModeState.shared.mode == .noApproval,
-              !decision.technicalFailure else {
+        guard VaultApprovalModeState.shared.mode == .noApproval else {
+            return decision
+        }
+        if decision.technicalFailure,
+           NoApprovalTechnicalPolicy.isTechnical(decision.policyRuleID.replacingOccurrences(of: "+intent-first", with: "")) {
             return decision
         }
 
-        // Preserve a fresh internal requirement for paths that use it as a
-        // structural marker (for example destination-binding mutations), but
-        // remove DENIED as an SVLT authorization outcome. LocalOperationApprover
-        // is the final prompt boundary and is a no-op in this mode.
+        // Preserve a fresh internal requirement for code paths that use it as
+        // an execution marker, while removing DENIED as an authorization
+        // outcome. LocalOperationApprover is the final prompt boundary and is
+        // a no-op in full-access mode.
         let requirement: AuthorizationRequirement = decision.authorizationRequirement == .none
             ? .none
             : .freshApprovalRequired
@@ -180,10 +235,6 @@ extension VaultAppServices {
         )
     }
 
-    /// Consumes a daemon-issued gray review only after every binding has been
-    /// checked. A mismatched review remains available to its rightful caller;
-    /// a valid review is removed before any approval or execution await so it
-    /// cannot be replayed after a later failure.
     func consumeSemanticReviewIfValid(
         _ descriptor: SecretOperationDescriptor,
         metadata: [SecretPolicyMetadata],
