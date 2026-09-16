@@ -153,6 +153,82 @@ describe("intent-first semantic routing", () => {
     expect(calls).toBe(1);
   });
 
+  it("falls back to the exact bounded main-Agent assessment when the judge is not configured", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      request({
+        reason: "Remove one generated cache file",
+        intendedEffect: "Delete one generated cache file",
+        expectedEffect: "One bounded recoverable deletion",
+        effectSeverity: "bounded",
+        reversibility: "recoverable",
+        confidence: 0.95
+      }),
+      grayPreflight,
+      undefined
+    );
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.source).toBe("mainAgent");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("automatic");
+    expect(judged.descriptor.agentAssessment.reason).toBe("Remove one generated cache file");
+    expect(judged.descriptor.reviewID).toBe(grayPreflight.reviewID);
+  });
+
+  it("falls back to bounded main-Agent semantics when the configured judge is temporarily unavailable", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      request({
+        reason: "Remove one generated cache file",
+        intendedEffect: "Delete one generated cache file",
+        expectedEffect: "One bounded recoverable deletion",
+        effectSeverity: "bounded",
+        reversibility: "recoverable",
+        confidence: 0.95
+      }),
+      grayPreflight,
+      configuration,
+      { async fetch() { throw new Error("offline"); } }
+    );
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.source).toBe("mainAgent");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("automatic");
+    expect(judged.descriptor.reviewID).toBe(grayPreflight.reviewID);
+  });
+
+  it("does not use bounded fallback for a destination-binding conflict", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      request({
+        effectSeverity: "bounded",
+        reversibility: "recoverable",
+        confidence: 0.95
+      }),
+      {
+        ...grayPreflight,
+        reasons: ["凭据执行目标或协议超出既有绑定范围"]
+      },
+      undefined
+    );
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("freshApproval");
+    expect(judged.descriptor.reviewID).toBeUndefined();
+  });
+
+  it("does not use bounded fallback for opaque execution", async () => {
+    const judged = await applyContextBoundedRiskJudge(
+      request({
+        effectSeverity: "bounded",
+        reversibility: "recoverable",
+        confidence: 0.95
+      }),
+      {
+        ...grayPreflight,
+        reasons: ["操作包含动态或不透明执行"]
+      },
+      undefined
+    );
+    if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("freshApproval");
+    expect(judged.descriptor.reviewID).toBeUndefined();
+  });
+
   it("fails closed when a gray preflight has no daemon review binding", async () => {
     let calls = 0;
     const judged = await applyContextBoundedRiskJudge(
@@ -219,7 +295,7 @@ describe("intent-first semantic routing", () => {
     expect(judged.descriptor.agentAssessment.declaredRisk).toBe("approvalRequired");
   });
 
-  it("uses fresh approval when a required gray-zone judge is unavailable", async () => {
+  it("uses fresh approval when a required gray-zone judge is unavailable and semantics are unresolved", async () => {
     const judged = await applyContextBoundedRiskJudge(
       request({ intentAlignment: "unclear", executionRecommendation: "uncertain" }),
       grayPreflight,
@@ -227,8 +303,9 @@ describe("intent-first semantic routing", () => {
       { async fetch() { throw new Error("offline"); } }
     );
     if (judged.type !== "executeSecretOperation") throw new Error("unexpected request type");
-    expect(judged.descriptor.agentAssessment.source).toBe("independentJudge");
+    expect(judged.descriptor.agentAssessment.source).toBe("mainAgent");
     expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("freshApproval");
+    expect(judged.descriptor.reviewID).toBeUndefined();
   });
 
   it("does not contain or recognize the retired marker protocol", async () => {

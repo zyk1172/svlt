@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import VaultAuthorization
+import VaultCore
 import VaultExecution
 import VaultIPC
 @testable import VaultService
@@ -66,6 +68,112 @@ import VaultIPC
     #expect(!FileManager.default.fileExists(atPath: configuration.ipcConfiguration.socketURL.path))
 }
 
+@Test func semanticReviewFallbackAllowsOnlyBoundedKnownGrayEffects() {
+    let assessment = boundedAutomaticAssessment()
+    let preflight = SecretOperationPreflight(
+        route: .gray,
+        policyRuleID: "ssh.fresh.filesystem-delete",
+        authorizationRequirement: .freshApprovalRequired,
+        blastRadius: .unknown,
+        reasons: ["本地分类器检测到需要独立语义复核的操作族"],
+        reviewID: UUID()
+    )
+
+    #expect(SemanticReviewFallbackPolicy.isEligible(
+        assessment: assessment,
+        preflight: preflight
+    ))
+}
+
+@Test func semanticReviewFallbackRejectsBindingConflictOpaqueAndUnknownSemantics() {
+    let assessment = boundedAutomaticAssessment()
+    let bindingConflict = SecretOperationPreflight(
+        route: .gray,
+        policyRuleID: "ssh.fresh.filesystem-delete",
+        authorizationRequirement: .freshApprovalRequired,
+        blastRadius: .unknown,
+        reasons: ["凭据执行目标或协议超出既有绑定范围"],
+        reviewID: UUID()
+    )
+    let opaqueExecution = SecretOperationPreflight(
+        route: .gray,
+        policyRuleID: "ssh.fresh.filesystem-delete",
+        authorizationRequirement: .freshApprovalRequired,
+        blastRadius: .unknown,
+        reasons: ["操作包含动态或不透明执行"],
+        reviewID: UUID()
+    )
+    let unknownAssessment = AgentRiskAssessment(
+        declaredRisk: .approvalRequired,
+        reason: "The real effect is unknown",
+        userGoal: "Complete the requested task",
+        taskContext: "No reliable effect evidence",
+        intendedEffect: "Unknown",
+        expectedEffect: "Unknown",
+        expectedResult: "Unknown",
+        intentAlignment: .unclear,
+        effectSeverity: .unknown,
+        reversibility: .unknown,
+        secretHandling: .unknown,
+        executionRecommendation: .uncertain,
+        confidence: 0.2
+    )
+
+    #expect(!SemanticReviewFallbackPolicy.isEligible(
+        assessment: assessment,
+        preflight: bindingConflict
+    ))
+    #expect(!SemanticReviewFallbackPolicy.isEligible(
+        assessment: assessment,
+        preflight: opaqueExecution
+    ))
+    #expect(!SemanticReviewFallbackPolicy.isEligible(
+        assessment: unknownAssessment,
+        preflight: SecretOperationPreflight(
+            route: .gray,
+            policyRuleID: "ssh.fresh.filesystem-delete",
+            authorizationRequirement: .freshApprovalRequired,
+            blastRadius: .unknown,
+            reasons: ["语义字段仍有未决项"],
+            reviewID: UUID()
+        )
+    ))
+}
+
+@Test func semanticReviewStoreBindsFallbackToOriginalAssessmentHash() {
+    var store = SemanticReviewStore(ttl: 120)
+    let now = Date(timeIntervalSinceReferenceDate: 9_000)
+    let originalHash = SemanticReviewFallbackPolicy.assessmentHash(boundedAutomaticAssessment())
+    let changedHash = SemanticReviewFallbackPolicy.assessmentHash(
+        boundedAutomaticAssessment(reason: "Changed after preflight")
+    )
+    let reviewID = store.issue(
+        principal: "agent-peer-one",
+        operationHash: "operation-hash",
+        policyRuleID: "ssh.fresh.filesystem-delete",
+        mainAssessmentHash: originalHash,
+        issuedAt: now
+    )
+
+    #expect(store.consumeIfValid(
+        reviewID: reviewID,
+        principal: "agent-peer-one",
+        operationHash: "operation-hash",
+        currentPolicyRuleID: "ssh.fresh.filesystem-delete",
+        currentMainAssessmentHash: changedHash,
+        now: now.addingTimeInterval(1)
+    ) == nil)
+
+    #expect(store.consumeIfValid(
+        reviewID: reviewID,
+        principal: "agent-peer-one",
+        operationHash: "operation-hash",
+        currentPolicyRuleID: "ssh.fresh.filesystem-delete",
+        currentMainAssessmentHash: originalHash,
+        now: now.addingTimeInterval(2)
+    ) == "ssh.fresh.filesystem-delete")
+}
+
 @Test func agentExecutableSourceDoesNotImportGUIFrameworksOrUseUnlockAtStartup() throws {
     let sourceURL = URL(filePath: #filePath)
         .deletingLastPathComponent()
@@ -78,4 +186,24 @@ import VaultIPC
     #expect(!source.contains("AppKit"))
     #expect(!source.contains("unlockLowProtection"))
     #expect(source.contains("withCheckedContinuation"))
+}
+
+private func boundedAutomaticAssessment(
+    reason: String = "Delete one generated cache file and recreate it if needed"
+) -> AgentRiskAssessment {
+    AgentRiskAssessment(
+        declaredRisk: .silent,
+        reason: reason,
+        userGoal: "Repair the requested service",
+        taskContext: "The target is one generated task artifact",
+        intendedEffect: "Remove one bounded generated artifact",
+        expectedEffect: "One recoverable local change",
+        expectedResult: "The requested repair can continue",
+        intentAlignment: .direct,
+        effectSeverity: .bounded,
+        reversibility: .recoverable,
+        secretHandling: .credentialUse,
+        executionRecommendation: .automatic,
+        confidence: 0.95
+    )
 }
