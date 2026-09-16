@@ -169,6 +169,11 @@ public actor VaultDaemonCore {
                 var localWrappingKey = remainingCandidates.removeFirst()
                 do {
                     let masterKey = try await unlockUsingWrappingKey(localWrappingKey, reason)
+                    // Promotion is deliberately after both wrapper opening and
+                    // record verification. Merely reading an authenticated
+                    // legacy Keychain item is not enough evidence to make it
+                    // the canonical silent wrapping key.
+                    try await deviceKeyStore.promoteVerifiedDeviceKey(localWrappingKey)
                     await protectionKeyStore.rememberDeviceKey(localWrappingKey, for: policy)
                     localWrappingKey.resetBytes(in: 0..<localWrappingKey.count)
                     return SymmetricKey(data: masterKey)
@@ -195,6 +200,7 @@ public actor VaultDaemonCore {
                 var localWrappingKey = remainingCandidates.removeFirst()
                 do {
                     let masterKey = try await unlockUsingWrappingKey(localWrappingKey, reason)
+                    try await deviceKeyStore.promoteVerifiedDeviceKey(localWrappingKey)
                     localWrappingKey.resetBytes(in: 0..<localWrappingKey.count)
                     return SymmetricKey(data: masterKey)
                 } catch let error as MasterKeyCoordinatorError {
@@ -313,7 +319,8 @@ public actor VaultDaemonCore {
             throw VaultDaemonCoreError.alreadyStarted
         }
         // Deliberately no unlock call here. The first protected request enters
-        // the lazy master-key provider and only then asks LocalAuthentication.
+        // the lazy master-key provider. Current wrapping keys are silent while
+        // a legacy userPresence item may require one migration authentication.
         try controller.start()
         try appControlController.start()
         lifecycleMonitor.start()
