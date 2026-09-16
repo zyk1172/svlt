@@ -5,6 +5,7 @@ RELEASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_SOURCE="$RELEASE_DIR/SVLT.app"
 MCP_SOURCE="$RELEASE_DIR/MCP"
 OBSIDIAN_PLUGIN_SOURCE="$RELEASE_DIR/ObsidianPlugin/svlt"
+CODEX_SKILL_SOURCE="$RELEASE_DIR/CodexSkill/svlt"
 
 APP_DIR="/Applications"
 if [[ ! -w "$APP_DIR" ]]; then
@@ -15,6 +16,8 @@ APP_TARGET="$APP_DIR/SVLT.app"
 APP_SUPPORT="$HOME/Library/Application Support/AgentSecretVault"
 MCP_TARGET="$APP_SUPPORT/MCP"
 CONFIG_PATH="$APP_SUPPORT/svlt.mcp.json"
+CODEX_HOME="${CODEX_HOME:-"$HOME/.codex"}"
+CODEX_SKILL_TARGET="$CODEX_HOME/skills/svlt"
 SIGNING_TEAM="JUQXD87P93"
 
 if [[ ! -d "$APP_SOURCE" ]]; then
@@ -24,6 +27,11 @@ fi
 
 if [[ ! -d "$MCP_SOURCE" ]]; then
   echo "找不到 MCP 目录。请从完整 release 包中运行本脚本。" >&2
+  exit 1
+fi
+
+if [[ ! -f "$CODEX_SKILL_SOURCE/SKILL.md" ]]; then
+  echo "找不到 CodexSkill/svlt/SKILL.md。请从完整 release 包中运行本脚本。" >&2
   exit 1
 fi
 
@@ -57,6 +65,17 @@ mkdir -p "$MCP_TARGET"
 cp -R "$MCP_SOURCE"/. "$MCP_TARGET"/
 
 (cd "$MCP_TARGET" && npm ci --omit=dev --ignore-scripts)
+
+# Keep the installed Codex skill in lockstep with the release runtime. A stale
+# ~/.codex/skills/svlt copy can otherwise keep teaching the Agent the retired
+# approval model even after the App/MCP binaries have been upgraded.
+mkdir -p "$(dirname "$CODEX_SKILL_TARGET")"
+rm -rf "$CODEX_SKILL_TARGET"
+cp -R "$CODEX_SKILL_SOURCE" "$CODEX_SKILL_TARGET"
+if ! cmp -s "$CODEX_SKILL_SOURCE/SKILL.md" "$CODEX_SKILL_TARGET/SKILL.md"; then
+  echo "Codex Skill 安装校验失败。" >&2
+  exit 1
+fi
 
 install_obsidian_plugin() {
   local vault_path="$1"
@@ -160,14 +179,16 @@ echo "App: $APP_TARGET"
 echo "后台 Agent: $APP_TARGET/Contents/MacOS/SVLTAgent"
 echo "LaunchAgent: $APP_TARGET/Contents/Library/LaunchAgents/com.agent-secret-vault.SVLT.agent.plist"
 echo "MCP 配置: $CONFIG_PATH"
+echo "Codex Skill: $CODEX_SKILL_TARGET"
 echo "Obsidian 插件: $OBSIDIAN_INSTALL_STATUS"
 echo
 echo "下一步："
 echo "1. 打开 SVLT：open \"$APP_TARGET\"（首次启动会通过 SMAppService 注册后台 Agent）。"
 echo "2. 在系统设置 → 通用 → 登录项中批准 SVLT（如 macOS 要求）。"
-echo "3. 在 Codex / Claude / Hermes / OpenClaw 的 MCP 配置中粘贴 $CONFIG_PATH 的内容。"
-echo "4. 将 $RELEASE_DIR/svlt-agent-policy-zh-CN.md 中的代码块粘贴到 Agent 的系统提示、项目规则或工作区规则。"
-echo "5. 如需测量后台占用，运行：$RELEASE_DIR/check-agent-resources.sh"
-echo "6. 如果安装了 Obsidian 插件，请在 Obsidian 设置 → 第三方插件中启用 SVLT。"
+echo "3. Codex 的 SVLT Skill 已自动安装到 $CODEX_SKILL_TARGET；重启 Codex 或重新加载 skills，确保不继续使用旧版提示词。"
+echo "4. 在 Codex / Claude / Hermes / OpenClaw 的 MCP 配置中粘贴 $CONFIG_PATH 的内容。"
+echo "5. Claude / Hermes / OpenClaw 等不读取 Codex Skill 的 Agent，将 $RELEASE_DIR/svlt-agent-policy-zh-CN.md 中的代码块加入系统提示、项目规则或工作区规则。"
+echo "6. 如需测量后台占用，运行：$RELEASE_DIR/check-agent-resources.sh"
+echo "7. 如果安装了 Obsidian 插件，请在 Obsidian 设置 → 第三方插件中启用 SVLT。"
 
 open "$APP_TARGET"
