@@ -1,4 +1,5 @@
 import Foundation
+import VaultCore
 
 public enum OperationAuthorizationError: Error, Equatable, Sendable {
     case cancelled
@@ -21,9 +22,9 @@ public protocol OperationApprovalContextProviding: OperationApproving {
     ) async throws -> LocalAuthenticationContext?
 }
 
-/// Uses Apple's system-owned Touch ID / device-owner authentication UI.  The
-/// summary is deliberately generated from policy-controlled fields and never
-/// contains secret material.
+/// Uses Apple's system-owned Touch ID / device-owner authentication UI in
+/// approval mode. In no-approval mode this is a hard final short-circuit: SVLT
+/// does not create a device-owner prompt and returns no authentication context.
 public struct LocalOperationApprover: OperationApprovalContextProviding {
     private let authenticator: any BiometricAuthorizing
 
@@ -38,6 +39,10 @@ public struct LocalOperationApprover: OperationApprovalContextProviding {
     public func approveWithAuthenticationContext(
         summary: String
     ) async throws -> LocalAuthenticationContext? {
+        guard VaultApprovalModeState.shared.mode == .approvalRequired else {
+            return nil
+        }
+
         do {
             if let contextAuthorizer = authenticator as? any KeychainContextAuthorizing {
                 return try await contextAuthorizer.makeAuthenticationContext(reason: summary)
