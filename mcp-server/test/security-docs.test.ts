@@ -112,7 +112,8 @@ describe("security documentation", () => {
     expect(skill).toContain("无审批模式下，是否执行由主 Agent 自己决定");
     expect(genericPolicy).toContain("noApproval 下，是否发起一个危险操作由主 Agent 自己决定");
     expect(genericPolicy).toContain("judge 未配置、超时或临时不可用本身不是危险效果");
-    expect(skill).toContain("此认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批");
+    expect(skill).toContain("旧 Keychain 数据迁移，不是 operation approval");
+    expect(skill).toContain("device-owner authentication");
     expect(genericPolicy).toContain("该认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批");
     expect(skill).not.toContain("`GRAY` 由独立 semantic judge 复核");
     expect(genericPolicy).not.toContain("由独立 semantic judge在");
