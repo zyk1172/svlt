@@ -34,11 +34,11 @@ SVLT App 主窗口第一页提供两个全局模式。模式只能由设备所�
 
 - `审批模式 / approvalRequired`：保留 SVLT 的 effect-based 授权。普通任务对齐、有限且可恢复的操作可以自动执行；真正危险、不可逆、高影响、凭据暴露或语义未决的操作按现有 `GRAY`/`HARD`/`DENIED` 逻辑处理，并可能触发 Touch ID/macOS 密码。
 - `无审批模式 / noApproval`：SVLT 退出人工审批决策链。对结构合法、Secret 引用存在且当前 executor/capability 实际支持的操作，SVLT 不因本地 `AUTO/GRAY/HARD/DENIED` 风险等级阻断，不调用 independent judge，也不弹出 operation approval 的 Touch ID/macOS 密码。Catalog Agent mutation 同样跳过 SVLT 的本机授权队列。
-- 无审批模式不是“Agent 不判断风险”。恰恰相反，**是否发起操作由主模型/Agent 自己依据用户当前目标、实际效果、blast radius、reversibility、credential exposure，以及宿主 Agent 自身的 approval/sandbox/safety policy 决定。** 如果宿主 Agent（例如 Codex）自身要求确认，照常遵循宿主规则；不得把 SVLT 无审批模式解释为绕过宿主产品安全策略。
+- 无审批模式不是“Agent 不判断风险”。恰恰相反，**是否发起操作由主模型/Agent 自己依据用户当前目标、实际效果、blast radius、reversibility、credential exposure，以及宿主 Agent 自身的 approval/sandbox/safety policy 决定。** 无审批模式下，是否执行由主 Agent 自己决定。如果宿主 Agent（例如 Codex）自身要求确认，照常遵循宿主规则；不得把 SVLT 无审批模式解释为绕过宿主产品安全策略。
 - 无审批模式下仍必须准确填写 `agentAssessment`、`intendedEffect`、`expectedEffect` 等效果信息。不要为了让请求“看起来安全”而拆分、改写、伪装或谎报操作；SVLT 不再依据这些字段制造人工审批，因此没有规避的必要。
 - 无审批模式不会把坏参数变成合法请求：重复/缺失 Secret、无效协议或端口、typed payload 不一致、目标格式错误、Secret 元数据缺失、adapter 未安装/不可用等技术错误仍正常失败。
 - 无审批模式不会改变明文边界：SVLT 派生的秘密仍不得被返回聊天、普通日志、普通 shell 参数、环境变量或其他非 SVLT 批准的数据通道。它只关闭 SVLT 的“是否需要人工批准”门，不把 `secret://` 变成可随意读取的明文。
-- 旧 vault 若仍留有历史 `userPresence` wrapping key，系统可能在完成一次经过密码学验证的迁移时要求设备所有者认证；这属于旧 Keychain 数据迁移，不是 operation approval。迁移成功后使用 `automatic-v2`。
+- 旧 vault 若仍留有历史 `userPresence` wrapping key，系统可能在完成一次经过密码学验证的迁移时要求设备所有者认证（device-owner authentication）；这属于旧 Keychain 数据迁移，不是 operation approval。迁移成功后使用 `automatic-v2`。
 
 ## 硬规则
 
