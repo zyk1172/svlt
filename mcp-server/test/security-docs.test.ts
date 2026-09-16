@@ -102,7 +102,6 @@ describe("security documentation", () => {
       for (const phrase of [
         "approvalRequired",
         "noApproval",
-        "judge 未配置、超时或临时不可用本身不是危险效果",
         "daemon-bound bounded main-Agent fallback",
         "automatic-v2"
       ]) {
@@ -112,6 +111,7 @@ describe("security documentation", () => {
 
     expect(skill).toContain("无审批模式下，是否执行由主 Agent 自己决定");
     expect(genericPolicy).toContain("noApproval 下，是否发起一个危险操作由主 Agent 自己决定");
+    expect(genericPolicy).toContain("judge 未配置、超时或临时不可用本身不是危险效果");
     expect(skill).toContain("此认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批");
     expect(genericPolicy).toContain("该认证属于旧密钥迁移，不代表以后每次 Secret 使用都需要审批");
     expect(skill).not.toContain("`GRAY` 由独立 semantic judge 复核");
