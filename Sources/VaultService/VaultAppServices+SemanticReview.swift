@@ -103,15 +103,18 @@ extension VaultAppServices {
         if let verifiedSemanticReviewRuleID,
            operationPolicyEngine.semanticPreflight(descriptor, metadata: metadata).policyRuleID
                == verifiedSemanticReviewRuleID {
-            // The verified review can be either a real independent-judge
-            // result or the exact main-Agent assessment that the daemon bound
-            // during preflight and later accepted under the narrow bounded
-            // fallback policy. The policy engine already treats main-Agent
-            // fresh/deny hints as evidence rather than final decisions.
-            return operationPolicyEngine.evaluateWithVerifiedIndependentJudge(
-                descriptor,
-                metadata: metadata
-            )
+            switch descriptor.agentAssessment.source {
+            case .independentJudge:
+                return operationPolicyEngine.evaluateWithVerifiedIndependentJudge(
+                    descriptor,
+                    metadata: metadata
+                )
+            case .mainAgent:
+                return operationPolicyEngine.evaluateWithVerifiedBoundedMainAgentFallback(
+                    descriptor,
+                    metadata: metadata
+                )
+            }
         }
         return operationPolicyEngine.evaluate(descriptor, metadata: metadata)
     }
