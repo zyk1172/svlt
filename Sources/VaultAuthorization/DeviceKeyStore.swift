@@ -117,10 +117,13 @@ public struct DeviceKeyStore: DeviceKeyStoring {
             if authenticationContext != nil {
                 throw DeviceKeyStoreError.authenticationRequired
             }
-            // The normal wrapping key is WhenUnlockedThisDeviceOnly and does
-            // not need a prompt.  A one-time prompt is retained only for a
-            // legacy userPresence item that still protects an existing vault;
-            // it is never part of the normal low-risk path.
+            // Current wrapping keys live in an ordinary
+            // WhenUnlockedThisDeviceOnly namespace and never need a biometric
+            // prompt. A one-time prompt is retained only to read an older
+            // userPresence item. The material store copies that successfully
+            // opened legacy key into the current silent namespace before this
+            // call returns, so later AUTO operations no longer revisit the
+            // legacy authentication boundary.
             if let contextAuthorizer = authenticator as? any KeychainContextAuthorizing {
                 let context = try await contextAuthorizer.makeAuthenticationContext(reason: reason)
                 keys = try await materialStore.loadDeviceKeyDataCandidates(
@@ -147,6 +150,7 @@ public struct DeviceKeyStore: DeviceKeyStoring {
 public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
     public let service: String
     public let account: String
+    private let automaticService: String
     private let keychain: any KeychainClient
     private let randomKeyDataProvider: @Sendable () throws -> Data
 
@@ -170,6 +174,7 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
     ) {
         self.service = service
         self.account = account
+        self.automaticService = "\(service).automatic-v2"
         self.keychain = keychain
         self.randomKeyDataProvider = randomKeyData
     }
@@ -192,12 +197,26 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
     public func loadDeviceKeyDataCandidates(
         authenticationContext: LocalAuthenticationContext?
     ) async throws -> [Data] {
+        // The v2 namespace is intentionally non-interactive. If it exists,
+        // return it without probing any legacy userPresence item. This is what
+        // makes the migration one-shot instead of turning every future Secret
+        // use into another LocalAuthentication request.
+        if let automatic = try readKeyData(
+            from: automaticBaseQuery,
+            authenticationContext: authenticationContext,
+            tolerateUnsupportedControls: false,
+            interactionRequiresAuthentication: false
+        ) {
+            return [automatic]
+        }
+
         var candidates: [Data] = []
 
         if let legacy = try readKeyData(
             from: legacyBaseQuery,
             authenticationContext: authenticationContext,
-            tolerateUnsupportedControls: false
+            tolerateUnsupportedControls: false,
+            interactionRequiresAuthentication: true
         ) {
             candidates.append(legacy)
         }
@@ -209,24 +228,38 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
         if let dataProtection = try readKeyData(
             from: dataProtectionBaseQuery,
             authenticationContext: authenticationContext,
-            tolerateUnsupportedControls: true
+            tolerateUnsupportedControls: true,
+            interactionRequiresAuthentication: false
         ), !candidates.contains(dataProtection) {
             candidates.append(dataProtection)
         }
 
-        guard candidates.isEmpty else {
+        if !candidates.isEmpty {
+            // Preserve the exact bytes that already open the wrapped master
+            // key. Copying them into the v2 accessibility-only namespace does
+            // not require re-encrypting every record and lets the daemon prove
+            // candidate compatibility exactly as before. The old item remains
+            // available as rollback/migration evidence but is never queried
+            // again once the v2 item exists.
+            if let canonical = try migrateToAutomaticNamespace(
+                candidates[0],
+                authenticationContext: authenticationContext
+            ), !candidates.contains(canonical) {
+                candidates.insert(canonical, at: 0)
+            }
             return candidates
         }
 
         let keyData = try randomKeyDataProvider()
         do {
-            try saveKeyData(keyData, authenticationContext: authenticationContext)
+            try saveAutomaticKeyData(keyData)
             return [keyData]
         } catch DeviceKeyStoreError.keychain(errSecDuplicateItem) {
             guard let existing = try readKeyData(
-                from: legacyBaseQuery,
+                from: automaticBaseQuery,
                 authenticationContext: authenticationContext,
-                tolerateUnsupportedControls: false
+                tolerateUnsupportedControls: false,
+                interactionRequiresAuthentication: false
             ) else {
                 throw DeviceKeyStoreError.keychain(errSecItemNotFound)
             }
@@ -234,10 +267,28 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
         }
     }
 
+    private func migrateToAutomaticNamespace(
+        _ keyData: Data,
+        authenticationContext: LocalAuthenticationContext?
+    ) throws -> Data? {
+        do {
+            try saveAutomaticKeyData(keyData)
+            return keyData
+        } catch DeviceKeyStoreError.keychain(errSecDuplicateItem) {
+            return try readKeyData(
+                from: automaticBaseQuery,
+                authenticationContext: authenticationContext,
+                tolerateUnsupportedControls: false,
+                interactionRequiresAuthentication: false
+            )
+        }
+    }
+
     private func readKeyData(
         from baseQuery: [String: Any],
         authenticationContext: LocalAuthenticationContext?,
-        tolerateUnsupportedControls: Bool
+        tolerateUnsupportedControls: Bool,
+        interactionRequiresAuthentication: Bool
     ) throws -> Data? {
         var query = baseQuery
         query[kSecReturnData as String] = kCFBooleanTrue
@@ -259,18 +310,23 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
             if let authenticationContext {
                 attributesQuery[kSecUseAuthenticationContext as String] = authenticationContext.rawContext
             }
-            // Existing releases could have created a legacy
-            // kSecAttrAccessible-only item. It remains the key that protects
-            // existing records, so accept it after LocalAuthentication has
-            // already succeeded instead of silently generating a new key.
             _ = keychain.copyAttributes(attributesQuery)
             return data
         case errSecItemNotFound:
             return nil
-        case errSecMissingEntitlement, errSecParam, errSecNotAvailable, errSecInteractionNotAllowed:
-            if result.status == errSecInteractionNotAllowed, !tolerateUnsupportedControls {
+        case errSecInteractionNotAllowed:
+            if interactionRequiresAuthentication {
                 throw DeviceKeyStoreError.authenticationRequired
             }
+            if tolerateUnsupportedControls {
+                return nil
+            }
+            // The current automatic namespace is deliberately non-interactive.
+            // If macOS says it is unavailable (for example while the login
+            // Keychain is locked), surface a technical failure rather than
+            // manufacturing a biometric prompt.
+            throw DeviceKeyStoreError.keychain(result.status)
+        case errSecMissingEntitlement, errSecParam, errSecNotAvailable:
             if tolerateUnsupportedControls {
                 return nil
             }
@@ -280,19 +336,26 @@ public struct KeychainDeviceKeyMaterialStore: DeviceKeyMaterialStoring {
         }
     }
 
-    private func saveKeyData(
-        _ keyData: Data,
-        authenticationContext _: LocalAuthenticationContext?
-    ) throws {
-        var attributes = legacyBaseQuery
+    private func saveAutomaticKeyData(_ keyData: Data) throws {
+        var attributes = automaticBaseQuery
         attributes[kSecValueData as String] = keyData
-        // Silent operations rely on the logged-in user's unlocked Keychain,
-        // not on userPresence for every master-key lookup.
+        // AUTO execution depends on the already-unlocked macOS login session,
+        // not on per-operation userPresence. High-risk operations still obtain
+        // an explicit LocalAuthentication decision through OperationApprover.
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         let status = keychain.add(attributes)
         guard status == errSecSuccess else {
             throw DeviceKeyStoreError.keychain(status)
         }
+    }
+
+    private var automaticBaseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: automaticService,
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: kCFBooleanFalse as Any
+        ]
     }
 
     private var legacyBaseQuery: [String: Any] {
