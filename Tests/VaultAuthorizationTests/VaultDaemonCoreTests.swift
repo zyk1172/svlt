@@ -174,6 +174,38 @@ import VaultIPC
     ) == "ssh.fresh.filesystem-delete")
 }
 
+@Test func verifiedBoundedMainAgentGrayFallbackReachesAutomaticPolicyPath() throws {
+    let reference = try SecretReference("secret://01ARZ3NDEKTSV4RRFFQ69G5FAV")
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [reference],
+        destination: "nas.local",
+        port: 22,
+        protocolType: .ssh,
+        command: "rm -rf /share/task-owned-temp",
+        agentAssessment: boundedAutomaticAssessment()
+    )
+    let metadata = [SecretPolicyMetadata(
+        reference: reference,
+        policy: .credential,
+        label: "NAS credential",
+        allowedDestinations: ["nas.local"],
+        allowedProtocols: ["ssh"]
+    )]
+    let engine = SecretOperationPolicyEngine()
+
+    #expect(engine.semanticPreflight(descriptor, metadata: metadata).route == .gray)
+    #expect(engine.evaluate(descriptor, metadata: metadata).authorizationRequirement == .freshApprovalRequired)
+
+    let verified = engine.evaluateWithVerifiedBoundedMainAgentFallback(
+        descriptor,
+        metadata: metadata
+    )
+    #expect(verified.authorizationRequirement == .none)
+    #expect(verified.risk == .silent)
+    #expect(verified.reasons.contains { $0.contains("mainAgent") })
+}
+
 @Test func agentExecutableSourceDoesNotImportGUIFrameworksOrUseUnlockAtStartup() throws {
     let sourceURL = URL(filePath: #filePath)
         .deletingLastPathComponent()
