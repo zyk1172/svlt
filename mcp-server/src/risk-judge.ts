@@ -6,6 +6,19 @@ import type { IpcRequest } from "./secretOperations/protocol.js";
 const DEFAULT_TIMEOUT_MS = 3_500;
 const MAX_OPERATION_CHARS = 32_768;
 const MAX_CONTEXT_CHARS = 16_384;
+const BOUNDED_GRAY_FALLBACK_RULES = new Set([
+  "ssh.fresh.filesystem-delete",
+  "ssh.gray.container-lifecycle-removal",
+  "http.fresh.delete",
+  "database.fresh.destructive-write",
+  "database.fresh.dynamic-execution",
+  "database.fresh.unknown",
+  "sftp.fresh.delete"
+]);
+const BLOCKED_GRAY_FALLBACK_REASON_FRAGMENTS = [
+  "凭据执行目标或协议超出既有绑定范围",
+  "操作包含动态或不透明执行"
+];
 
 const JudgeResponse = z.object({
   reason: z.string().min(1).max(2_048),
@@ -64,7 +77,15 @@ export async function applyContextBoundedRiskJudge(
 ): Promise<IpcRequest> {
   if (request.type !== "executeSecretOperation" && request.type !== "startSecretOperation") return request;
 
-  const main = normalizeAssessment({ ...request.descriptor.agentAssessment, source: "mainAgent" });
+  // Keep the exact main-Agent assessment available for the daemon-bound
+  // fallback path. Normalization is useful for FAST/judge semantics, but a
+  // GRAY fallback is accepted only when the later descriptor hashes to the
+  // exact assessment that the daemon saw during preflight.
+  const originalMain: AgentRiskAssessment = {
+    ...request.descriptor.agentAssessment,
+    source: "mainAgent"
+  };
+  const main = normalizeAssessment(originalMain);
   if (preflight.route === "denied") return replaceAssessment(request, main);
   if (preflight.route === "hard") {
     return replaceAssessment(request, normalizeAssessment({
@@ -74,27 +95,26 @@ export async function applyContextBoundedRiskJudge(
   }
   if (preflight.route === "fast") return replaceAssessment(request, main);
 
-  // A GRAY route is only eligible for an independent review when the daemon
-  // issued a binding for this exact preflight. Without it, keep the operation
-  // fresh and do not ask a judge whose answer the daemon cannot verify.
+  // A GRAY route is eligible for either an independent review or the narrow
+  // daemon-bound main-Agent fallback only when the daemon issued a binding for
+  // this exact preflight. Without it, keep the operation fresh.
   if (preflight.reviewID === undefined) {
-    return replaceAssessment(request, normalizeAssessment({
-      ...main,
-      source: "mainAgent",
-      reason: `Independent semantic review binding missing: ${preflight.policyRuleID}`,
-      executionRecommendation: "freshApproval",
-      confidence: 0
-    }));
+    return freshGrayFallback(
+      request,
+      main,
+      `Independent semantic review binding missing: ${preflight.policyRuleID}`
+    );
   }
 
   if (configuration === undefined) {
-    return replaceAssessment(request, normalizeAssessment({
-      ...main,
-      source: "mainAgent",
-      reason: `Independent semantic review required but not configured: ${preflight.policyRuleID}`,
-      executionRecommendation: "freshApproval",
-      confidence: 0
-    }));
+    if (boundedMainAgentFallbackEligible(originalMain, preflight)) {
+      return replaceAssessment(request, originalMain, preflight.reviewID);
+    }
+    return freshGrayFallback(
+      request,
+      main,
+      `Independent semantic review required but not configured: ${preflight.policyRuleID}`
+    );
   }
 
   try {
@@ -105,18 +125,46 @@ export async function applyContextBoundedRiskJudge(
       source: "independentJudge"
     }), preflight.reviewID);
   } catch {
-    return replaceAssessment(request, normalizeAssessment({
-      ...main,
-      source: "independentJudge",
-      reason: "Independent semantic judge unavailable or returned an invalid response",
-      effectSeverity: "unknown",
-      reversibility: "unknown",
-      secretHandling: "unknown",
-      intentAlignment: "unclear",
-      executionRecommendation: "freshApproval",
-      confidence: 0
-    }));
+    if (boundedMainAgentFallbackEligible(originalMain, preflight)) {
+      return replaceAssessment(request, originalMain, preflight.reviewID);
+    }
+    return freshGrayFallback(
+      request,
+      main,
+      "Independent semantic judge unavailable or returned an invalid response"
+    );
   }
+}
+
+function boundedMainAgentFallbackEligible(
+  assessment: AgentRiskAssessment,
+  preflight: SecretOperationPreflight
+): boolean {
+  if (preflight.route !== "gray" || preflight.technicalFailure) return false;
+  if (!BOUNDED_GRAY_FALLBACK_RULES.has(preflight.policyRuleID)) return false;
+  if (assessment.source !== "mainAgent" || assessment.confidence < 0.65) return false;
+  if (assessment.intentAlignment !== "direct" && assessment.intentAlignment !== "supporting") return false;
+  if (!(["none", "minor", "bounded"] as const).includes(assessment.effectSeverity)) return false;
+  if (!(["readOnly", "easy", "recoverable"] as const).includes(assessment.reversibility)) return false;
+  if (assessment.secretHandling !== "none" && assessment.secretHandling !== "credentialUse") return false;
+  if (assessment.executionRecommendation === "uncertain") return false;
+  return !preflight.reasons.some((reason) =>
+    BLOCKED_GRAY_FALLBACK_REASON_FRAGMENTS.some((fragment) => reason.includes(fragment))
+  );
+}
+
+function freshGrayFallback(
+  request: IpcRequest,
+  main: AgentRiskAssessment,
+  reason: string
+): IpcRequest {
+  return replaceAssessment(request, normalizeAssessment({
+    ...main,
+    source: "mainAgent",
+    reason,
+    executionRecommendation: "freshApproval",
+    confidence: 0
+  }));
 }
 
 async function judgeOperation(
