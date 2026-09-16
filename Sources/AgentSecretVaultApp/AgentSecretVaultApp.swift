@@ -22,94 +22,98 @@ struct AgentSecretVaultApplication: App {
 
     var body: some Scene {
         Window("SVLT", id: MenuBarPresentation.mainWindowID) {
-            VaultWorkbenchView(
-                status: runtime.status,
-                agentServiceStatus: runtime.agentServiceStatus,
-                agentServiceActionInFlight: runtime.agentServiceActionInFlight,
-                agentServiceActionErrorMessage: runtime.agentServiceActionErrorMessage,
-                enableAgentService: {
-                    await runtime.enableAgentService()
-                },
-                disableAgentService: {
-                    await runtime.disableAgentService()
-                },
-                restartAgentService: {
-                    await runtime.restartAgentService()
-                },
-                auditEntries: runtime.auditEntries,
-                auditError: runtime.auditError,
-                secureInputRequest: runtime.secureInputRequest,
-                submitSecureInput: { request, selectedTargets, values in
-                    await runtime.submitSecureInput(
-                        request: request,
-                        selectedTargets: selectedTargets,
-                        values: values
-                    )
-                },
-                cancelSecureInput: { id in
-                    await runtime.cancelSecureInput(id: id)
-                },
-                savedReferences: runtime.savedReferences,
-                sensitiveIndexURL: runtime.sensitiveIndexURL,
-                sensitiveCatalogSnapshot: runtime.sensitiveCatalogSnapshot,
-                sensitiveCatalogError: runtime.sensitiveIndexError,
-                sensitiveCatalogCanAdoptV2: runtime.sensitiveCatalogCanAdoptV2,
-                sensitiveCatalogCanAdoptV3: runtime.sensitiveCatalogCanAdoptV3,
-                refreshSavedReferences: {
-                    await runtime.refreshSavedReferences()
-                },
-                chooseSensitiveIndex: {
-                    runtime.chooseSensitiveIndex()
-                },
-                refreshSensitiveCatalog: {
-                    await runtime.refreshSensitiveCatalog()
-                },
-                validateSensitiveCatalog: {
-                    await runtime.validateSensitiveCatalog()
-                },
-                adoptExternalV2Catalog: {
-                    await runtime.adoptExternalV2Catalog()
-                },
-                adoptExternalV3Catalog: {
-                    await runtime.adoptExternalV3Catalog()
-                },
-                approveExternalCatalogChange: {
-                    await runtime.approveExternalCatalogChange()
-                },
-                formatRepairPlan: runtime.formatRepairPlan,
-                checkSensitiveCatalogFormat: {
-                    await runtime.checkSensitiveCatalogFormat()
-                },
-                repairSensitiveCatalogFormat: {
-                    await runtime.repairSensitiveCatalogFormat()
-                },
-                createCatalogIndex: { title in
-                    await runtime.createCatalogIndex(title: title)
-                },
-                createCatalogEntry: { indexID, title, presetID in
-                    await runtime.createCatalogEntry(indexID: indexID, title: title, presetID: presetID)
-                },
-                commitCatalogEntryEdit: { entry, secretInputs in
-                    await runtime.commitCatalogEntryEdit(entry: entry, secretInputs: secretInputs)
-                },
-                revealCatalogField: { entryID, key in
-                    try await runtime.revealCatalogField(entryID: entryID, key: key)
-                },
-                replaceCatalogSecret: { entryID, key, label, plaintext in
-                    await runtime.replaceCatalogSecret(
-                        entryID: entryID,
-                        key: key,
-                        label: label,
-                        plaintext: plaintext
-                    )
-                },
-                applyCatalogBatch: { mutation in
-                    await runtime.applyCatalogBatch(mutation)
-                },
-                showSensitiveCatalogTemplate: {
-                    await runtime.showSensitiveCatalogTemplate()
-                }
-            )
+            VStack(spacing: 0) {
+                VaultApprovalModeBar()
+                Divider()
+                VaultWorkbenchView(
+                    status: runtime.status,
+                    agentServiceStatus: runtime.agentServiceStatus,
+                    agentServiceActionInFlight: runtime.agentServiceActionInFlight,
+                    agentServiceActionErrorMessage: runtime.agentServiceActionErrorMessage,
+                    enableAgentService: {
+                        await runtime.enableAgentService()
+                    },
+                    disableAgentService: {
+                        await runtime.disableAgentService()
+                    },
+                    restartAgentService: {
+                        await runtime.restartAgentService()
+                    },
+                    auditEntries: runtime.auditEntries,
+                    auditError: runtime.auditError,
+                    secureInputRequest: runtime.secureInputRequest,
+                    submitSecureInput: { request, selectedTargets, values in
+                        await runtime.submitSecureInput(
+                            request: request,
+                            selectedTargets: selectedTargets,
+                            values: values
+                        )
+                    },
+                    cancelSecureInput: { id in
+                        await runtime.cancelSecureInput(id: id)
+                    },
+                    savedReferences: runtime.savedReferences,
+                    sensitiveIndexURL: runtime.sensitiveIndexURL,
+                    sensitiveCatalogSnapshot: runtime.sensitiveCatalogSnapshot,
+                    sensitiveCatalogError: runtime.sensitiveIndexError,
+                    sensitiveCatalogCanAdoptV2: runtime.sensitiveCatalogCanAdoptV2,
+                    sensitiveCatalogCanAdoptV3: runtime.sensitiveCatalogCanAdoptV3,
+                    refreshSavedReferences: {
+                        await runtime.refreshSavedReferences()
+                    },
+                    chooseSensitiveIndex: {
+                        runtime.chooseSensitiveIndex()
+                    },
+                    refreshSensitiveCatalog: {
+                        await runtime.refreshSensitiveCatalog()
+                    },
+                    validateSensitiveCatalog: {
+                        await runtime.validateSensitiveCatalog()
+                    },
+                    adoptExternalV2Catalog: {
+                        await runtime.adoptExternalV2Catalog()
+                    },
+                    adoptExternalV3Catalog: {
+                        await runtime.adoptExternalV3Catalog()
+                    },
+                    approveExternalCatalogChange: {
+                        await runtime.approveExternalCatalogChange()
+                    },
+                    formatRepairPlan: runtime.formatRepairPlan,
+                    checkSensitiveCatalogFormat: {
+                        await runtime.checkSensitiveCatalogFormat()
+                    },
+                    repairSensitiveCatalogFormat: {
+                        await runtime.repairSensitiveCatalogFormat()
+                    },
+                    createCatalogIndex: { title in
+                        await runtime.createCatalogIndex(title: title)
+                    },
+                    createCatalogEntry: { indexID, title, presetID in
+                        await runtime.createCatalogEntry(indexID: indexID, title: title, presetID: presetID)
+                    },
+                    commitCatalogEntryEdit: { entry, secretInputs in
+                        await runtime.commitCatalogEntryEdit(entry: entry, secretInputs: secretInputs)
+                    },
+                    revealCatalogField: { entryID, key in
+                        try await runtime.revealCatalogField(entryID: entryID, key: key)
+                    },
+                    replaceCatalogSecret: { entryID, key, label, plaintext in
+                        await runtime.replaceCatalogSecret(
+                            entryID: entryID,
+                            key: key,
+                            label: label,
+                            plaintext: plaintext
+                        )
+                    },
+                    applyCatalogBatch: { mutation in
+                        await runtime.applyCatalogBatch(mutation)
+                    },
+                    showSensitiveCatalogTemplate: {
+                        await runtime.showSensitiveCatalogTemplate()
+                    }
+                )
+            }
                 .frame(width: 1280, height: 820)
                 .task {
                     await runtime.start()
@@ -210,6 +214,68 @@ struct AgentSecretVaultApplication: App {
             name: .vaultWorkbenchNavigate,
             object: nil,
             userInfo: ["section": section.rawValue]
+        )
+    }
+}
+
+private struct VaultApprovalModeBar: View {
+    @State private var mode = VaultApprovalModeState.shared.mode
+    @State private var errorMessage: String?
+
+    var body: some View {
+        HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 7) {
+                    Image(systemName: mode == .noApproval ? "bolt.shield.fill" : "checkmark.shield.fill")
+                        .foregroundStyle(mode == .noApproval ? .orange : .blue)
+                    Text("Agent 授权模式")
+                        .font(.headline)
+                }
+                Text(mode == .noApproval
+                    ? "SVLT 不再弹出人工审批；是否执行由 Agent、用户意图和宿主审批/安全策略决定。"
+                    : "SVLT 保留基于操作效果的本机审批，高风险操作可能要求 Touch ID 或密码。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 20)
+
+            Picker("Agent 授权模式", selection: modeBinding) {
+                Text("审批模式").tag(VaultApprovalMode.approvalRequired)
+                Text("无审批模式").tag(VaultApprovalMode.noApproval)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 250)
+            .accessibilityIdentifier("vault-approval-mode-picker")
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 58)
+        .background(.regularMaterial)
+        .onAppear {
+            mode = VaultApprovalModeState.shared.mode
+        }
+    }
+
+    private var modeBinding: Binding<VaultApprovalMode> {
+        Binding(
+            get: { mode },
+            set: { newMode in
+                do {
+                    mode = try VaultApprovalModeState.shared.setMode(newMode)
+                    errorMessage = nil
+                } catch {
+                    mode = VaultApprovalModeState.shared.mode
+                    errorMessage = "模式保存失败"
+                }
+            }
         )
     }
 }
