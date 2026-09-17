@@ -828,7 +828,9 @@ const SshCommandInput = z
             message: "command must be at most 65536 UTF-8 bytes"
         }),
     sessionID: z.string().min(1).max(128).optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
+    timeoutMs: z.number().int().positive().optional().describe(
+      "Deprecated compatibility field; ignored. SSH execution has no fixed deadline."
+    ),
     agentAssessment: requiredAgentRiskAssessment
   })
   .strict();
@@ -842,7 +844,9 @@ const SshCommandBatchInput = z
     sessionID: z.string().min(1).max(128).optional(),
     commands: z.array(SSHCommandSpec).min(1).max(32),
     stopOnFailure: z.boolean().default(true),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
+    timeoutMs: z.number().int().positive().optional().describe(
+      "Deprecated compatibility field; ignored. SSH execution has no fixed deadline."
+    ),
     agentAssessment: requiredAgentRiskAssessment
   })
   .strict()
@@ -1812,7 +1816,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. SVLT classifies the actual effect: ordinary task-aligned work is automatic, while genuinely destructive effects require fresh owner approval. Plaintext is never returned.",
+        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. SVLT classifies the actual effect: ordinary task-aligned work is automatic, while genuinely destructive effects require fresh owner approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -1823,7 +1827,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_batch_with_secret",
       title: "SSH Command Batch With Secret",
       description:
-        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics. Batch only reduces connection/protocol overhead; it is not required to avoid approval. Plaintext is never returned.",
+        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics. Batch only reduces connection/protocol overhead; it is not required to avoid approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
       inputSchema: SshCommandBatchInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -2868,6 +2872,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
       "Use ssh_command_with_secret for one restricted local/private-network SSH command. An opaque sessionID may be reused for connection performance, but it is never required for authorization and never changes the risk decision.",
+      "SSH commands have no fixed execution deadline. timeoutMs is a deprecated compatibility field and is ignored; omit it for new SSH calls instead of splitting long-running work into artificial 30-second windows or retrying solely because 30 seconds elapsed.",
       "Use ssh_batch_with_secret for multiple SSH commands when one transport request is convenient. Pass structured executable/arguments records; SVLT evaluates the complete batch before executing any command and stops after the first failure by default. Batch changes transport overhead only, not approval policy.",
       "Use ssh_session_status only to inspect your own opaque transport sessions, and ssh_session_close only to close your own session when it is no longer needed. Neither tool changes policy or authorization.",
       "Use ssh_command_with_secret for the actual remote shell command, including single-line or multi-line scripts, ;, &&, ||, |, redirects, heredocs, command substitution, shell/interpreter -c forms, find -exec, xargs, eval, sudo, and unknown NAS CLIs. Do not split or rewrite a command merely to satisfy policy.",

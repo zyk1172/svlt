@@ -49,4 +49,24 @@ describe("legacy timeoutMs compatibility", () => {
       expect(() => inputSchema(name).parse({ ...input, agentAssessment: assessment }), name).not.toThrow();
     }
   });
+
+  it("accepts long deprecated timeoutMs values for SSH because the field is ignored", () => {
+    const longRunningTimeoutMs = 3_600_000;
+
+    expect(() => inputSchema("ssh_command_with_secret").parse({
+      host: "example.com",
+      passwordRef: reference,
+      command: "docker pull example/image:latest",
+      timeoutMs: longRunningTimeoutMs,
+      agentAssessment: assessment
+    })).not.toThrow();
+
+    expect(() => inputSchema("ssh_batch_with_secret").parse({
+      host: "example.com",
+      passwordRef: reference,
+      commands: [{ executable: "sleep", arguments: ["120"] }],
+      timeoutMs: longRunningTimeoutMs,
+      agentAssessment: assessment
+    })).not.toThrow();
+  });
 });
