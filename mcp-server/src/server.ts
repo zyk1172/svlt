@@ -9,6 +9,7 @@ import { z } from "zod";
 import { LocalIpcClient } from "./client.js";
 import { credentialSourcePriority } from "./credential-scope.js";
 import { AgentRiskProposal, agentAssessment } from "./agent-assessment.js";
+import { SshCommandBatchInput, SshCommandInput } from "./ssh-input.js";
 import {
   AgentCallerIdentity,
   CatalogCreateEntryRequest,
@@ -807,61 +808,6 @@ const LocalHttpInput = z
         path: ["responseProfileID"],
         message: "responseProfileID and non-empty responseFields must be provided together."
       });
-    }
-  });
-
-const SshCommandInput = z
-  .object({
-    host: z.string().min(1).max(253),
-    port: z.number().int().min(1).max(65_535).optional(),
-    username: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/).optional(),
-    passwordRef: SecretReference,
-    // Raw remote command: single-line or multi-line (newlines, quotes,
-    // pipelines, redirects, heredocs, interpreters are all allowed). SVLT
-    // never parses shell syntax; the remote login shell does. The ceiling is
-    // UTF-8 bytes to match the Swift side exactly (§61): Zod's .max() counts
-    // UTF-16 code units, which diverges for CJK/emoji input.
-    command: z
-        .string()
-        .min(1)
-        .refine((value) => Buffer.byteLength(value, "utf8") <= 65_536, {
-            message: "command must be at most 65536 UTF-8 bytes"
-        }),
-    sessionID: z.string().min(1).max(128).optional(),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    agentAssessment: requiredAgentRiskAssessment
-  })
-  .strict();
-
-const SshCommandBatchInput = z
-  .object({
-    host: z.string().min(1).max(253),
-    port: z.number().int().min(1).max(65_535).optional(),
-    username: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/).optional(),
-    passwordRef: SecretReference,
-    sessionID: z.string().min(1).max(128).optional(),
-    commands: z.array(SSHCommandSpec).min(1).max(32),
-    stopOnFailure: z.boolean().default(true),
-    timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
-    agentAssessment: requiredAgentRiskAssessment
-  })
-  .strict()
-  .superRefine((value, context) => {
-    try {
-      SSHCommandBatch.parse({
-        commands: value.commands,
-        stopOnFailure: value.stopOnFailure
-      });
-    } catch (error) {
-      if (error instanceof z.ZodError) {
-        for (const issue of error.issues) {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["commands", ...issue.path],
-            message: issue.message
-          });
-        }
-      }
     }
   });
 
@@ -1812,7 +1758,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. SVLT classifies the actual effect: ordinary task-aligned work is automatic, while genuinely destructive effects require fresh owner approval. Plaintext is never returned.",
+        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. SVLT classifies the actual effect: ordinary task-aligned work is automatic, while genuinely destructive effects require fresh owner approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -1823,7 +1769,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_batch_with_secret",
       title: "SSH Command Batch With Secret",
       description:
-        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics. Batch only reduces connection/protocol overhead; it is not required to avoid approval. Plaintext is never returned.",
+        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics. Batch only reduces connection/protocol overhead; it is not required to avoid approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
       inputSchema: SshCommandBatchInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -2868,6 +2814,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use secret_reveal_request or paragraph_reveal_request when the user needs to see plaintext locally.",
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
       "Use ssh_command_with_secret for one restricted local/private-network SSH command. An opaque sessionID may be reused for connection performance, but it is never required for authorization and never changes the risk decision.",
+      "SSH commands have no fixed execution deadline. timeoutMs is a deprecated compatibility field and is ignored; omit it for new SSH calls instead of splitting long-running work into artificial 30-second windows or retrying solely because 30 seconds elapsed.",
       "Use ssh_batch_with_secret for multiple SSH commands when one transport request is convenient. Pass structured executable/arguments records; SVLT evaluates the complete batch before executing any command and stops after the first failure by default. Batch changes transport overhead only, not approval policy.",
       "Use ssh_session_status only to inspect your own opaque transport sessions, and ssh_session_close only to close your own session when it is no longer needed. Neither tool changes policy or authorization.",
       "Use ssh_command_with_secret for the actual remote shell command, including single-line or multi-line scripts, ;, &&, ||, |, redirects, heredocs, command substitution, shell/interpreter -c forms, find -exec, xargs, eval, sudo, and unknown NAS CLIs. Do not split or rewrite a command merely to satisfy policy.",

@@ -58,6 +58,7 @@ SVLT App 主窗口第一页提供两个全局模式。模式只能由设备所�
 - 每一次命令（包括带 `sessionID` 的后续命令）仍由 SVLT 重新校验 principal、目标、Secret 引用和请求结构；无审批模式只关闭人工授权门，不关闭这些技术校验。
 - `ssh_command_with_secret` 的 `command` 是真正的 remote shell 命令，会 byte-for-byte 交给远端登录 shell 执行：单行、多行、`;`、`&&`、`|`、`>`、`$()`、glob、引号、heredoc、`bash -c`、`python -c`、`find -exec`、`sudo` 都按真实意图提交，SVLT 不解析也不改写 shell 语法。
 - 结构化 `ssh_batch_with_secret`（每项 `executable` + `arguments`）适合天然参数化的任务；不要为了审批策略强行拆分或拼接。两种形式都是一等公民。
+- SSH 执行没有固定 30 秒截止时间。`timeoutMs` 仅为历史兼容字段，当前 SSH 执行器会忽略；新调用应省略该字段，不要因为镜像拉取、构建、编译等长任务人为拆成 30 秒窗口，也不要仅因经过 30 秒就重复启动同一远端操作。
 - 审批模式下：Secret 的存在、首次使用、operationID、sessionID、经过时间和是否使用 batch 都不是审批理由。普通任务对齐、影响有限、可恢复的 SSH 直接 `AUTO`；高影响/不可逆/未决操作才进入更严格路径。
 - 审批模式的 `GRAY` 正常交给 independent semantic judge；judge 不可用时仍保留既有 daemon-bound bounded main-Agent fallback。`HARD`/`DENIED` 底线按审批模式处理。
 - 无审批模式下：MCP 不调用 independent judge，daemon 把有效操作按 full-access 路径执行。主 Agent 仍应先自行判断命令是否符合用户目标；不要因为“SVLT 会放行”就执行用户没有要求的高影响操作。

@@ -11,7 +11,7 @@ readonly budgets=(
   "Sources/VaultService/VaultAppServices+CatalogOperations.swift:96246"
   "Sources/AgentSecretVaultApp/Workbench/VaultWorkbenchView.swift:190886"
   "Sources/VaultService/SensitiveCatalogDocumentStore.swift:136876"
-  "mcp-server/src/server.ts:128848"
+  "mcp-server/src/server.ts:127346"
   "Sources/VaultCore/Store/SensitiveCatalogDocumentCodec.swift:100279"
 )
 

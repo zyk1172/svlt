@@ -49,4 +49,53 @@ describe("legacy timeoutMs compatibility", () => {
       expect(() => inputSchema(name).parse({ ...input, agentAssessment: assessment }), name).not.toThrow();
     }
   });
+
+  it("accepts long deprecated timeoutMs values for SSH because the field is ignored", () => {
+    const longRunningTimeoutMs = 3_600_000;
+
+    expect(() => inputSchema("ssh_command_with_secret").parse({
+      host: "example.com",
+      passwordRef: reference,
+      command: "docker pull example/image:latest",
+      timeoutMs: longRunningTimeoutMs,
+      agentAssessment: assessment
+    })).not.toThrow();
+
+    expect(() => inputSchema("ssh_batch_with_secret").parse({
+      host: "example.com",
+      passwordRef: reference,
+      commands: [{ executable: "sleep", arguments: ["120"] }],
+      timeoutMs: longRunningTimeoutMs,
+      agentAssessment: assessment
+    })).not.toThrow();
+  });
+
+  it("keeps real non-SSH timeout ceilings unchanged", () => {
+    expect(() => inputSchema("local_http_request_with_secret").parse({
+      url: "https://example.com",
+      timeoutMs: 30_001,
+      agentAssessment: assessment
+    })).toThrow();
+
+    expect(() => inputSchema("database_query_with_secret").parse({
+      engine: "postgres",
+      host: "db.local",
+      database: "app",
+      username: "user",
+      passwordRef: reference,
+      query: "SELECT 1",
+      timeoutMs: 30_001,
+      agentAssessment: assessment
+    })).toThrow();
+
+    expect(() => inputSchema("sftp_transfer_with_secret").parse({
+      operation: "list",
+      host: "nas.local",
+      username: "user",
+      passwordRef: reference,
+      remotePath: "/",
+      timeoutMs: 60_001,
+      agentAssessment: assessment
+    })).toThrow();
+  });
 });
