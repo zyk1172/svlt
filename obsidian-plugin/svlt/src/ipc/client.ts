@@ -240,7 +240,8 @@ export class LocalVaultClient {
 
       socket.on("connect", () => socket.write(frame));
       socket.on("data", (chunk) => {
-        buffer = Buffer.concat([buffer, chunk]);
+        const data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        buffer = Buffer.concat([buffer, data]);
         parseAvailableFrame();
       });
       socket.on("error", rejectWith);
