@@ -293,6 +293,7 @@ public enum SecretOperationError: Error, Equatable, Sendable {
     case redirectRequiresReview
     case outputQuarantined
     case insecureTransportDenied
+    case idempotencyKeyConflict
 
     public var responseCode: String {
         switch self {
@@ -330,6 +331,8 @@ public enum SecretOperationError: Error, Equatable, Sendable {
             return "ACTION_OUTPUT_QUARANTINED"
         case .insecureTransportDenied:
             return "INSECURE_TRANSPORT_DENIED"
+        case .idempotencyKeyConflict:
+            return "IDEMPOTENCY_KEY_CONFLICT"
         }
     }
 }
