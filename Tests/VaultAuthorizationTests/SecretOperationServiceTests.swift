@@ -138,6 +138,18 @@ import VaultIPC
     do {
         _ = try await service.outputForBoundary(
             operationID: handle.operationID,
+            principal: "agent",
+            cursor: 3,
+            maxChunks: 8
+        )
+        Issue.record("A cursor beyond the produced output was silently accepted.")
+    } catch let error as SecretOperationError {
+        #expect(error == .invalidOperationParameters)
+    }
+
+    do {
+        _ = try await service.outputForBoundary(
+            operationID: handle.operationID,
             principal: "other-agent",
             cursor: 0,
             maxChunks: 8
