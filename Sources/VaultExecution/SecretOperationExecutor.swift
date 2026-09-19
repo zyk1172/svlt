@@ -572,6 +572,13 @@ public struct LocalSecretOperationExecutor: SecretOperationExecuting {
                 stderr: stderr
             )
             commandResults.append(commandResult)
+            await SecretOperationProgressContext.report(
+                SecretOperationProgress(
+                    commandIndex: index,
+                    stdout: stdout.isEmpty ? nil : stdout,
+                    stderr: stderr.isEmpty ? nil : stderr
+                )
+            )
             if outcome.status != "COMPLETED" {
                 firstFailureIndex = firstFailureIndex ?? index
                 if stopOnFailure {
