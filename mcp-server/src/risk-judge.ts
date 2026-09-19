@@ -77,7 +77,11 @@ export async function applyContextBoundedRiskJudge(
   configuration: RiskJudgeConfiguration | undefined = riskJudgeConfigurationFromEnvironment(),
   transport: RiskJudgeTransport = defaultTransport
 ): Promise<IpcRequest> {
-  if (request.type !== "executeSecretOperation" && request.type !== "startSecretOperation") return request;
+  if (
+    request.type !== "executeSecretOperation"
+    && request.type !== "startSecretOperation"
+    && request.type !== "startSecretOperationIdempotent"
+  ) return request;
 
   // Keep the exact main-Agent assessment available for the daemon-bound
   // fallback path. Normalization is useful for FAST/judge semantics, but a
@@ -262,7 +266,11 @@ function normalizeAssessment(assessment: AgentRiskAssessment): AgentRiskAssessme
 }
 
 function replaceAssessment<T extends IpcRequest>(request: T, assessment: AgentRiskAssessment, reviewID?: string): T {
-  if (request.type !== "executeSecretOperation" && request.type !== "startSecretOperation") return request;
+  if (
+    request.type !== "executeSecretOperation"
+    && request.type !== "startSecretOperation"
+    && request.type !== "startSecretOperationIdempotent"
+  ) return request;
   const { reviewID: _untrustedReviewID, ...descriptor } = request.descriptor;
   return {
     ...request,
