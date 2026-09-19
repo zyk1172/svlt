@@ -10,6 +10,7 @@ import { LocalIpcClient } from "./client.js";
 import { credentialSourcePriority } from "./credential-scope.js";
 import { AgentRiskProposal, agentAssessment } from "./agent-assessment.js";
 import { SshCommandBatchInput, SshCommandInput } from "./ssh-input.js";
+import { createSecretOperationJobToolDefinitions } from "./secretOperations/job-tools.js";
 import {
   AgentCallerIdentity,
   CatalogCreateEntryRequest,
@@ -1087,6 +1088,7 @@ const AutoHandleTextInput = z
 
 export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDefinition[] {
   return [
+    ...createSecretOperationJobToolDefinitions(client),
     {
       name: "secret_action_router",
       title: "Secret Local Action Router",
@@ -1758,7 +1760,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. SVLT classifies the actual effect: ordinary task-aligned work is automatic, while genuinely destructive effects require fresh owner approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
+        "Runs a raw SSH command on a local/private-network host using a secret:// password. Effect-based authorization still applies. SSH has no fixed deadline; omit deprecated timeoutMs. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -1769,7 +1771,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_batch_with_secret",
       title: "SSH Command Batch With Secret",
       description:
-        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics. Batch only reduces connection/protocol overhead; it is not required to avoid approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
+        "Runs a structured SSH batch through one SVLT-managed ControlMaster session. Batch changes transport overhead only. SSH has no fixed deadline; omit deprecated timeoutMs. Plaintext is never returned.",
       inputSchema: SshCommandBatchInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
