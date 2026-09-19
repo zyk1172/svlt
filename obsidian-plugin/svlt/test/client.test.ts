@@ -141,8 +141,9 @@ describe("LocalVaultClient", () => {
     let receivedRequest: unknown;
     const socketPath = await createSocketServer((socket) => {
       socket.on("data", (chunk) => {
-        const length = chunk.readUInt32BE(0);
-        receivedRequest = JSON.parse(chunk.subarray(4, 4 + length).toString("utf8"));
+        const data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+        const length = data.readUInt32BE(0);
+        receivedRequest = JSON.parse(data.subarray(4, 4 + length).toString("utf8"));
         socket.write(encodeFrame({
           type: "catalogValidation",
           catalogStatus: "FOUND",
