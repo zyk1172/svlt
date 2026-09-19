@@ -300,15 +300,16 @@ function sendFramedRequest(
         return;
       }
 
-      receivedBytes += chunk.byteLength;
+      const data = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      receivedBytes += data.byteLength;
       if (receivedBytes > MAX_WIRE_FRAME_BYTES) {
         settle(() => reject(new Error("IPC frame too large")));
         return;
       }
 
       if (headerBytes < FRAME_HEADER_BYTES) {
-        const bytesToCopy = Math.min(FRAME_HEADER_BYTES - headerBytes, chunk.byteLength);
-        chunk.copy(header, headerBytes, 0, bytesToCopy);
+        const bytesToCopy = Math.min(FRAME_HEADER_BYTES - headerBytes, data.byteLength);
+        data.copy(header, headerBytes, 0, bytesToCopy);
         headerBytes += bytesToCopy;
       }
 
@@ -329,7 +330,7 @@ function sendFramedRequest(
         return;
       }
 
-      chunks.push(chunk);
+      chunks.push(data);
     });
     socket.on("end", () => {
       if (expectedFrameBytes !== undefined && receivedBytes !== expectedFrameBytes) {
