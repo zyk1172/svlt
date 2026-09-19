@@ -9,7 +9,9 @@ import {
 } from "../src/secretOperations/index.js";
 import { runWithSecretOperationAbortSignal } from "../src/secretOperations/context.js";
 import {
+  getSecretOperationOutput,
   getSecretOperationStatus,
+  startSecretOperation,
   type SecretOperationIpcClient
 } from "../src/secretOperations/client.js";
 import type {
@@ -82,6 +84,75 @@ describe("operationID MCP lifecycle", () => {
       "secretOperationStatus",
       "secretOperationStatus"
     ]);
+  });
+
+  it("starts idempotent work through the dedicated lifecycle request", async () => {
+    const client = new FakeLifecycleClient([
+      {
+        type: "secretOperationHandle",
+        result: { operationID, state: "queued", reused: false }
+      }
+    ]);
+
+    await expect(startSecretOperation(client, descriptor, "job-001")).resolves.toEqual({
+      kind: "value",
+      value: { operationID, state: "queued", reused: false }
+    });
+    expect(client.requests).toEqual([
+      {
+        type: "startSecretOperationIdempotent",
+        descriptor,
+        idempotencyKey: "job-001"
+      }
+    ]);
+  });
+
+  it("reads sanitized output pages by cursor", async () => {
+    const client = new FakeLifecycleClient([
+      {
+        type: "secretOperationOutput",
+        result: {
+          operationID,
+          state: "running",
+          cursor: 2,
+          nextCursor: 3,
+          chunks: [
+            {
+              cursor: 2,
+              stream: "stdout",
+              text: "ready\n",
+              commandIndex: 0
+            }
+          ],
+          hasMore: false
+        }
+      }
+    ]);
+
+    await expect(getSecretOperationOutput(client, operationID, 2, 8)).resolves.toEqual({
+      kind: "value",
+      value: {
+        operationID,
+        state: "running",
+        cursor: 2,
+        nextCursor: 3,
+        chunks: [
+          {
+            cursor: 2,
+            stream: "stdout",
+            text: "ready\n",
+            commandIndex: 0
+          }
+        ],
+        hasMore: false
+      }
+    });
+    expect(client.requests.at(-1)).toEqual({
+      type: "secretOperationOutput",
+      operationID,
+      cursor: 2,
+      maxChunks: 8
+    });
   });
 
   it("treats succeeded without its output as outcomeUnknown", async () => {
