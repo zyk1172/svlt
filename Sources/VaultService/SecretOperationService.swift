@@ -384,9 +384,6 @@ actor SecretOperationService {
         record.state = state
         record.output = output
         record.errorCode = errorCode
-        if output != nil {
-            record.progressChunks.removeAll(keepingCapacity: false)
-        }
         record.task = nil
         records[operationID] = record
         trimTerminalRecords()
@@ -423,6 +420,9 @@ actor SecretOperationService {
     }
 
     private func availableChunks(for record: Record) -> [SecretOperationOutputChunk] {
+        if !record.progressChunks.isEmpty {
+            return record.progressChunks
+        }
         if let output = record.output {
             var chunks: [SecretOperationOutputChunk] = []
             if let stdout = output.stdout {
