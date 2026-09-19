@@ -73,7 +73,10 @@ Secret 与执行器边界：
 6. HTTP/API 使用 typed payload；数据库、SFTP/SCP、FTP、browser、local-app、trusted-process 仅在 capability manifest 声明 supported 时使用。
 7. SSH raw command 按真实意图提交，不为了授权策略拆小、伪装或改写；structured batch 适合天然参数化任务。
 8. sessionID 只表示 transport 复用，不授予执行权限。
-9. 输出仍须经过 SVLT 的 secret fingerprint/redaction/quarantine 边界；无审批模式不关闭这些边界。
+9. 明显耗时的 SSH 优先使用 ssh_job_start / ssh_batch_job_start，并给出稳定 idempotencyKey。相同 principal + key + operation 只能对应同一个 operationID；IDEMPOTENCY_KEY_CONFLICT 不得通过换 key 盲目规避。
+10. 异步任务通过 secret_operation_status 查询生命周期，通过 secret_operation_output 的 cursor/nextCursor 读取已经过 SVLT sanitizer 的输出，通过 secret_operation_cancel 请求取消。status 不直接返回 stdout/stderr。
+11. cancelled 是可证明的执行前取消；outcomeUnknown 表示外部副作用可能已经发生，必须先 reconcile 目标状态，不得自动重试。
+12. 输出仍须经过 SVLT 的 secret fingerprint/redaction/quarantine 边界；无审批模式不关闭这些边界。
 
 工具选择：
 - agent_secret_usage_policy：读取 SVLT 使用策略。
