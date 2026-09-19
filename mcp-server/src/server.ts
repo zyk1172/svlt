@@ -2281,9 +2281,7 @@ async function handleSshCommandWithSecret(
     protocolType: "ssh",
     command: parsed.command,
     sessionID: parsed.sessionID,
-    // Do not label every raw shell command as read-only. The effect model
-    // uses the actual command plus structured semantics; this field is only a
-    // coarse transport hint and must never become an allowlist bypass.
+    // Raw SSH effects are classified from the actual command.
     requestedEffects: ["ssh-command"],
     parameters,
     agentAssessment: agentAssessment(parsed)
