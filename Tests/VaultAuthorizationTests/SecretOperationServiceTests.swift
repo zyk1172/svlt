@@ -19,13 +19,13 @@ import VaultIPC
         parameters: [:]
     )
 
-    let first = await service.start(principal: "agent", descriptor: descriptor) { _ in
+    let first = try await service.start(principal: "agent", descriptor: descriptor) { _ in
         await firstGate.markStartedAndWait()
         return SecretOperationOutput(status: "FIRST_DONE")
     }
     await firstGate.waitUntilStarted()
 
-    let second = await service.start(principal: "agent", descriptor: descriptor) { _ in
+    let second = try await service.start(principal: "agent", descriptor: descriptor) { _ in
         await secondStarted.markStarted()
         return SecretOperationOutput(status: "SECOND_DONE")
     }
@@ -33,6 +33,121 @@ import VaultIPC
 
     #expect(first.operationID != second.operationID)
     await firstGate.release()
+}
+
+@Test func idempotentStartReusesOriginalOperationAndRejectsConflicts() async throws {
+    let service = SecretOperationService()
+    let gate = ConcurrentOperationGate()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .localExecution,
+        secretReferences: [],
+        destination: "same",
+        parameters: [:]
+    )
+
+    let first = try await service.start(
+        principal: "agent",
+        descriptor: descriptor,
+        idempotencyKey: "deploy-001"
+    ) { _ in
+        await gate.markStartedAndWait()
+        return SecretOperationOutput(status: "DONE")
+    }
+    await gate.waitUntilStarted()
+
+    let reused = try await service.start(
+        principal: "agent",
+        descriptor: descriptor,
+        idempotencyKey: "deploy-001"
+    ) { _ in
+        Issue.record("Idempotent reuse unexpectedly launched a second execution.")
+        return SecretOperationOutput(status: "UNEXPECTED")
+    }
+
+    #expect(first.reused == false)
+    #expect(reused.reused == true)
+    #expect(reused.operationID == first.operationID)
+
+    let conflicting = SecretOperationDescriptor(
+        actionType: .localExecution,
+        secretReferences: [],
+        destination: "different",
+        parameters: [:]
+    )
+    do {
+        _ = try await service.start(
+            principal: "agent",
+            descriptor: conflicting,
+            idempotencyKey: "deploy-001"
+        ) { _ in
+            SecretOperationOutput(status: "UNEXPECTED")
+        }
+        Issue.record("Conflicting work reused an existing idempotency key.")
+    } catch let error as SecretOperationError {
+        #expect(error == .idempotencyKeyConflict)
+    }
+
+    await gate.release()
+}
+
+@Test func operationOutputCursorReturnsOnlySanitizedReportedProgress() async throws {
+    let service = SecretOperationService()
+    let gate = ConcurrentOperationGate()
+    let descriptor = SecretOperationDescriptor(
+        actionType: .sshCommand,
+        secretReferences: [],
+        destination: "test",
+        parameters: [:]
+    )
+
+    let handle = try await service.start(
+        principal: "agent",
+        descriptor: descriptor,
+        idempotencyKey: "output-001"
+    ) { _ in
+        await SecretOperationProgressContext.report(
+            SecretOperationProgress(commandIndex: 0, stdout: "first\n", stderr: "warning\n")
+        )
+        await gate.markStartedAndWait()
+        return SecretOperationOutput(status: "COMPLETED", stdout: "first\n", stderr: "warning\n")
+    }
+    await gate.waitUntilStarted()
+
+    let firstPage = try await service.outputForBoundary(
+        operationID: handle.operationID,
+        principal: "agent",
+        cursor: 0,
+        maxChunks: 1
+    )
+    #expect(firstPage.chunks.count == 1)
+    #expect(firstPage.chunks[0].stream == .stdout)
+    #expect(firstPage.chunks[0].text == "first\n")
+    #expect(firstPage.nextCursor == 1)
+    #expect(firstPage.hasMore)
+
+    let secondPage = try await service.outputForBoundary(
+        operationID: handle.operationID,
+        principal: "agent",
+        cursor: firstPage.nextCursor,
+        maxChunks: 8
+    )
+    #expect(secondPage.chunks.map(\.stream) == [.stderr])
+    #expect(secondPage.nextCursor == 2)
+    #expect(!secondPage.hasMore)
+
+    do {
+        _ = try await service.outputForBoundary(
+            operationID: handle.operationID,
+            principal: "other-agent",
+            cursor: 0,
+            maxChunks: 8
+        )
+        Issue.record("A foreign principal read another operation's output.")
+    } catch let error as SecretOperationError {
+        #expect(error == .operationNotFound)
+    }
+
+    await gate.release()
 }
 
 @Test func firstOrdinaryOperationUsesNoApprovalAndCreatesNoLease() async throws {
