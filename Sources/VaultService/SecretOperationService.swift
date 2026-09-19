@@ -386,6 +386,12 @@ actor SecretOperationService {
         record.state = state
         record.output = output
         record.errorCode = errorCode
+        if output != nil {
+            // Terminal SSH output is authoritative and can regenerate the same
+            // cursor sequence. Drop transient batch chunks to avoid retaining
+            // a second copy of long command output.
+            record.progressChunks.removeAll(keepingCapacity: false)
+        }
         record.task = nil
         records[operationID] = record
         trimTerminalRecords()
