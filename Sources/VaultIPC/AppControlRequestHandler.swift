@@ -168,6 +168,8 @@ public struct AppControlRequestHandler: Sendable {
         case .redirectRequiresReview: return "REDIRECT_REQUIRES_REVIEW"
         case .outputQuarantined: return "ACTION_OUTPUT_QUARANTINED"
         case .insecureTransportDenied: return "INSECURE_TRANSPORT_DENIED"
+        case .operationNotFound: return "OPERATION_NOT_FOUND"
+        case .idempotencyKeyConflict: return "IDEMPOTENCY_KEY_CONFLICT"
         }
     }
 }
