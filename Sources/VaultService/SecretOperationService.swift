@@ -67,14 +67,26 @@ actor SecretOperationService {
     func start(
         principal: String,
         descriptor: SecretOperationDescriptor,
-        idempotencyKey: String? = nil,
+        execute: @escaping @Sendable (SecretOperationDescriptor) async throws -> SecretOperationOutput
+    ) -> SecretOperationHandle {
+        startNew(
+            principal: principal,
+            descriptor: descriptor,
+            idempotencyKey: nil,
+            execute: execute
+        )
+    }
+
+    func start(
+        principal: String,
+        descriptor: SecretOperationDescriptor,
+        idempotencyKey: String,
         execute: @escaping @Sendable (SecretOperationDescriptor) async throws -> SecretOperationOutput
     ) throws -> SecretOperationHandle {
         let normalizedKey = try normalizeIdempotencyKey(idempotencyKey)
-        if let normalizedKey,
-           let existing = records.first(where: {
-               $0.value.principal == principal && $0.value.idempotencyKey == normalizedKey
-           }) {
+        if let existing = records.first(where: {
+            $0.value.principal == principal && $0.value.idempotencyKey == normalizedKey
+        }) {
             guard existing.value.operationHash == descriptor.operationHash else {
                 throw VaultCore.SecretOperationError.idempotencyKeyConflict
             }
@@ -85,36 +97,12 @@ actor SecretOperationService {
             )
         }
 
-        let handle = register(
+        return startNew(
             principal: principal,
-            operationHash: descriptor.operationHash,
-            idempotencyKey: normalizedKey
+            descriptor: descriptor,
+            idempotencyKey: normalizedKey,
+            execute: execute
         )
-        let operationID = handle.operationID
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await SecretOperationLifecycleContext.$operationID.withValue(operationID) {
-                do {
-                    try Task.checkCancellation()
-                    let output = try await SecretOperationProgressContext.$reporter.withValue(
-                        { progress in
-                            await self.appendProgress(operationID: operationID, progress: progress)
-                        }
-                    ) {
-                        try await execute(descriptor)
-                    }
-                    await self.succeed(operationID: operationID, output: output)
-                } catch let error as VaultCore.SecretOperationError {
-                    await self.fail(operationID: operationID, errorCode: error.responseCode)
-                } catch is CancellationError {
-                    await self.fail(operationID: operationID, errorCode: VaultCore.SecretOperationError.authorizationCancelled.responseCode)
-                } catch {
-                    await self.fail(operationID: operationID, errorCode: VaultCore.SecretOperationError.actionExecutionFailed.responseCode)
-                }
-            }
-        }
-        attachTask(operationID: operationID, principal: principal, task: task)
-        return handle
     }
 
     func statusForBoundary(operationID: UUID, principal: String) -> SecretOperationStatus {
@@ -266,6 +254,50 @@ actor SecretOperationService {
         throw VaultCore.SecretOperationError.authorizationCancelled
     }
 
+    private func startNew(
+        principal: String,
+        descriptor: SecretOperationDescriptor,
+        idempotencyKey: String?,
+        execute: @escaping @Sendable (SecretOperationDescriptor) async throws -> SecretOperationOutput
+    ) -> SecretOperationHandle {
+        let handle = register(
+            principal: principal,
+            operationHash: descriptor.operationHash,
+            idempotencyKey: idempotencyKey
+        )
+        let operationID = handle.operationID
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await SecretOperationLifecycleContext.$operationID.withValue(operationID) {
+                do {
+                    try Task.checkCancellation()
+                    let output = try await SecretOperationProgressContext.$reporter.withValue(
+                        { progress in
+                            await self.appendProgress(operationID: operationID, progress: progress)
+                        }
+                    ) {
+                        try await execute(descriptor)
+                    }
+                    await self.succeed(operationID: operationID, output: output)
+                } catch let error as VaultCore.SecretOperationError {
+                    await self.fail(operationID: operationID, errorCode: error.responseCode)
+                } catch is CancellationError {
+                    await self.fail(
+                        operationID: operationID,
+                        errorCode: VaultCore.SecretOperationError.authorizationCancelled.responseCode
+                    )
+                } catch {
+                    await self.fail(
+                        operationID: operationID,
+                        errorCode: VaultCore.SecretOperationError.actionExecutionFailed.responseCode
+                    )
+                }
+            }
+        }
+        attachTask(operationID: operationID, principal: principal, task: task)
+        return handle
+    }
+
     private func register(
         principal: String,
         operationHash: String,
@@ -415,8 +447,7 @@ actor SecretOperationService {
         )
     }
 
-    private func normalizeIdempotencyKey(_ value: String?) throws -> String? {
-        guard let value else { return nil }
+    private func normalizeIdempotencyKey(_ value: String) throws -> String {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty,
               normalized.utf8.count <= 128,
