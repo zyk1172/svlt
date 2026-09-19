@@ -151,7 +151,11 @@ export class LocalIpcClient {
     const initialRequest = LifecycleIpcRequest.parse(request);
     const effectiveCaller = caller ?? this.declaredCaller;
     let parsedRequest = initialRequest;
-    if (initialRequest.type === "executeSecretOperation" || initialRequest.type === "startSecretOperation") {
+    if (
+      initialRequest.type === "executeSecretOperation"
+      || initialRequest.type === "startSecretOperation"
+      || initialRequest.type === "startSecretOperationIdempotent"
+    ) {
       const preflightResponse = await this.requestRaw({
         type: "preflightSecretOperation",
         descriptor: initialRequest.descriptor
