@@ -58,10 +58,10 @@ SVLT App 主窗口第一页提供两个全局模式。模式只能由设备所�
 - 每一次命令（包括带 `sessionID` 的后续命令）仍由 SVLT 重新校验 principal、目标、Secret 引用和请求结构；无审批模式只关闭人工授权门，不关闭这些技术校验。
 - `ssh_command_with_secret` 的 `command` 是真正的 remote shell 命令，会 byte-for-byte 交给远端登录 shell 执行：单行、多行、`;`、`&&`、`|`、`>`、`$()`、glob、引号、heredoc、`bash -c`、`python -c`、`find -exec`、`sudo` 都按真实意图提交，SVLT 不解析也不改写 shell 语法。
 - 结构化 `ssh_batch_with_secret`（每项 `executable` + `arguments`）适合天然参数化的任务；不要为了审批策略强行拆分或拼接。两种形式都是一等公民。
-- SSH 执行没有固定 30 秒截止时间。\`timeoutMs\` 仅为历史兼容字段，当前 SSH 执行器会忽略；新调用应省略该字段，不要因为镜像拉取、构建、编译等长任务人为拆成 30 秒窗口，也不要仅因经过 30 秒就重复启动同一远端操作。
-- 预期明显耗时的 SSH 使用 \`ssh_job_start\` 或 \`ssh_batch_job_start\`。首次启动必须给出稳定的 \`idempotencyKey\`；同一 principal 用同一 key 重试完全相同的任务会返回原 \`operationID\`，key 相同但任务不同会返回 \`IDEMPOTENCY_KEY_CONFLICT\`，不得换 key 来盲目重复副作用。
-- 异步任务只用 \`secret_operation_status\` 查看状态，用 \`secret_operation_output\` 的 \`cursor → nextCursor\` 读取已经过 SVLT sanitizer 的 stdout/stderr，用 \`secret_operation_cancel\` 请求取消。status 不承载 stdout/stderr；raw SSH 不会为了“实时日志”绕过 sanitizer 暴露未净化输出。
-- \`cancelled\` 表示执行前可证明取消；\`outcomeUnknown\` 表示外部副作用可能已发生，必须先核对目标状态，不得自动重试。
+- SSH 执行没有固定 30 秒截止时间。`timeoutMs` 仅为历史兼容字段，当前 SSH 执行器会忽略；新调用应省略该字段，不要因为镜像拉取、构建、编译等长任务人为拆成 30 秒窗口，也不要仅因经过 30 秒就重复启动同一远端操作。
+- 预期明显耗时的 SSH 使用 `ssh_job_start` 或 `ssh_batch_job_start`。首次启动必须给出稳定的 `idempotencyKey`；同一 principal 用同一 key 重试完全相同的任务会返回原 `operationID`，key 相同但任务不同会返回 `IDEMPOTENCY_KEY_CONFLICT`，不得换 key 来盲目重复副作用。
+- 异步任务只用 `secret_operation_status` 查看状态，用 `secret_operation_output` 的 `cursor → nextCursor` 读取已经过 SVLT sanitizer 的 stdout/stderr，用 `secret_operation_cancel` 请求取消。status 不承载 stdout/stderr；raw SSH 不会为了“实时日志”绕过 sanitizer 暴露未净化输出。
+- `cancelled` 表示执行前可证明取消；`outcomeUnknown` 表示外部副作用可能已发生，必须先核对目标状态，不得自动重试。
 - 审批模式下：Secret 的存在、首次使用、operationID、sessionID、经过时间和是否使用 batch 都不是审批理由。普通任务对齐、影响有限、可恢复的 SSH 直接 `AUTO`；高影响/不可逆/未决操作才进入更严格路径。
 - 审批模式的 `GRAY` 正常交给 independent semantic judge；judge 不可用时仍保留既有 daemon-bound bounded main-Agent fallback。`HARD`/`DENIED` 底线按审批模式处理。
 - 无审批模式下：MCP 不调用 independent judge，daemon 把有效操作按 full-access 路径执行。主 Agent 仍应先自行判断命令是否符合用户目标；不要因为“SVLT 会放行”就执行用户没有要求的高影响操作。
