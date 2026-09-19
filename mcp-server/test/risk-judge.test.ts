@@ -107,6 +107,29 @@ describe("intent-first semantic routing", () => {
     expect(judged.descriptor.agentAssessment.declaredRisk).toBe("silent");
   });
 
+  it("applies the same semantic review to idempotent async starts", async () => {
+    const base = request({ intentAlignment: "unclear", executionRecommendation: "uncertain", confidence: 0.55 });
+    if (base.type !== "executeSecretOperation") throw new Error("unexpected request type");
+    const idempotent: IpcRequest = {
+      type: "startSecretOperationIdempotent",
+      descriptor: base.descriptor,
+      idempotencyKey: "job-001"
+    };
+
+    const judged = await applyContextBoundedRiskJudge(
+      idempotent,
+      grayPreflight,
+      configuration,
+      transportReturning(ordinary)
+    );
+
+    if (judged.type !== "startSecretOperationIdempotent") throw new Error("unexpected request type");
+    expect(judged.idempotencyKey).toBe("job-001");
+    expect(judged.descriptor.agentAssessment.source).toBe("independentJudge");
+    expect(judged.descriptor.agentAssessment.executionRecommendation).toBe("automatic");
+    expect(judged.descriptor.reviewID).toBe(grayPreflight.reviewID);
+  });
+
   it("normalizes the legacy reusable recommendation to automatic without a first-use prompt", async () => {
     let calls = 0;
     const judged = await applyContextBoundedRiskJudge(
