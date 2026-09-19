@@ -96,5 +96,39 @@
       "state": "outcomeUnknown",
       "errorCode": "OPERATION_OUTCOME_UNKNOWN"
     }
+  },
+  "handleIdempotentQueued": {
+    "type": "secretOperationHandle",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "queued",
+      "reused": false
+    }
+  },
+  "statusRunningWithCursor": {
+    "type": "secretOperationStatus",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "running",
+      "nextOutputCursor": 1
+    }
+  },
+  "outputPage": {
+    "type": "secretOperationOutput",
+    "result": {
+      "operationID": "00000000-0000-4000-8000-000000000001",
+      "state": "running",
+      "cursor": 0,
+      "nextCursor": 1,
+      "chunks": [
+        {
+          "cursor": 0,
+          "stream": "stdout",
+          "text": "ready\\n",
+          "commandIndex": 0
+        }
+      ],
+      "hasMore": false
+    }
   }
 }
