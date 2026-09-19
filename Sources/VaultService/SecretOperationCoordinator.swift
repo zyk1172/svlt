@@ -8,10 +8,18 @@ import VaultIPC
 /// dedicated SecretOperationService coordination owner.
 public extension VaultAppServices {
     func startSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationHandle {
+        try await startSecretOperation(descriptor, idempotencyKey: nil)
+    }
+
+    func startSecretOperation(
+        _ descriptor: SecretOperationDescriptor,
+        idempotencyKey: String?
+    ) async throws -> SecretOperationHandle {
         let principal = AuditContext.current?.principal ?? AuditSource.agent.rawValue
-        return await secretOperationService.start(
+        return try await secretOperationService.start(
             principal: principal,
             descriptor: descriptor,
+            idempotencyKey: idempotencyKey,
             execute: { [weak self] descriptor in
                 guard let self else {
                     throw VaultCore.SecretOperationError.actionExecutionFailed
@@ -35,6 +43,20 @@ public extension VaultAppServices {
             operationID: operationID,
             principal: principal
         ).status
+    }
+
+    func secretOperationOutput(
+        operationID: UUID,
+        cursor: UInt64,
+        maxChunks: Int
+    ) async throws -> SecretOperationOutputPage {
+        let principal = AuditContext.current?.principal ?? AuditSource.agent.rawValue
+        return try await secretOperationService.outputForBoundary(
+            operationID: operationID,
+            principal: principal,
+            cursor: cursor,
+            maxChunks: maxChunks
+        )
     }
 }
 
