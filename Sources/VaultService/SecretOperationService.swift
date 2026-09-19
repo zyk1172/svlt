@@ -144,14 +144,16 @@ actor SecretOperationService {
             throw VaultCore.SecretOperationError.operationNotFound
         }
         let chunks = availableChunks(for: record)
-        let boundedCursor = min(cursor, UInt64(chunks.count))
-        let start = Int(boundedCursor)
+        guard cursor <= UInt64(chunks.count) else {
+            throw VaultCore.SecretOperationError.invalidOperationParameters
+        }
+        let start = Int(cursor)
         let end = min(chunks.count, start + maxChunks)
         let pageChunks = Array(chunks[start..<end])
         return SecretOperationOutputPage(
             operationID: operationID,
             state: record.state,
-            cursor: boundedCursor,
+            cursor: cursor,
             nextCursor: UInt64(end),
             chunks: pageChunks,
             hasMore: end < chunks.count
@@ -455,7 +457,9 @@ actor SecretOperationService {
         guard !text.isEmpty else { return }
         var start = text.startIndex
         while start < text.endIndex {
-            let end = text.index(start, offsetBy: 4_096, limitedBy: text.endIndex) ?? text.endIndex
+            // Keep a 64-chunk page comfortably below the 1 MiB IPC frame
+            // ceiling even for four-byte Unicode scalars and JSON escaping.
+            let end = text.index(start, offsetBy: 2_048, limitedBy: text.endIndex) ?? text.endIndex
             chunks.append(
                 SecretOperationOutputChunk(
                     cursor: UInt64(chunks.count),
