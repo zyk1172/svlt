@@ -121,6 +121,32 @@ public struct SecretOperationCapability: Codable, Equatable, Sendable {
     }
 }
 
+public struct SecretOperationProgress: Equatable, Sendable {
+    public let commandIndex: Int?
+    public let stdout: String?
+    public let stderr: String?
+
+    public init(
+        commandIndex: Int? = nil,
+        stdout: String? = nil,
+        stderr: String? = nil
+    ) {
+        self.commandIndex = commandIndex
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+}
+
+/// Task-local bridge for already-sanitized executor progress. Producers must
+/// report only after the normal output sanitizer has accepted the bytes.
+public enum SecretOperationProgressContext {
+    @TaskLocal public static var reporter: (@Sendable (SecretOperationProgress) async -> Void)?
+
+    public static func report(_ progress: SecretOperationProgress) async {
+        await reporter?(progress)
+    }
+}
+
 /// Every non-SSH operation is dispatched through a purpose-built adapter.
 /// The adapter receives the already-authorized resolver, but it remains
 /// responsible for keeping resolved bytes inside its own execution boundary.
