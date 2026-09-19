@@ -13,7 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.19.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "mysql2": "^3.24.4",
     "pg": "^8.22.0",
     "zod": "^4.5.4"
