@@ -35,9 +35,12 @@ actor SecretOperationService {
     private struct Record {
         let principal: String
         let sequence: UInt64
+        let operationHash: String
+        let idempotencyKey: String?
         var state: SecretOperationState
         var output: SecretOperationOutput?
         var errorCode: String?
+        var progressChunks: [SecretOperationOutputChunk]
         var task: Task<Void, Never>?
     }
 
@@ -66,26 +69,40 @@ actor SecretOperationService {
         descriptor: SecretOperationDescriptor,
         execute: @escaping @Sendable (SecretOperationDescriptor) async throws -> SecretOperationOutput
     ) -> SecretOperationHandle {
-        let handle = register(principal: principal)
-        let operationID = handle.operationID
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await SecretOperationLifecycleContext.$operationID.withValue(operationID) {
-                do {
-                    try Task.checkCancellation()
-                    let output = try await execute(descriptor)
-                    await self.succeed(operationID: operationID, output: output)
-                } catch let error as VaultCore.SecretOperationError {
-                    await self.fail(operationID: operationID, errorCode: error.responseCode)
-                } catch is CancellationError {
-                    await self.fail(operationID: operationID, errorCode: VaultCore.SecretOperationError.authorizationCancelled.responseCode)
-                } catch {
-                    await self.fail(operationID: operationID, errorCode: VaultCore.SecretOperationError.actionExecutionFailed.responseCode)
-                }
+        startNew(
+            principal: principal,
+            descriptor: descriptor,
+            idempotencyKey: nil,
+            execute: execute
+        )
+    }
+
+    func start(
+        principal: String,
+        descriptor: SecretOperationDescriptor,
+        idempotencyKey: String,
+        execute: @escaping @Sendable (SecretOperationDescriptor) async throws -> SecretOperationOutput
+    ) throws -> SecretOperationHandle {
+        let normalizedKey = try normalizeIdempotencyKey(idempotencyKey)
+        if let existing = records.first(where: {
+            $0.value.principal == principal && $0.value.idempotencyKey == normalizedKey
+        }) {
+            guard existing.value.operationHash == descriptor.operationHash else {
+                throw VaultCore.SecretOperationError.idempotencyKeyConflict
             }
+            return SecretOperationHandle(
+                operationID: existing.key,
+                state: existing.value.state,
+                reused: true
+            )
         }
-        attachTask(operationID: operationID, principal: principal, task: task)
-        return handle
+
+        return startNew(
+            principal: principal,
+            descriptor: descriptor,
+            idempotencyKey: normalizedKey,
+            execute: execute
+        )
     }
 
     func statusForBoundary(operationID: UUID, principal: String) -> SecretOperationStatus {
@@ -100,6 +117,35 @@ actor SecretOperationService {
             return CancellationResult(status: notFoundStatus(operationID: operationID), ownedByPrincipal: false)
         }
         return CancellationResult(status: status, ownedByPrincipal: true)
+    }
+
+    func outputForBoundary(
+        operationID: UUID,
+        principal: String,
+        cursor: UInt64,
+        maxChunks: Int
+    ) throws -> SecretOperationOutputPage {
+        guard (1...64).contains(maxChunks) else {
+            throw VaultCore.SecretOperationError.invalidOperationParameters
+        }
+        guard let record = records[operationID], record.principal == principal else {
+            throw VaultCore.SecretOperationError.operationNotFound
+        }
+        let chunks = availableChunks(for: record)
+        guard cursor <= UInt64(chunks.count) else {
+            throw VaultCore.SecretOperationError.invalidOperationParameters
+        }
+        let start = Int(cursor)
+        let end = min(chunks.count, start + maxChunks)
+        let pageChunks = Array(chunks[start..<end])
+        return SecretOperationOutputPage(
+            operationID: operationID,
+            state: record.state,
+            cursor: cursor,
+            nextCursor: UInt64(end),
+            chunks: pageChunks,
+            hasMore: end < chunks.count
+        )
     }
 
     func transitionCurrent(to state: SecretOperationState) {
@@ -208,11 +254,73 @@ actor SecretOperationService {
         throw VaultCore.SecretOperationError.authorizationCancelled
     }
 
-    private func register(principal: String) -> SecretOperationHandle {
+    private func startNew(
+        principal: String,
+        descriptor: SecretOperationDescriptor,
+        idempotencyKey: String?,
+        execute: @escaping @Sendable (SecretOperationDescriptor) async throws -> SecretOperationOutput
+    ) -> SecretOperationHandle {
+        let handle = register(
+            principal: principal,
+            operationHash: descriptor.operationHash,
+            idempotencyKey: idempotencyKey
+        )
+        let operationID = handle.operationID
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await SecretOperationLifecycleContext.$operationID.withValue(operationID) {
+                do {
+                    try Task.checkCancellation()
+                    let output = try await SecretOperationProgressContext.$reporter.withValue(
+                        { progress in
+                            await self.appendProgress(operationID: operationID, progress: progress)
+                        }
+                    ) {
+                        try await execute(descriptor)
+                    }
+                    await self.succeed(operationID: operationID, output: output)
+                } catch let error as VaultCore.SecretOperationError {
+                    await self.fail(operationID: operationID, errorCode: error.responseCode)
+                } catch is CancellationError {
+                    await self.fail(
+                        operationID: operationID,
+                        errorCode: VaultCore.SecretOperationError.authorizationCancelled.responseCode
+                    )
+                } catch {
+                    await self.fail(
+                        operationID: operationID,
+                        errorCode: VaultCore.SecretOperationError.actionExecutionFailed.responseCode
+                    )
+                }
+            }
+        }
+        attachTask(operationID: operationID, principal: principal, task: task)
+        return handle
+    }
+
+    private func register(
+        principal: String,
+        operationHash: String,
+        idempotencyKey: String?
+    ) -> SecretOperationHandle {
         let operationID = UUID()
         nextSequence &+= 1
-        records[operationID] = Record(principal: principal, sequence: nextSequence, state: .queued, output: nil, errorCode: nil, task: nil)
-        return SecretOperationHandle(operationID: operationID, state: .queued)
+        records[operationID] = Record(
+            principal: principal,
+            sequence: nextSequence,
+            operationHash: operationHash,
+            idempotencyKey: idempotencyKey,
+            state: .queued,
+            output: nil,
+            errorCode: nil,
+            progressChunks: [],
+            task: nil
+        )
+        return SecretOperationHandle(
+            operationID: operationID,
+            state: .queued,
+            reused: idempotencyKey == nil ? nil : false
+        )
     }
 
     private func attachTask(operationID: UUID, principal: String, task: Task<Void, Never>) {
@@ -232,6 +340,27 @@ actor SecretOperationService {
 
     private func succeed(operationID: UUID, output: SecretOperationOutput) {
         finish(operationID: operationID, state: .succeeded, output: output, errorCode: nil)
+    }
+
+    private func appendProgress(operationID: UUID, progress: SecretOperationProgress) {
+        guard var record = records[operationID], !record.state.isTerminal else { return }
+        if let stdout = progress.stdout {
+            append(
+                text: stdout,
+                stream: .stdout,
+                commandIndex: progress.commandIndex,
+                to: &record.progressChunks
+            )
+        }
+        if let stderr = progress.stderr {
+            append(
+                text: stderr,
+                stream: .stderr,
+                commandIndex: progress.commandIndex,
+                to: &record.progressChunks
+            )
+        }
+        records[operationID] = record
     }
 
     private func fail(operationID: UUID, errorCode: String) {
@@ -289,6 +418,12 @@ actor SecretOperationService {
         record.state = state
         record.output = output
         record.errorCode = errorCode
+        if output != nil {
+            // Terminal SSH output is authoritative and can regenerate the same
+            // cursor sequence. Drop transient batch chunks to avoid retaining
+            // a second copy of long command output.
+            record.progressChunks.removeAll(keepingCapacity: false)
+        }
         record.task = nil
         records[operationID] = record
         trimTerminalRecords()
@@ -303,7 +438,75 @@ actor SecretOperationService {
     }
 
     private func status(operationID: UUID, record: Record) -> SecretOperationStatus {
-        SecretOperationStatus(operationID: operationID, state: record.state, output: record.output, errorCode: record.errorCode)
+        SecretOperationStatus(
+            operationID: operationID,
+            state: record.state,
+            output: record.output,
+            errorCode: record.errorCode,
+            nextOutputCursor: UInt64(availableChunks(for: record).count)
+        )
+    }
+
+    private func normalizeIdempotencyKey(_ value: String) throws -> String {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              normalized.utf8.count <= 128,
+              normalized.unicodeScalars.allSatisfy({ $0.value >= 0x21 && $0.value != 0x7F })
+        else {
+            throw VaultCore.SecretOperationError.invalidOperationParameters
+        }
+        return normalized
+    }
+
+    private func availableChunks(for record: Record) -> [SecretOperationOutputChunk] {
+        if !record.progressChunks.isEmpty {
+            return record.progressChunks
+        }
+        if let output = record.output {
+            var chunks: [SecretOperationOutputChunk] = []
+            if let stdout = output.stdout {
+                append(text: stdout, stream: .stdout, commandIndex: nil, to: &chunks)
+            }
+            if let stderr = output.stderr {
+                append(text: stderr, stream: .stderr, commandIndex: nil, to: &chunks)
+            }
+            if let results = output.results {
+                for result in results {
+                    if let stdout = result.stdout {
+                        append(text: stdout, stream: .stdout, commandIndex: result.index, to: &chunks)
+                    }
+                    if let stderr = result.stderr {
+                        append(text: stderr, stream: .stderr, commandIndex: result.index, to: &chunks)
+                    }
+                }
+            }
+            return chunks
+        }
+        return record.progressChunks
+    }
+
+    private func append(
+        text: String,
+        stream: SecretOperationOutputStream,
+        commandIndex: Int?,
+        to chunks: inout [SecretOperationOutputChunk]
+    ) {
+        guard !text.isEmpty else { return }
+        var start = text.startIndex
+        while start < text.endIndex {
+            // Keep a 64-chunk page comfortably below the 1 MiB IPC frame
+            // ceiling even for four-byte Unicode scalars and JSON escaping.
+            let end = text.index(start, offsetBy: 2_048, limitedBy: text.endIndex) ?? text.endIndex
+            chunks.append(
+                SecretOperationOutputChunk(
+                    cursor: UInt64(chunks.count),
+                    stream: stream,
+                    text: String(text[start..<end]),
+                    commandIndex: commandIndex
+                )
+            )
+            start = end
+        }
     }
 
     private func notFoundStatus(operationID: UUID) -> SecretOperationStatus {

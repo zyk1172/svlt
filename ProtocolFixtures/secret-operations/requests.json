@@ -56,5 +56,37 @@
   "cancelSecretOperation": {
     "type": "cancelSecretOperation",
     "operationID": "00000000-0000-4000-8000-000000000001"
+  },
+  "startSecretOperationIdempotent": {
+    "type": "startSecretOperationIdempotent",
+    "descriptor": {
+      "actionType": "vaultStatus",
+      "secretReferences": [],
+      "requestedEffects": [],
+      "parameters": {},
+      "agentAssessment": {
+        "source": "mainAgent",
+        "declaredRisk": "approvalRequired",
+        "reason": "No semantic Agent assessment was supplied",
+        "userGoal": "Complete the requested operation",
+        "taskContext": "No additional task context supplied",
+        "intendedEffect": "unspecified",
+        "expectedEffect": "Unknown until reviewed",
+        "expectedResult": "Complete the requested task",
+        "intentAlignment": "unclear",
+        "effectSeverity": "unknown",
+        "reversibility": "unknown",
+        "secretHandling": "unknown",
+        "executionRecommendation": "reusableApproval",
+        "confidence": 0
+      }
+    },
+    "idempotencyKey": "job-001"
+  },
+  "secretOperationOutput": {
+    "type": "secretOperationOutput",
+    "operationID": "00000000-0000-4000-8000-000000000001",
+    "cursor": 0,
+    "maxChunks": 16
   }
 }

@@ -13,7 +13,9 @@ import VaultExecution
     let requests: [IPCRequest] = [
         .executeSecretOperation(descriptor),
         .startSecretOperation(descriptor),
+        .startSecretOperationIdempotent(descriptor: descriptor, idempotencyKey: "job-001"),
         .secretOperationStatus(operationID: operationID),
+        .secretOperationOutput(operationID: operationID, cursor: 0, maxChunks: 16),
         .cancelSecretOperation(operationID: operationID)
     ]
 
@@ -29,12 +31,29 @@ import VaultExecution
     let status = SecretOperationStatus(
         operationID: operationID,
         state: .succeeded,
-        output: SecretOperationOutput(status: "COMPLETED")
+        output: SecretOperationOutput(status: "COMPLETED"),
+        nextOutputCursor: 1
+    )
+    let outputPage = SecretOperationOutputPage(
+        operationID: operationID,
+        state: .running,
+        cursor: 0,
+        nextCursor: 1,
+        chunks: [
+            SecretOperationOutputChunk(
+                cursor: 0,
+                stream: .stdout,
+                text: "ready\n",
+                commandIndex: 0
+            )
+        ],
+        hasMore: false
     )
     let responses: [IPCResponse] = [
         .secretOperation(SecretOperationOutput(status: "COMPLETED")),
         .secretOperationHandle(handle),
         .secretOperationStatus(status),
+        .secretOperationOutput(outputPage),
         .failure(code: "ACTION_EXECUTION_FAILED")
     ]
 
@@ -56,7 +75,9 @@ import VaultExecution
     #expect(Set(requestFixtures.keys) == Set([
         "executeSecretOperation",
         "startSecretOperation",
+        "startSecretOperationIdempotent",
         "secretOperationStatus",
+        "secretOperationOutput",
         "cancelSecretOperation"
     ]))
     for (name, object) in requestFixtures {
@@ -79,6 +100,7 @@ import VaultExecution
     #expect(SecretOperationLifecycleErrorCode.operationNotFound == "OPERATION_NOT_FOUND")
     #expect(SecretOperationLifecycleErrorCode.cancelled == "OPERATION_CANCELLED")
     #expect(SecretOperationLifecycleErrorCode.outcomeUnknown == "OPERATION_OUTCOME_UNKNOWN")
+    #expect(SecretOperationLifecycleErrorCode.idempotencyKeyConflict == "IDEMPOTENCY_KEY_CONFLICT")
 }
 
 private func loadFixtureMap(_ url: URL) throws -> [String: Any] {

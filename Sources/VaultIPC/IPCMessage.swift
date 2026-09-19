@@ -133,7 +133,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
     case preflightSecretOperation(SecretOperationDescriptor)
     case executeSecretOperation(SecretOperationDescriptor)
     case startSecretOperation(SecretOperationDescriptor)
+    case startSecretOperationIdempotent(descriptor: SecretOperationDescriptor, idempotencyKey: String)
     case secretOperationStatus(operationID: UUID)
+    case secretOperationOutput(operationID: UUID, cursor: UInt64, maxChunks: Int)
     case cancelSecretOperation(operationID: UUID)
     case reviewSSHHostKey(host: String, port: Int)
     case sshSessionStatus(sessionID: String?)
@@ -169,6 +171,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case markdownReferences
         case descriptor
         case operationID
+        case idempotencyKey
+        case cursor
+        case maxChunks
         case host
         case port
         case mutation
@@ -219,7 +224,9 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case preflightSecretOperation
         case executeSecretOperation
         case startSecretOperation
+        case startSecretOperationIdempotent
         case secretOperationStatus
+        case secretOperationOutput
         case cancelSecretOperation
         case reviewSSHHostKey
         case sshSessionStatus
@@ -383,8 +390,19 @@ public enum IPCRequest: Codable, Equatable, Sendable {
             self = .executeSecretOperation(try container.decode(SecretOperationDescriptor.self, forKey: .descriptor))
         case .startSecretOperation:
             self = .startSecretOperation(try container.decode(SecretOperationDescriptor.self, forKey: .descriptor))
+        case .startSecretOperationIdempotent:
+            self = .startSecretOperationIdempotent(
+                descriptor: try container.decode(SecretOperationDescriptor.self, forKey: .descriptor),
+                idempotencyKey: try container.decode(String.self, forKey: .idempotencyKey)
+            )
         case .secretOperationStatus:
             self = .secretOperationStatus(operationID: try container.decode(UUID.self, forKey: .operationID))
+        case .secretOperationOutput:
+            self = .secretOperationOutput(
+                operationID: try container.decode(UUID.self, forKey: .operationID),
+                cursor: try container.decode(UInt64.self, forKey: .cursor),
+                maxChunks: try container.decode(Int.self, forKey: .maxChunks)
+            )
         case .cancelSecretOperation:
             self = .cancelSecretOperation(operationID: try container.decode(UUID.self, forKey: .operationID))
         case .reviewSSHHostKey:
@@ -545,9 +563,18 @@ public enum IPCRequest: Codable, Equatable, Sendable {
         case let .startSecretOperation(descriptor):
             try container.encode(RequestType.startSecretOperation, forKey: .type)
             try container.encode(descriptor, forKey: .descriptor)
+        case let .startSecretOperationIdempotent(descriptor, idempotencyKey):
+            try container.encode(RequestType.startSecretOperationIdempotent, forKey: .type)
+            try container.encode(descriptor, forKey: .descriptor)
+            try container.encode(idempotencyKey, forKey: .idempotencyKey)
         case let .secretOperationStatus(operationID):
             try container.encode(RequestType.secretOperationStatus, forKey: .type)
             try container.encode(operationID, forKey: .operationID)
+        case let .secretOperationOutput(operationID, cursor, maxChunks):
+            try container.encode(RequestType.secretOperationOutput, forKey: .type)
+            try container.encode(operationID, forKey: .operationID)
+            try container.encode(cursor, forKey: .cursor)
+            try container.encode(maxChunks, forKey: .maxChunks)
         case let .cancelSecretOperation(operationID):
             try container.encode(RequestType.cancelSecretOperation, forKey: .type)
             try container.encode(operationID, forKey: .operationID)
@@ -757,6 +784,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
     case secretOperationPreflight(SecretOperationPreflight)
     case secretOperationHandle(SecretOperationHandle)
     case secretOperationStatus(SecretOperationStatus)
+    case secretOperationOutput(SecretOperationOutputPage)
     case sshHostKeyReview(SSHHostKeyReview)
     case sshSessionStatus([SSHSessionStatus])
     case failure(code: String)
@@ -816,6 +844,7 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case secretOperationPreflight
         case secretOperationHandle
         case secretOperationStatus
+        case secretOperationOutput
         case sshHostKeyReview
         case sshSessionStatus
         case failure
@@ -894,6 +923,8 @@ public enum IPCResponse: Codable, Equatable, Sendable {
             self = .secretOperationHandle(try container.decode(SecretOperationHandle.self, forKey: .result))
         case .secretOperationStatus:
             self = .secretOperationStatus(try container.decode(SecretOperationStatus.self, forKey: .result))
+        case .secretOperationOutput:
+            self = .secretOperationOutput(try container.decode(SecretOperationOutputPage.self, forKey: .result))
         case .sshHostKeyReview:
             self = .sshHostKeyReview(try container.decode(SSHHostKeyReview.self, forKey: .review))
         case .sshSessionStatus:
@@ -994,6 +1025,9 @@ public enum IPCResponse: Codable, Equatable, Sendable {
         case let .secretOperationStatus(status):
             try container.encode(ResponseType.secretOperationStatus, forKey: .type)
             try container.encode(status, forKey: .result)
+        case let .secretOperationOutput(output):
+            try container.encode(ResponseType.secretOperationOutput, forKey: .type)
+            try container.encode(output, forKey: .result)
         case let .sshHostKeyReview(review):
             try container.encode(ResponseType.sshHostKeyReview, forKey: .type)
             try container.encode(review, forKey: .review)

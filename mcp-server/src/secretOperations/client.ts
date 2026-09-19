@@ -3,6 +3,7 @@ import type {
   IpcRequest,
   IpcResponse,
   SecretOperationHandle,
+  SecretOperationOutputPage,
   SecretOperationStatus
 } from "./protocol.js";
 
@@ -17,12 +18,19 @@ export type LifecycleControlResult<T> =
 
 export async function startSecretOperation(
   client: SecretOperationIpcClient,
-  descriptor: SecretOperationDescriptor
+  descriptor: SecretOperationDescriptor,
+  idempotencyKey?: string
 ): Promise<LifecycleControlResult<SecretOperationHandle>> {
-  const response = await client.request({
-    type: "startSecretOperation",
-    descriptor
-  });
+  const response = await client.request(idempotencyKey === undefined
+    ? {
+        type: "startSecretOperation",
+        descriptor
+      }
+    : {
+        type: "startSecretOperationIdempotent",
+        descriptor,
+        idempotencyKey
+      });
   if (response.type === "secretOperationHandle") {
     return { kind: "value", value: response.result };
   }
@@ -38,6 +46,24 @@ export async function getSecretOperationStatus(
     operationID
   });
   if (response.type === "secretOperationStatus") {
+    return { kind: "value", value: response.result };
+  }
+  return controlFailure(response);
+}
+
+export async function getSecretOperationOutput(
+  client: SecretOperationIpcClient,
+  operationID: string,
+  cursor = 0,
+  maxChunks = 16
+): Promise<LifecycleControlResult<SecretOperationOutputPage>> {
+  const response = await client.request({
+    type: "secretOperationOutput",
+    operationID,
+    cursor,
+    maxChunks
+  });
+  if (response.type === "secretOperationOutput") {
     return { kind: "value", value: response.result };
   }
   return controlFailure(response);

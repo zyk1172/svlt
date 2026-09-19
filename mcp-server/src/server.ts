@@ -10,6 +10,7 @@ import { LocalIpcClient } from "./client.js";
 import { credentialSourcePriority } from "./credential-scope.js";
 import { AgentRiskProposal, agentAssessment } from "./agent-assessment.js";
 import { SshCommandBatchInput, SshCommandInput } from "./ssh-input.js";
+import { createSecretOperationJobToolDefinitions } from "./secretOperations/job-tools.js";
 import {
   AgentCallerIdentity,
   CatalogCreateEntryRequest,
@@ -1087,6 +1088,7 @@ const AutoHandleTextInput = z
 
 export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDefinition[] {
   return [
+    ...createSecretOperationJobToolDefinitions(client),
     {
       name: "secret_action_router",
       title: "Secret Local Action Router",
@@ -1758,7 +1760,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_command_with_secret",
       title: "SSH Command With Secret",
       description:
-        "Runs a raw SSH command (single-line or multi-line shell script: pipelines, redirects, heredocs, interpreters, sudo) on a local/private-network host using a secret:// password. SVLT classifies the actual effect: ordinary task-aligned work is automatic, while genuinely destructive effects require fresh owner approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
+        "Runs a raw SSH command on a local/private-network host using a secret:// password. Effect-based authorization still applies. SSH has no fixed deadline; omit deprecated timeoutMs. Plaintext is never returned.",
       inputSchema: SshCommandInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -1769,7 +1771,7 @@ export function createVaultToolDefinitions(client: VaultIpcClient): VaultToolDef
       name: "ssh_batch_with_secret",
       title: "SSH Command Batch With Secret",
       description:
-        "Runs a structured SSH command batch (executable + arguments records) through one SVLT-managed ControlMaster session. Prefer raw commands when you need real shell semantics. Batch only reduces connection/protocol overhead; it is not required to avoid approval. SSH execution has no fixed 30-second deadline; omit deprecated timeoutMs for new calls. Plaintext is never returned.",
+        "Runs a structured SSH batch through one SVLT-managed ControlMaster session. Batch changes transport overhead only. SSH has no fixed deadline; omit deprecated timeoutMs. Plaintext is never returned.",
       inputSchema: SshCommandBatchInput,
       outputSchema: LocalSshOutput,
       async handler(input) {
@@ -2279,9 +2281,7 @@ async function handleSshCommandWithSecret(
     protocolType: "ssh",
     command: parsed.command,
     sessionID: parsed.sessionID,
-    // Do not label every raw shell command as read-only. The effect model
-    // uses the actual command plus structured semantics; this field is only a
-    // coarse transport hint and must never become an allowlist bypass.
+    // Raw SSH effects are classified from the actual command.
     requestedEffects: ["ssh-command"],
     parameters,
     agentAssessment: agentAssessment(parsed)
@@ -2815,6 +2815,7 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "Use secret_action_router for local actions that need decrypted material without exposing it to the agent.",
       "Use ssh_command_with_secret for one restricted local/private-network SSH command. An opaque sessionID may be reused for connection performance, but it is never required for authorization and never changes the risk decision.",
       "SSH commands have no fixed execution deadline. timeoutMs is a deprecated compatibility field and is ignored; omit it for new SSH calls instead of splitting long-running work into artificial 30-second windows or retrying solely because 30 seconds elapsed.",
+      "For long SSH use ssh_job_start/ssh_batch_job_start with a stable idempotencyKey, then secret_operation_status/output/cancel. Same key plus same work reuses its operationID; conflicts fail. Reconcile outcomeUnknown before retrying.",
       "Use ssh_batch_with_secret for multiple SSH commands when one transport request is convenient. Pass structured executable/arguments records; SVLT evaluates the complete batch before executing any command and stops after the first failure by default. Batch changes transport overhead only, not approval policy.",
       "Use ssh_session_status only to inspect your own opaque transport sessions, and ssh_session_close only to close your own session when it is no longer needed. Neither tool changes policy or authorization.",
       "Use ssh_command_with_secret for the actual remote shell command, including single-line or multi-line scripts, ;, &&, ||, |, redirects, heredocs, command substitution, shell/interpreter -c forms, find -exec, xargs, eval, sudo, and unknown NAS CLIs. Do not split or rewrite a command merely to satisfy policy.",
@@ -2858,6 +2859,11 @@ function agentSecretUsagePolicy(): Record<string, unknown> {
       "secret_create_request",
       "ssh_command_with_secret",
       "ssh_batch_with_secret",
+      "ssh_job_start",
+      "ssh_batch_job_start",
+      "secret_operation_status",
+      "secret_operation_output",
+      "secret_operation_cancel",
       "ssh_session_status",
       "ssh_session_close",
       "local_http_request_with_secret",

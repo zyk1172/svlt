@@ -23,8 +23,10 @@ describe("shared Swift/TypeScript secret-operation protocol fixtures", () => {
     expect(Object.keys(fixtures).sort()).toEqual([
       "cancelSecretOperation",
       "executeSecretOperation",
+      "secretOperationOutput",
       "secretOperationStatus",
-      "startSecretOperation"
+      "startSecretOperation",
+      "startSecretOperationIdempotent"
     ]);
 
     for (const [name, fixture] of Object.entries(fixtures)) {

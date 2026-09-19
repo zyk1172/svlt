@@ -2231,7 +2231,7 @@ public actor VaultAppServices: WorkbenchServicing, AppControlServicing {
                  .invalidOperationParameters, .sessionNotFound, .sessionExpired,
                  .sessionScopeMismatch, .sessionControlUnavailable, .sessionLimitReached,
                  .batchValidationFailed, .redirectRequiresReview, .outputQuarantined,
-                 .insecureTransportDenied:
+                 .insecureTransportDenied, .operationNotFound, .idempotencyKeyConflict:
                 await emitAudit(
                     action: "本机授权失败",
                     target: decision.normalizedDestination ?? "local",

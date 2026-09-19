@@ -23,6 +23,34 @@ const validReference = "secret://0123456789ABCDEFGHJKMNPQRS";
 const validIndexID = "0123456789ABCDEFGHJKMNPQRT";
 const validEntryID = "0123456789ABCDEFGHJKMNPQRV";
 const validToken = Buffer.alloc(32, 0x4d).toString("base64");
+const lifecycleDescriptor = {
+  actionType: "sshCommand",
+  secretReferences: [validReference],
+  destination: "qnap.local",
+  port: 22,
+  protocolType: "ssh",
+  command: "hostname",
+  requestedEffects: ["read-only"],
+  parameters: { passwordRef: validReference, username: "admin" },
+  agentAssessment: {
+    source: "mainAgent",
+    declaredRisk: "silent",
+    reason: "read-only diagnostic",
+    userGoal: "read status",
+    taskContext: "read-only diagnostic",
+    intendedEffect: "read status",
+    expectedEffect: "read status",
+    expectedResult: "read status",
+    intentAlignment: "direct",
+    effectSeverity: "none",
+    reversibility: "readOnly",
+    secretHandling: "credentialUse",
+    executionRecommendation: "automatic",
+    confidence: 0.9
+  }
+};
+
+
 
 const temporaryDirectories: string[] = [];
 
@@ -180,6 +208,33 @@ describe("IPC response schema", () => {
           httpStatus: 302,
           redirectLocation: "https://qnap.local/next",
           redacted: true
+        }
+      },
+      {
+        type: "secretOperationHandle",
+        result: {
+          operationID: "00000000-0000-4000-8000-000000000001",
+          state: "queued",
+          reused: false
+        }
+      },
+      {
+        type: "secretOperationStatus",
+        result: {
+          operationID: "00000000-0000-4000-8000-000000000001",
+          state: "running",
+          nextOutputCursor: 1
+        }
+      },
+      {
+        type: "secretOperationOutput",
+        result: {
+          operationID: "00000000-0000-4000-8000-000000000001",
+          state: "running",
+          cursor: 0,
+          nextCursor: 1,
+          chunks: [{ cursor: 0, stream: "stdout", text: "ready\n", commandIndex: 0 }],
+          hasMore: false
         }
       },
       {
@@ -510,6 +565,26 @@ describe("IPC request schema", () => {
         }
       },
       { type: "scanOrphans", markdownReferences: [validReference] },
+      { type: "startSecretOperation", descriptor: lifecycleDescriptor },
+      {
+        type: "startSecretOperationIdempotent",
+        descriptor: lifecycleDescriptor,
+        idempotencyKey: "job-001"
+      },
+      {
+        type: "secretOperationStatus",
+        operationID: "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        type: "secretOperationOutput",
+        operationID: "00000000-0000-4000-8000-000000000001",
+        cursor: 0,
+        maxChunks: 16
+      },
+      {
+        type: "cancelSecretOperation",
+        operationID: "00000000-0000-4000-8000-000000000001"
+      },
       {
         type: "executeSecretOperation",
         descriptor: {

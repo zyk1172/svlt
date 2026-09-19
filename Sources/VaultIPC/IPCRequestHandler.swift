@@ -69,7 +69,16 @@ public protocol WorkbenchServicing: Sendable {
     func preflightSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationPreflight
     func performSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationOutput
     func startSecretOperation(_ descriptor: SecretOperationDescriptor) async throws -> SecretOperationHandle
+    func startSecretOperation(
+        _ descriptor: SecretOperationDescriptor,
+        idempotencyKey: String?
+    ) async throws -> SecretOperationHandle
     func secretOperationStatus(operationID: UUID) async throws -> SecretOperationStatus
+    func secretOperationOutput(
+        operationID: UUID,
+        cursor: UInt64,
+        maxChunks: Int
+    ) async throws -> SecretOperationOutputPage
     func cancelSecretOperation(operationID: UUID) async throws -> SecretOperationStatus
     func secretOperationCapabilities() async -> [SecretOperationCapability]
     func reviewSSHHostKey(host: String, port: Int) async throws -> SSHHostKeyReview
@@ -233,7 +242,25 @@ public extension WorkbenchServicing {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
+    func startSecretOperation(
+        _ descriptor: SecretOperationDescriptor,
+        idempotencyKey: String?
+    ) async throws -> SecretOperationHandle {
+        guard idempotencyKey == nil else {
+            throw IPCRequestHandlerError.unsupportedRequest
+        }
+        return try await startSecretOperation(descriptor)
+    }
+
     func secretOperationStatus(operationID _: UUID) async throws -> SecretOperationStatus {
+        throw IPCRequestHandlerError.unsupportedRequest
+    }
+
+    func secretOperationOutput(
+        operationID _: UUID,
+        cursor _: UInt64,
+        maxChunks _: Int
+    ) async throws -> SecretOperationOutputPage {
         throw IPCRequestHandlerError.unsupportedRequest
     }
 
@@ -445,8 +472,20 @@ public struct IPCRequestHandler: Sendable {
             }
         case let .startSecretOperation(descriptor):
             return try await lifecycleResponse { try await service.startSecretOperation(descriptor) }
+        case let .startSecretOperationIdempotent(descriptor, idempotencyKey):
+            return try await lifecycleResponse {
+                try await service.startSecretOperation(descriptor, idempotencyKey: idempotencyKey)
+            }
         case let .secretOperationStatus(operationID):
             return try await lifecycleStatusResponse { try await service.secretOperationStatus(operationID: operationID) }
+        case let .secretOperationOutput(operationID, cursor, maxChunks):
+            return try await lifecycleOutputResponse {
+                try await service.secretOperationOutput(
+                    operationID: operationID,
+                    cursor: cursor,
+                    maxChunks: maxChunks
+                )
+            }
         case let .cancelSecretOperation(operationID):
             return try await lifecycleStatusResponse { try await service.cancelSecretOperation(operationID: operationID) }
         case let .reviewSSHHostKey(host, port):
@@ -466,6 +505,18 @@ public struct IPCRequestHandler: Sendable {
     ) async throws -> IPCResponse {
         do {
             return .secretOperationHandle(try await operation())
+        } catch let error as SecretOperationError {
+            return .failure(code: error.responseCode)
+        } catch {
+            return .failure(code: "ACTION_EXECUTION_FAILED")
+        }
+    }
+
+    private func lifecycleOutputResponse(
+        _ operation: () async throws -> SecretOperationOutputPage
+    ) async throws -> IPCResponse {
+        do {
+            return .secretOperationOutput(try await operation())
         } catch let error as SecretOperationError {
             return .failure(code: error.responseCode)
         } catch {

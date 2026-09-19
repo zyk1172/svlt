@@ -21,6 +21,27 @@ public extension VaultAppServices {
         )
     }
 
+    func startSecretOperation(
+        _ descriptor: SecretOperationDescriptor,
+        idempotencyKey: String?
+    ) async throws -> SecretOperationHandle {
+        guard let idempotencyKey else {
+            return try await startSecretOperation(descriptor)
+        }
+        let principal = AuditContext.current?.principal ?? AuditSource.agent.rawValue
+        return try await secretOperationService.start(
+            principal: principal,
+            descriptor: descriptor,
+            idempotencyKey: idempotencyKey,
+            execute: { [weak self] descriptor in
+                guard let self else {
+                    throw VaultCore.SecretOperationError.actionExecutionFailed
+                }
+                return try await self.performSecretOperation(descriptor)
+            }
+        )
+    }
+
     func secretOperationStatus(operationID: UUID) async throws -> SecretOperationStatus {
         let principal = AuditContext.current?.principal ?? AuditSource.agent.rawValue
         return await secretOperationService.statusForBoundary(
@@ -35,6 +56,20 @@ public extension VaultAppServices {
             operationID: operationID,
             principal: principal
         ).status
+    }
+
+    func secretOperationOutput(
+        operationID: UUID,
+        cursor: UInt64,
+        maxChunks: Int
+    ) async throws -> SecretOperationOutputPage {
+        let principal = AuditContext.current?.principal ?? AuditSource.agent.rawValue
+        return try await secretOperationService.outputForBoundary(
+            operationID: operationID,
+            principal: principal,
+            cursor: cursor,
+            maxChunks: maxChunks
+        )
     }
 }
 
