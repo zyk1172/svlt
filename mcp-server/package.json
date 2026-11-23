@@ -13,7 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "mysql2": "^3.24.5",
     "pg": "^8.23.0",
     "zod": "^4.6.6"
@@ -22,7 +22,7 @@
     "@types/node": "^26.5.1",
     "@types/pg": "^8.23.1",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.3"
   },
   "engines": {
     "node": ">=24"
