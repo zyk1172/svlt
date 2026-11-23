@@ -16,7 +16,7 @@
     "@modelcontextprotocol/sdk": "^1.32.1",
     "mysql2": "^3.24.4",
     "pg": "^8.23.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
