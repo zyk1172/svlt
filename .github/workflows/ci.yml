@@ -65,15 +65,33 @@ jobs:
     name: XcodeGen project parity
     runs-on: macos-latest
     timeout-minutes: 10
+    env:
+      # Pinned to the XcodeGen release that generated the checked-in
+      # SVLT.xcodeproj. The rolling Homebrew formula moved to 2.48.x, which
+      # emits LastUpgradeCheck 1600 and buildArchitectures, so parity started
+      # failing on every PR for reasons unrelated to the change under review.
+      XCODEGEN_VERSION: "2.45.4"
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install XcodeGen when unavailable
+      - name: Install pinned XcodeGen
         run: |
-          if ! command -v xcodegen >/dev/null 2>&1; then
-            brew install xcodegen
+          set -euo pipefail
+          archive="$RUNNER_TEMP/xcodegen.zip"
+          dist="$RUNNER_TEMP/xcodegen-dist"
+          curl -fsSL -o "$archive" \
+            "https://github.com/yonaskolb/XcodeGen/releases/download/${XCODEGEN_VERSION}/xcodegen.zip"
+          unzip -q -o "$archive" -d "$dist"
+          # The release bundles SettingPresets next to the binary, so the
+          # unpacked tree is used in place instead of copying the executable.
+          xcodegen_bin="$dist/xcodegen/bin"
+          echo "$xcodegen_bin" >> "$GITHUB_PATH"
+          installed="$("$xcodegen_bin/xcodegen" --version | sed -n 's/^Version: //p')"
+          if [[ "$installed" != "$XCODEGEN_VERSION" ]]; then
+            echo "Expected XcodeGen ${XCODEGEN_VERSION}, found ${installed:-unknown}" >&2
+            exit 1
           fi
-          xcodegen --version
+          echo "XcodeGen ${installed} installed"
       - name: Verify checked-in Xcode project parity
         run: ./scripts/check-xcodegen-parity.sh
 
